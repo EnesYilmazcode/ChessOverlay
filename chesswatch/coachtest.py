@@ -124,8 +124,10 @@ def label_checks(path):
     import chesswatch as C
 
     # The app starts watching the screen the moment it is built. Point it at a
-    # scratch folder so a stray frame cannot land in your real games.
+    # scratch folder so a stray frame cannot land in your real games, and at a
+    # scratch config so the test does not depend on which switches you left on.
     C.W.GAMES_DIR = tempfile.mkdtemp(prefix="chesswatch-test-")
+    C.CONFIG_PATH = os.path.join(C.W.GAMES_DIR, "config.json")
 
     root = tk.Tk()
     root.withdraw()

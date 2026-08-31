@@ -2,12 +2,12 @@
 
 Two halves of one idea, for anyone building chess teaching tools. `chesswatch`
 watches a chess board on your screen, reads it, and writes the game to disk.
-Tick **best move** and it also runs Stockfish on the position it is reading and
-says, in words, what to play. `holochess` is a full board you play against the
-engine, with the best move drawn as a translucent arrow.
+Tick **best move** and it runs Stockfish on the position it is reading and says,
+in words, what to play. Tick **arrow on board** and it draws that move on the
+board itself, over whatever program is showing it. `holochess` is a full board
+you play against the engine, with the same arrow inside its own window.
 
 Nothing signs in, nothing touches an account, and nothing leaves the machine.
-It works off pixels, so it does not care which site or app is showing the board.
 
 ```
   your screen                   this repo                        what you get
@@ -15,20 +15,24 @@ It works off pixels, so it does not care which site or app is showing the board.
 
   a chess board   ------>  chesswatch/                   ----->  games/*.pgn
   (pixels, nothing else)   reads 64 squares, then asks           games/*.json
-                           the rules which legal move
-                           explains the change
-                                     |
-                                     |  the live position
-                                     v
-                           coach.py + Stockfish          ----->  your move  Nf3
-                                                                 knight: g1 to f3
-                                                                 +0.4
+       ^                   the rules which legal move
+       |                   explains the change
+       |                             |
+       |                             |  the live position
+       |                             v
+       |                   coach.py + Stockfish          ----->  your move  Nf3
+       |                             |                           knight: g1 to f3
+       |                             |  the move to play          +0.4
+       |                             v
+       +------------------  overlay.py
+          a click-through arrow      drawn on the board itself
 ```
 
-The one thing still missing is drawing on the watched board itself. The advice
-is text in the ChessWatch window, and `holochess` draws its arrow only inside
-its own window. Reading and coaching are joined; painting back onto the screen
-you are reading is not.
+![the arrow over a board](docs/arrow.png)
+
+It works off pixels alone, so it does not care which site, app or board theme is
+showing the game. If the board is not chess.com green, drag a box around it once
+with **pick board manually** and everything else carries on as normal.
 
 ## What is in here
 
@@ -36,6 +40,7 @@ you are reading is not.
 | --- | --- | --- |
 | [`chesswatch/`](chesswatch/) | Screen recorder. Finds the board, reads it, saves PGN + JSON. | Finished. 76 headless checks plus two on-screen tests. |
 | [`chesswatch/coach.py`](chesswatch/coach.py) | Stockfish on the position being watched, in plain words. | Works. 18 checks. Off by default. |
+| [`chesswatch/overlay.py`](chesswatch/overlay.py) | That move drawn on the real board, click-through. | Works. 16 checks, measured on screen. |
 | [`holochess/`](holochess/) | Local board, Stockfish 18, best move as a hologram arrow. | Works. 17 checks. |
 
 Each folder has its own README with the long version.
@@ -78,7 +83,36 @@ waits for it, and an answer to a position that has already been played past is
 thrown away rather than shown against the wrong board. The switch is remembered
 in `config.json`.
 
+Tick **arrow on board** as well and the move is drawn on the board itself, over
+whatever program is showing it. The window is click-through, so it does not get
+between you and the game.
+
 You supply Stockfish, the same binary the other half uses. See below.
+
+### Why the arrow cannot corrupt a recording
+
+The recorder is reading the same pixels the arrow paints on, which is the one
+thing that could quietly ruin a game file.
+
+`read_occupancy` converts the board to grey and counts only pixels brighter than
+244 or darker than 70. Everything between those is already discarded, which is
+how the last-move highlight, the coordinate labels and the check marker are
+ignored. The arrow is drawn in a colour that lands in that gap: cyan greys to
+165, and blended at 85 per cent over pure white or pure black it stays inside
+the band. The reader cannot see it.
+
+Coverage can still hide a piece, making an occupied square read empty. That
+position matches no legal move, so the frame is ignored and the recorder waits,
+which is what it already does for a piece in mid animation. It cannot write down
+a move that did not happen.
+
+`overlaytest.py` measures that rather than claiming it. It covers the desktop,
+paints a real board, puts the real overlay over it, captures the screen through
+mss and reads it back: sixteen arrows across the crowded ranks and onto pieces,
+at 664px and again at 240px, every one confirmed to be on screen, none of them
+changing a single square. Then it plays a whole game with an arrow up for every
+frame. The check that the arrow is genuinely visible is the load-bearing one,
+because without it an overlay that drew nothing would pass everything else.
 
 ## Run the engine half
 
@@ -132,8 +166,8 @@ drawing one and fails the test if a single hologram coloured pixel turns up
 outside the app. An earlier always on top version was caught painting its arrow
 onto a chess board sitting behind it, which is where that test came from.
 
-The coach in `chesswatch` is text in the ChessWatch window for the same reason.
-It is off until you tick it on.
+The coach in `chesswatch` does draw on the board being watched, which is the
+point of it, and it is off until you tick it on.
 
 Worth saying once, since the reader works on any site: engine help during a live
 rated game on someone else's platform is cheating there, whatever this code
@@ -145,6 +179,7 @@ happens to allow.
 cd chesswatch
 python selftest.py      76 headless checks, including real screenshots
 python coachtest.py     18 checks on the engine wrapper and its label
+python overlaytest.py   16 checks that the arrow cannot corrupt a reading
 python settletest.py    move animation, driven off a real clock
 python livetest.py      paints whole games on your desktop and records them
 
@@ -153,7 +188,8 @@ python smoke_test.py    engine, moves, hints, undo, flip
 python shot.py          proves the arrow cannot escape the window
 ```
 
-`livetest.py` and `shot.py` take over the screen while they run.
+`livetest.py`, `overlaytest.py` and `shot.py` take over the screen while they
+run.
 
 The screenshots the tests read are in `chesswatch/testdata/`. They are real
 chess.com windows with everything outside the board blacked out, so no account

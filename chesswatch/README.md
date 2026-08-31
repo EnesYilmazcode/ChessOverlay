@@ -53,6 +53,39 @@ You supply the engine. `coach.py` looks at `$STOCKFISH_PATH`, then
 `chesswatch\engine\stockfish`, then the sibling `holochess\engine\stockfish`,
 then your `PATH`. Without one the switch says so and turns itself back off.
 
+## The arrow on the board
+
+Tick **arrow on board** as well and the suggestion is drawn on the board itself,
+on top of whatever program is showing it. The window is click-through, so it
+sits over the board without getting between you and it.
+
+![the arrow over a board](../docs/arrow.png)
+
+The awkward part is that the recorder is reading the same pixels the arrow is
+painting on, and it must not be able to corrupt a game.
+
+`read_occupancy` converts the board to grey and counts only pixels brighter
+than 244 or darker than 70. Everything in between is already thrown away, which
+is how highlights, coordinate labels and the check marker are ignored. So the
+arrow is drawn in a colour that lands in that gap. Cyan greys to 165, and even
+blended at 85 per cent over pure white or pure black it stays inside the band.
+The reader cannot see it.
+
+The one thing arrow coverage can still do is hide a piece, which would make an
+occupied square read empty. That position matches no legal move, so the frame
+is ignored and the recorder waits, exactly as it does for a piece in mid
+animation. It cannot write down a move that did not happen.
+
+`overlaytest.py` measures this rather than asserting it. It covers the desktop,
+paints a real board, puts the real overlay over it, captures the screen through
+mss and reads it back. Sixteen arrows across the crowded ranks, arrows landing
+on pieces, at 664px and again at 240px: every one of them is confirmed to be on
+screen, and not one of them changed a single square. Then it plays a whole game
+with an arrow up for every frame and checks the moves came out right.
+
+The check that the arrow is really visible is the important one. Without it an
+overlay that drew nothing at all would pass every other check in the file.
+
 ## How it works
 
 It reads the **board**, not the move list.
@@ -222,12 +255,18 @@ match your screen exactly.
   That choice is remembered in `config.json`.
 
 Detection is tuned for chess.com's default green board. A different board theme
-needs `LIGHT_SQUARE` and `DARK_SQUARE` in `watcher.py` changed to match.
+needs `LIGHT_SQUARE` and `DARK_SQUARE` in `watcher.py` changed to match, or use
+**pick board manually** and drag a box around it, which skips detection
+entirely and is remembered in `config.json`. Reading the squares does not care
+about the theme, only finding the board does, so a board of your own colours
+works as soon as you have pointed at it once. The arrow follows whatever
+rectangle is in use.
 
 ## Checking it still works
 
     python selftest.py      76 checks, including real screenshots
     python coachtest.py     18 checks on the engine wrapper and its label
+    python overlaytest.py   16 checks that the arrow cannot corrupt a reading
     python settletest.py    move animation, with the screen on a clock
     python livetest.py      full loop against the real screen
 

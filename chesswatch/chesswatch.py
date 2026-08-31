@@ -26,12 +26,14 @@ if sys.platform == "win32":
 import tkinter as tk
 from tkinter import messagebox
 
+import chess
 import mss
 from PIL import Image
 
 import watcher as W
 import pieces
 import coach as CO
+import overlay as OV
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
@@ -258,6 +260,7 @@ class Worker(threading.Thread):
             "joined": bool(game and game.joined_late),
             "board": self.tracker.ascii_board(),
             "fen": self.tracker.board.fen() if self.tracker.board else None,
+            "flipped": self.tracker.flipped,
             "check": self.tracker.last_check,
             "templates": self.reader.source,
         }))
@@ -343,6 +346,9 @@ class App:
         self.coach = None            # started the first time it is switched on
         self.coach_fen = None        # the position the advice on screen is for
         self.my_colour = None
+        self.arrow = None            # the on-screen arrow, built on demand
+        self.region = None
+        self.flipped = False
 
         root.title("ChessWatch")
         root.configure(bg=BG)
@@ -352,6 +358,10 @@ class App:
         self._build()
         dark_titlebar(root)
         root.after(120, self._drain)
+        # The remembered switches are honoured once the window really exists.
+        # Without this they come back ticked at the next launch and do nothing,
+        # and the arrow would be built before there is a window to sit over.
+        root.after(400, self._apply_saved_switches)
         root.protocol("WM_DELETE_WINDOW", self._quit)
         self._start()
 
@@ -391,11 +401,22 @@ class App:
                            activeforeground=FG, font=("Segoe UI", 8),
                            cursor="hand2").pack(side="left")
 
+        # Their own row: the tools row above is already full at this width, and
+        # a Checkbutton that does not fit is silently not drawn at all.
+        switches = tk.Frame(self.root, bg=BG)
+        switches.pack(fill="x", padx=12, pady=(0, 4))
+        tk.Label(switches, text="coaching:", bg=BG, fg=MUTED,
+                 font=("Segoe UI", 8)).pack(side="left", padx=(0, 4))
         self.coach_on = tk.BooleanVar(value=bool(self.cfg.get("coach", False)))
-        tk.Checkbutton(tools, text="best move", variable=self.coach_on,
+        tk.Checkbutton(switches, text="best move", variable=self.coach_on,
                        command=self._toggle_coach, bg=BG, fg=MUTED, selectcolor=BG,
                        activebackground=BG, activeforeground=FG,
-                       font=("Segoe UI", 8), cursor="hand2").pack(side="right")
+                       font=("Segoe UI", 8), cursor="hand2").pack(side="left")
+        self.arrow_on = tk.BooleanVar(value=bool(self.cfg.get("arrow", False)))
+        tk.Checkbutton(switches, text="arrow on board", variable=self.arrow_on,
+                       command=self._toggle_arrow, bg=BG, fg=MUTED, selectcolor=BG,
+                       activebackground=BG, activeforeground=FG,
+                       font=("Segoe UI", 8), cursor="hand2").pack(side="left")
 
         self.lbl_coach = tk.Label(self.root, text="", bg=BG, fg=ACCENT,
                                   font=("Segoe UI", 10, "bold"), anchor="w")
@@ -442,6 +463,13 @@ class App:
                   font=("Segoe UI", 8)).pack(side="right")
 
     # -- actions -----------------------------------------------------
+    def _apply_saved_switches(self):
+        """Idempotent: whichever of the two is already running is left alone."""
+        if self.coach_on.get() and self.coach is None:
+            self._toggle_coach()
+        if self.arrow_on.get() and self.arrow is None:
+            self._toggle_arrow()
+
     def _check_now(self):
         if self.worker:
             self.worker.check_now.set()
@@ -491,6 +519,8 @@ class App:
         if not self.coach_on.get():
             self.lbl_coach.configure(text="")
             self.coach_fen = None
+            if self.arrow:
+                self.arrow.hide()
             return
         if self.coach is None:
             path = CO.find_engine()
@@ -502,6 +532,28 @@ class App:
             self.coach = CO.Coach(path)
             self.coach.start()
         self.lbl_coach.configure(text="thinking...", fg=MUTED)
+
+    def _toggle_arrow(self):
+        """The arrow needs the coach, since it draws what the coach found."""
+        self._save_config()
+        if not self.arrow_on.get():
+            if self.arrow:
+                self.arrow.hide()
+            return
+        if not self.coach_on.get():
+            self.coach_on.set(True)
+            self._toggle_coach()
+        if self.arrow is None and self.coach_on.get():
+            self.arrow = OV.Arrow(self.root)
+
+    def _show_arrow(self, uci):
+        """Draw the suggestion on the board itself, if it is wanted and we know
+        where the board is."""
+        if not (self.arrow_on.get() and self.arrow and self.region and uci):
+            if self.arrow:
+                self.arrow.hide()
+            return
+        self.arrow.show(self.region, chess.Move.from_uci(uci), self.flipped)
 
     def _toggle_board(self):
         if self.show_board.get():
@@ -548,9 +600,14 @@ class App:
                         continue
                     if payload.get("over"):
                         self.lbl_coach.configure(text="the game is over", fg=MUTED)
+                        self._show_arrow(None)
                         continue
                     whose = ("your move" if payload["turn"] == self.my_colour
                              else "their move")
+                    # Only your own move is worth drawing on the board. Their
+                    # move is still shown in words.
+                    self._show_arrow(payload["uci"] if whose == "your move"
+                                     or self.my_colour is None else None)
                     self.lbl_coach.configure(
                         text="%s  %s  (%s)  %s" % (whose, payload["san"],
                                                    payload["text"],
@@ -561,6 +618,8 @@ class App:
 
     def _render(self, f):
         self.my_colour = f["color"]
+        self.flipped = f.get("flipped", False)
+        self.region = f["region"]
         region = f["region"]
         if region:
             self.lbl_board.configure(
@@ -634,6 +693,7 @@ class App:
             else:
                 self.lbl_coach.configure(text="")
                 self.coach_fen = None
+                self._show_arrow(None)
 
         if f["path"]:
             self.lbl_file.configure(text="games\\" + os.path.basename(f["path"]))
@@ -651,13 +711,16 @@ class App:
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump({"board_region": self.board_region,
                        "colour": self.colour_choice.get(),
-                       "coach": bool(self.coach_on.get())}, fh, indent=2)
+                       "coach": bool(self.coach_on.get()),
+                       "arrow": bool(self.arrow_on.get())}, fh, indent=2)
         os.replace(tmp, CONFIG_PATH)
 
     def _quit(self):
         self._stop()
         if self.coach is not None:
             self.coach.stop()
+        if self.arrow is not None:
+            self.arrow.destroy()
         self.root.destroy()
 
 
