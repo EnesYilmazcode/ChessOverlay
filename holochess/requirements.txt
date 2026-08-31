@@ -1,0 +1,3 @@
+chess
+PyQt6
+pillow

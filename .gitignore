@@ -1,0 +1,16 @@
+# Recorded games and the board you picked by hand: yours, not the project's.
+chesswatch/games/
+chesswatch/config.json
+chesswatch/test-games/
+
+# Stockfish. 114 MB, over GitHub's file limit, and GPL licensed separately.
+holochess/engine/
+
+# Test output.
+holochess/shot_a_app.png
+holochess/shot_b_desktop.png
+
+__pycache__/
+*.pyc
+.venv/
+venv/
