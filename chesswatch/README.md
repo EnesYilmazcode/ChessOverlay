@@ -33,6 +33,26 @@ can filter later for the games you lost as black.
 Files are written as you play, not at the end, so closing the browser mid-game
 loses nothing. Starting a new game closes out the old one automatically.
 
+## Asking what to play
+
+Tick **best move** and Stockfish is started, once, and asked about whatever
+position is on screen. The label under the board reads:
+
+```
+your move  Nf3  (knight: g1 to f3)  +0.4
+```
+
+Piece and squares in words rather than only the notation, what a capture takes,
+when a move gives check, and a forced mate counted in moves. `coach.py` holds
+that, and it runs on its own thread with a 300 ms budget so the reader never
+waits on it. Only the newest question is answered, and an answer that arrives
+after the position has changed is dropped rather than shown against the wrong
+board.
+
+You supply the engine. `coach.py` looks at `$STOCKFISH_PATH`, then
+`chesswatch\engine\stockfish`, then the sibling `holochess\engine\stockfish`,
+then your `PATH`. Without one the switch says so and turns itself back off.
+
 ## How it works
 
 It reads the **board**, not the move list.
@@ -207,6 +227,7 @@ needs `LIGHT_SQUARE` and `DARK_SQUARE` in `watcher.py` changed to match.
 ## Checking it still works
 
     python selftest.py      76 checks, including real screenshots
+    python coachtest.py     18 checks on the engine wrapper and its label
     python settletest.py    move animation, with the screen on a clock
     python livetest.py      full loop against the real screen
 

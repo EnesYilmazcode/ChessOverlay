@@ -1,36 +1,42 @@
 # ChessOverlay
 
-Two halves of one idea. `chesswatch` watches the chess.com board on your screen
-and writes every game to your own disk. `holochess` plays a local game against
-Stockfish and draws the best move as a translucent arrow. The plan is to join
-them, so the guidance runs off the board you are actually looking at.
+Two halves of one idea, for anyone building chess teaching tools. `chesswatch`
+watches a chess board on your screen, reads it, and writes the game to disk.
+Tick **best move** and it also runs Stockfish on the position it is reading and
+says, in words, what to play. `holochess` is a full board you play against the
+engine, with the best move drawn as a translucent arrow.
 
-Both halves work today. The pipe between them is not built yet, and this README
-says so wherever that matters.
+Nothing signs in, nothing touches an account, and nothing leaves the machine.
+It works off pixels, so it does not care which site or app is showing the board.
 
 ```
-  your screen                    this repo                      what you get
-  -----------                    ---------                      ------------
+  your screen                   this repo                        what you get
+  -----------                   ---------                        ------------
 
-  chess.com board  ------>  chesswatch/                 ----->  games/*.pgn
-  (pixels, nothing else)    reads 64 squares, then asks         games/*.json
-                            the rules which legal move
-                            explains the change
-                                    |
-                                    |  the live position
-                                    |  (NOT WIRED UP YET)
-                                    v
-                            holochess/                  ----->  the best move,
-                            Stockfish 18 behind a               drawn as an arrow
-                            board of its own
+  a chess board   ------>  chesswatch/                   ----->  games/*.pgn
+  (pixels, nothing else)   reads 64 squares, then asks           games/*.json
+                           the rules which legal move
+                           explains the change
+                                     |
+                                     |  the live position
+                                     v
+                           coach.py + Stockfish          ----->  your move  Nf3
+                                                                 knight: g1 to f3
+                                                                 +0.4
 ```
+
+The one thing still missing is drawing on the watched board itself. The advice
+is text in the ChessWatch window, and `holochess` draws its arrow only inside
+its own window. Reading and coaching are joined; painting back onto the screen
+you are reading is not.
 
 ## What is in here
 
 | Folder | What it is | State |
 | --- | --- | --- |
 | [`chesswatch/`](chesswatch/) | Screen recorder. Finds the board, reads it, saves PGN + JSON. | Finished. 76 headless checks plus two on-screen tests. |
-| [`holochess/`](holochess/) | Local board, Stockfish 18, best move as a hologram arrow. | Works. 17 checks. Needs a Stockfish binary you supply. |
+| [`chesswatch/coach.py`](chesswatch/coach.py) | Stockfish on the position being watched, in plain words. | Works. 18 checks. Off by default. |
+| [`holochess/`](holochess/) | Local board, Stockfish 18, best move as a hologram arrow. | Works. 17 checks. |
 
 Each folder has its own README with the long version.
 
@@ -53,6 +59,26 @@ Games land in `chesswatch/games/` as a matched pair:
 2026-08-30_190621.pgn     open in any chess program
 2026-08-30_190621.json    move by move, tagged me vs opponent
 ```
+
+## Ask it what to play
+
+Tick **best move**. Stockfish is started the first time you do, not before, and
+the label under the board reads something like:
+
+```
+your move  Nf3  (knight: g1 to f3)  +0.4
+```
+
+It names the piece and both squares rather than only the notation, says what a
+capture takes and when a move gives check, and counts a forced mate in moves.
+That is aimed at a player who has not learned to read `Nxe5+` yet.
+
+The engine runs on its own thread with a 300 ms budget, so the reader never
+waits for it, and an answer to a position that has already been played past is
+thrown away rather than shown against the wrong board. The switch is remembered
+in `config.json`.
+
+You supply Stockfish, the same binary the other half uses. See below.
 
 ## Run the engine half
 
@@ -98,26 +124,27 @@ Three things that took real work, all covered in
   position on screen, which used to read as a takeback and overwrite the finished
   file with a fragment.
 
-## Fair play
+## Where the engine can and cannot draw
 
-The recorder only reads pixels. It never signs in, never touches your account,
-and nothing leaves the machine.
+The arrow in `holochess` is a child widget of its own window rather than an
+always on top overlay, and `holochess/shot.py` scans the whole desktop after
+drawing one and fails the test if a single hologram coloured pixel turns up
+outside the app. An earlier always on top version was caught painting its arrow
+onto a chess board sitting behind it, which is where that test came from.
 
-The engine half is deliberately fenced in. Its arrow is a child widget of its own
-window rather than an always on top overlay, and `holochess/shot.py` scans the
-whole desktop after drawing one and fails the test if a single hologram coloured
-pixel shows up outside the app. An earlier always on top version was caught
-painting its arrow onto a chess.com board sitting behind it.
+The coach in `chesswatch` is text in the ChessWatch window for the same reason.
+It is off until you tick it on.
 
-Engine help during a live rated game is cheating and against chess.com's fair
-play policy. Wire these two halves together for reviewing your own finished
-games, not for playing them.
+Worth saying once, since the reader works on any site: engine help during a live
+rated game on someone else's platform is cheating there, whatever this code
+happens to allow.
 
 ## Tests
 
 ```
 cd chesswatch
 python selftest.py      76 headless checks, including real screenshots
+python coachtest.py     18 checks on the engine wrapper and its label
 python settletest.py    move animation, driven off a real clock
 python livetest.py      paints whole games on your desktop and records them
 
@@ -136,7 +163,8 @@ name ships with them.
 
 Python 3, and `pip install -r requirements.txt` in whichever half you are
 running. The recorder needs mss, pillow and chess. The engine half needs PyQt6,
-chess, and a Stockfish binary. No OCR anywhere, and no Tesseract.
+chess, and a Stockfish binary, which the coach then shares. No OCR anywhere, and
+no Tesseract.
 
 Written for Windows. The recorder calls `SetProcessDpiAwareness` and guards
 itself with a named mutex, both Windows specific, and the board reading itself

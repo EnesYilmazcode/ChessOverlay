@@ -31,6 +31,7 @@ from PIL import Image
 
 import watcher as W
 import pieces
+import coach as CO
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
@@ -256,6 +257,7 @@ class Worker(threading.Thread):
             "saved": len(self.tracker.finished),
             "joined": bool(game and game.joined_late),
             "board": self.tracker.ascii_board(),
+            "fen": self.tracker.board.fen() if self.tracker.board else None,
             "check": self.tracker.last_check,
             "templates": self.reader.source,
         }))
@@ -338,6 +340,9 @@ class App:
         self.cfg = self._load_config()
         self.board_region = self.cfg.get("board_region")
         self.colour_choice = tk.StringVar(value=self.cfg.get("colour", "auto"))
+        self.coach = None            # started the first time it is switched on
+        self.coach_fen = None        # the position the advice on screen is for
+        self.my_colour = None
 
         root.title("ChessWatch")
         root.configure(bg=BG)
@@ -385,6 +390,16 @@ class App:
                            bg=BG, fg=MUTED, selectcolor=BG, activebackground=BG,
                            activeforeground=FG, font=("Segoe UI", 8),
                            cursor="hand2").pack(side="left")
+
+        self.coach_on = tk.BooleanVar(value=bool(self.cfg.get("coach", False)))
+        tk.Checkbutton(tools, text="best move", variable=self.coach_on,
+                       command=self._toggle_coach, bg=BG, fg=MUTED, selectcolor=BG,
+                       activebackground=BG, activeforeground=FG,
+                       font=("Segoe UI", 8), cursor="hand2").pack(side="right")
+
+        self.lbl_coach = tk.Label(self.root, text="", bg=BG, fg=ACCENT,
+                                  font=("Segoe UI", 10, "bold"), anchor="w")
+        self.lbl_coach.pack(fill="x", padx=12, pady=(2, 0))
 
         self.lbl_check = tk.Label(self.root, text="", bg=BG, fg=MUTED,
                                   font=("Segoe UI", 8), anchor="w")
@@ -470,6 +485,24 @@ class App:
             self._stop()
         self._start()
 
+    def _toggle_coach(self):
+        """Stockfish is only started when you actually ask for advice."""
+        self._save_config()
+        if not self.coach_on.get():
+            self.lbl_coach.configure(text="")
+            self.coach_fen = None
+            return
+        if self.coach is None:
+            path = CO.find_engine()
+            if path is None:
+                self.coach_on.set(False)
+                self.lbl_coach.configure(
+                    text="no Stockfish found. See the README.", fg=WARN)
+                return
+            self.coach = CO.Coach(path)
+            self.coach.start()
+        self.lbl_coach.configure(text="thinking...", fg=MUTED)
+
     def _toggle_board(self):
         if self.show_board.get():
             self.board_box.pack(fill="x", padx=12, pady=(0, 6), before=self.foot)
@@ -495,9 +528,39 @@ class App:
                     self.lbl_status.configure(text=payload[:70], fg=WARN)
         except queue.Empty:
             pass
+        self._drain_coach()
         self.root.after(120, self._drain)
 
+    def _drain_coach(self):
+        """Advice for a position that has already been played past is thrown
+        away rather than shown against the wrong board."""
+        if self.coach is None:
+            return
+        try:
+            while True:
+                kind, payload = self.coach.out.get_nowait()
+                if kind == "engine":
+                    if payload != "ready":
+                        self.lbl_coach.configure(text=payload[:70], fg=WARN)
+                        self.coach_on.set(False)
+                elif kind == "advice" and self.coach_on.get():
+                    if payload["fen"] != self.coach_fen:
+                        continue
+                    if payload.get("over"):
+                        self.lbl_coach.configure(text="the game is over", fg=MUTED)
+                        continue
+                    whose = ("your move" if payload["turn"] == self.my_colour
+                             else "their move")
+                    self.lbl_coach.configure(
+                        text="%s  %s  (%s)  %s" % (whose, payload["san"],
+                                                   payload["text"],
+                                                   payload["score"]),
+                        fg=ACCENT if whose == "your move" else MUTED)
+        except queue.Empty:
+            pass
+
     def _render(self, f):
+        self.my_colour = f["color"]
         region = f["region"]
         if region:
             self.lbl_board.configure(
@@ -564,6 +627,14 @@ class App:
         self.lbl_check.configure(
             text=note, fg=ACCENT if "confirmed" in note else MUTED)
 
+        if self.coach is not None and self.coach_on.get():
+            if f.get("fen") and f["result"] == "*":
+                self.coach.ask(f["fen"])
+                self.coach_fen = f["fen"]
+            else:
+                self.lbl_coach.configure(text="")
+                self.coach_fen = None
+
         if f["path"]:
             self.lbl_file.configure(text="games\\" + os.path.basename(f["path"]))
 
@@ -579,11 +650,14 @@ class App:
         tmp = CONFIG_PATH + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump({"board_region": self.board_region,
-                   "colour": self.colour_choice.get()}, fh, indent=2)
+                       "colour": self.colour_choice.get(),
+                       "coach": bool(self.coach_on.get())}, fh, indent=2)
         os.replace(tmp, CONFIG_PATH)
 
     def _quit(self):
         self._stop()
+        if self.coach is not None:
+            self.coach.stop()
         self.root.destroy()
 
 
