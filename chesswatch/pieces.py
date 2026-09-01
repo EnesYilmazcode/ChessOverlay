@@ -104,6 +104,37 @@ TRUST_SCALE = 2.0
 # grid at birth, and stay coarse however big the board later gets. See stale().
 MIN_LEARN_PX = NORM * 8
 
+# Confirming one named piece rather than choosing between twelve. A question a
+# pointer or a popup does not spoil, where _judge's is. See _contains.
+#
+# The margin is what refuses a square something has covered outright. A cover
+# fills one layer of the square outright, so all six pieces of that colour come
+# back contained to the last cell and none of them clears the others; the other
+# colour scores about 0.2 and is nowhere near. Contained by everything is the
+# square having stopped being evidence, and a containment score alone cannot
+# see that.
+#
+# Two measurements. Over 2525 refused squares from three games read under a
+# pointer at two sizes, a one to four square hover popup light and dark, whole
+# squares painted over and a piece a third, half and two thirds of the way
+# through its move, 0.15 confirms nothing the square is not holding and 0.10
+# confirms three. Over the 349 refused squares of the 264 obstructed captures
+# piecetest builds, where every one is offered all twelve wrong answers as well
+# as the right one, the closest a wrong belief comes is 0.1235, so 0.15 clears
+# the worst of them by 0.0195 and 0.12 does not. Above 0.15 it starts costing:
+# 0.20 gives up 58 of the 429 confirms on the games and buys nothing measured.
+#
+# The floor fired on none of it. Over 1197 obstructed captures it refused no
+# confirm the margin allowed, and the lowest containment the margin was ever
+# satisfied with is 0.5354. It is kept for what those captures do not contain:
+# on the margin alone a square holding almost nothing confirms as long as
+# nothing else is there either, a believed piece at 0.16 against rivals at zero
+# reading the same as one at 0.9 against 0.2. That is a gap in the measurement
+# rather than a case it caught, and piecetest pins the distance between the two
+# numbers so the floor cannot quietly be raised into the answers.
+CONFIRM_CONTAIN = 0.40
+CONFIRM_MARGIN = 0.15
+
 # What counts as an empty square, and where each piece is, both shared with the
 # occupancy reader. Its BRIGHT and DARK are not imported any more, because what
 # counts as a piece pixel is measured off the board here rather than fixed.
@@ -475,6 +506,38 @@ def _overlap(a, b, offset=0):
     return inter / union if union else 0.0
 
 
+def _contains(feat, template):
+    """How much of a template's ink the square actually holds.
+
+    _overlap divides by the union of the two, which the overlay moves along
+    with the intersection, so all twelve scores sink together and the winner
+    stops beating the runner up. That is the "?" this exists to answer. Here
+    the denominator is the piece's own size and nothing on the square can move
+    it, so the candidates stay comparable to each other however much ink is on
+    top of them.
+
+    It is not immune to the overlay and must not be read as if it were. The
+    mask comes from thresholding each pixel, so ink drawn over a piece replaces
+    the piece's own rather than burying it, and this falls when that happens.
+    Measured over 225 squares of the reference boards it costs the true piece a
+    median 0.016 under a cursor, 0.169 under a bigger one, and 0.614 and 0.630
+    under a panel and a covered square. What the fixed denominator buys is the
+    direction of that error: a square whose evidence has been taken away scores
+    low and is refused, and a square where enough of the piece is still drawn
+    can still clear the field, which against a moving union it cannot.
+
+    The layers where they sit in the square, never the registered pair. The
+    registration is taken from the piece's own bounding box, and an overlay
+    moves that box, so the registered layers of an obscured square describe
+    where the overlay reaches as much as where the piece does.
+    """
+    a, b = feat.masks, template.masks
+    whole = b[0].bit_count() + b[1].bit_count()
+    if not whole:
+        return 0.0
+    return ((a[0] & b[0]).bit_count() + (a[1] & b[1]).bit_count()) / whole
+
+
 def _descriptors(a, b):
     """How alike two squares are on the measurements a retexture leaves alone.
 
@@ -557,6 +620,45 @@ def _judge(feat, templates, floor=MIN_OVERLAP):
     if best.isupper() != (feat.bright > feat.dark):
         return None, score
     return best, score
+
+
+def _confirms(feat, templates, symbol):
+    """Could this square still be holding exactly this piece, with something
+    drawn on top of it? Yes or no, and never a guess at what else it is.
+
+    A narrower question than _judge's, and answerable where that one is not.
+    _contains measures the named piece against its own size rather than against
+    a union the overlay has grown, so a piece a cursor only partly hides can
+    still clear the field where the twelve scores no longer can.
+
+    The trap is that a blob contains every shape smaller than itself, and a
+    pawn is smaller than everything. Hence the second half: the named piece has
+    to be the only one the square holds and not merely one of them. That is
+    what refuses a square something has covered outright, where a whole layer
+    is filled, every piece of that colour is contained to the last cell and the
+    square has stopped being evidence.
+
+    The split mask is what lets it see colour at all. A white piece's ink is
+    nearly all in the bright layer and a black piece's in the dark one, and
+    bright is never counted against dark, so the two do not contain each other:
+    on a clean board 28 of the 32 pieces confirm themselves and none confirms
+    as the same piece in the other colour. That is what stops a pawn taken by
+    the other side's pawn being confirmed as still standing.
+
+    It may still only ever confirm a piece already believed to be there, never
+    name one. Colour it can see; which of two pieces of one colour last stood
+    on a square it cannot, and the belief is where that comes from.
+    """
+    if feat is None or symbol == "." or symbol not in templates:
+        return False
+    held = {sym: max(_contains(feat, t.feat) for t in variants)
+            for sym, variants in templates.items()}
+    got = held[symbol]
+    # Over piece types rather than symbols, for _judge's reason: one shape
+    # scored twice is not two things to be uncertain between.
+    rival = max((v for sym, v in held.items() if sym.lower() != symbol.lower()),
+                default=0.0)
+    return got >= CONFIRM_CONTAIN and got - rival >= CONFIRM_MARGIN
 
 
 def _decide(square_img, templates, levels=DEFAULT_LEVELS, floor=MIN_OVERLAP):
@@ -997,13 +1099,24 @@ class PieceReader:
         here = _signature(feats, levels, square_px)
         return MIN_OVERLAP if _trusted(self.signature, here) else MISTRUST_OVERLAP
 
-    def classify(self, board_img):
+    def classify(self, board_img, believed=None):
         """Read the whole board. Returns 8 rows of piece letters and dots, plus
         the weakest match score, which says how much to trust it.
 
         Every square is reduced first and scored after, rather than one at a
         time, because the trust test needs to have seen the whole board before
         any square is named and reducing is the expensive half.
+
+        `believed` is the grid the caller already thinks is on screen, in the
+        same screen order, and is the whole of the second question this asks. A
+        square the scores refuse is put back as "is this one named piece still
+        here", which _confirms can answer through a pointer or a popup where
+        choosing between twelve cannot. It only ever confirms, so a square the
+        caller has no belief about, or the wrong belief about, stays "?".
+
+        In this pass rather than a second one because the reducing and the
+        trust floor are both already in hand here, and doing it outside would
+        buy one narrow answer for the price of reading the whole board twice.
         """
         rows = [["."] * 8 for _ in range(8)]
         weakest = 1.0
@@ -1018,7 +1131,12 @@ class PieceReader:
             if symbol == ".":
                 continue
             if symbol is None:
-                rows[r][c] = "?"
+                held = believed[r][c] if believed else "."
+                rows[r][c] = (held if _confirms(feat, self.templates, held)
+                              else "?")
+                # Zero either way. A confirmed square was refused by the
+                # scores, so a caller reading the weakest score to decide how
+                # far to trust the board must not be told this one scored well.
                 weakest = 0.0
             else:
                 rows[r][c] = symbol

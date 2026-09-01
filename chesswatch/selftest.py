@@ -383,6 +383,63 @@ def main():
     t.check(render.render(bd2))
     r.append(check("checker rewinds a takeback", t.game.moves, LINE[:9]))
 
+    # -- something drawn over the board -----------------------------------
+    # A square the reader cannot name still stops the pass, all 64 squares or
+    # nothing. What changed is how many boards can answer all 64: the position
+    # in hand is handed to the reader, and a square the scores refuse is put
+    # back as a yes or no question about the piece believed to be standing on
+    # it, which a pointer does not spoil. On main every one of these reads
+    # "board unclear".
+    import fakeboard as _F
+
+    two_missed = render.render(tracked(8)[1])
+    for spot in ((0, 0), (0, 2), (2, 2), (3, 2), (5, 5)):
+        seen = tracked(6)[0]
+        seen.check(_F.with_pointer(two_missed, spot[0], spot[1], size=1.8))
+        r.append(check("a pointer at %s does not stop the check pass" % (spot,),
+                       seen.game.moves, LINE[:8]))
+
+    # What the belief cannot answer is refused exactly as it was. A square
+    # painted over edge to edge fills a whole layer of the mask, so every piece
+    # of that colour is equally present, nothing is confirmed on it, and the
+    # pass gives up rather than reasoning around it.
+    blanked = tracked(6)[0]
+    r.append(check("a square covered outright still stops the pass",
+                   blanked.check(_F.cover(two_missed, 0, 0)), "board unclear"))
+    r.append(check("  so nothing is written down", blanked.game.moves, LINE[:6]))
+
+    # And the belief may never become the answer. Hiding a square must not turn
+    # a board that is refused into a board that is explained. The tracker here
+    # is three plies behind and the clean frame is already too far gone to
+    # explain, so an obstruction may only ever leave it that way: Evans Gambit
+    # with b2 covered, where the pawn that went to b4 was captured there, and
+    # believing b2 still holds it would explain the board with a bishop move
+    # that never happened.
+    played = "e4 e5 Nf3 Nc6 Bc4 Bc5 b4 Bxb4".split()
+    gambit = chess.Board()
+    for san in played:
+        gambit.push_san(san)
+    shown = render.render(gambit)
+
+    def three_behind():
+        t = W.BoardTracker(directory=tempfile.mkdtemp(), reader=P.PieceReader())
+        t.feed(W.START_WHITE_VIEW)
+        board = chess.Board()
+        for san in played[:5]:
+            board.push_san(san)
+            t.feed(W.occupancy_of(board, False))
+        return t
+
+    r.append(check("the clean frame is already too far gone to explain",
+                   three_behind().check(shown),
+                   "lost the thread, waiting for a move"))
+    for hide in (_F.with_pointer(shown, 6, 1), _F.with_pointer(shown, 6, 1, 1.8),
+                 _F.with_panel(shown, 6, 1, 1), _F.cover(shown, 6, 1)):
+        blind = three_behind()
+        r.append(check("  and covering b2 does not make it explicable",
+                       (blind.check(hide), blind.game.moves),
+                       ("board unclear", played[:5])))
+
     # Joining a game already under way. A knight move leaves the board's
     # orientation ambiguous, because a rotated board is a legal game too; the
     # first pawn move settles it.
