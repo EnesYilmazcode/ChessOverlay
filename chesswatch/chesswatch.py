@@ -474,6 +474,7 @@ class App:
         self.arrow = None            # the on-screen arrow, built on demand
         self.arrow_uci = None        # the move the engine last named
         self.arrow_fen = None        # the position it named it for
+        self.arrow_mine = True       # and whose move it was, which is the colour
         self.arrow_cleared = None    # a position whose arrow was cleared by hand
         self.teacher = None          # the teach-the-pieces window, if it is open
         self.taught_sheet = self.cfg.get("sheet")   # pieces taught by hand
@@ -724,9 +725,10 @@ class App:
             self.arrow = OV.Arrow(self.root)
         self._sync_arrow()
 
-    def _show_arrow(self, uci, fen):
-        """Remember what the engine said and which position it said it about.
-        Whether that is still worth drawing is _sync_arrow's decision.
+    def _show_arrow(self, uci, fen, mine=True):
+        """Remember what the engine said, which position it said it about and
+        whose move it was. Whether that is still worth drawing is _sync_arrow's
+        decision, and mine is which of the two colours it gets.
 
         fen has no default on purpose. None is also the "nothing cleared"
         sentinel, so a call that forgot to pass one would suppress the arrow
@@ -734,6 +736,7 @@ class App:
         """
         self.arrow_uci = uci
         self.arrow_fen = fen
+        self.arrow_mine = mine
         self._sync_arrow()
 
     def _hide_arrow(self):
@@ -757,12 +760,12 @@ class App:
             return
         want = OV.wanted(self.arrow_on.get(), self.region, self.coach_fen,
                          self.arrow_fen, self.arrow_uci, self.arrow_cleared,
-                         self.flipped)
+                         self.flipped, self.arrow_mine)
         if want is None:
             self.arrow.hide()
             return
-        region, uci, flipped = want
-        self.arrow.show(region, chess.Move.from_uci(uci), flipped)
+        region, uci, flipped, mine = want
+        self.arrow.show(region, chess.Move.from_uci(uci), flipped, mine)
 
     def _clear_arrows(self):
         """Take down whatever is drawn on the board now, and keep the reply the
@@ -878,13 +881,13 @@ class App:
                         self.lbl_coach.configure(text="the game is over", fg=MUTED)
                         self._hide_arrow()
                         continue
-                    whose = ("your move" if payload["turn"] == self.my_colour
-                             else "their move")
-                    # Only your own move is worth drawing on the board. Their
-                    # move is still shown in words.
-                    self._show_arrow(payload["uci"] if whose == "your move"
-                                     or self.my_colour is None else None,
-                                     payload["fen"])
+                    # Their best move is what they are threatening, so it is
+                    # drawn too, in the other colour. Until the orientation
+                    # settles my_colour is None and nothing is yours yet, which
+                    # puts the arrow in their colour and the label agrees.
+                    mine = payload["turn"] == self.my_colour
+                    whose = "your move" if mine else "their move"
+                    self._show_arrow(payload["uci"], payload["fen"], mine)
                     # An answer that is not finished with can still change, and
                     # saying so is worth more to a learner than the depth it
                     # happens to have got to.
@@ -894,7 +897,7 @@ class App:
                                                      payload["score"],
                                                      "" if payload.get("final")
                                                      else "  ..."),
-                        fg=ACCENT if whose == "your move" else MUTED)
+                        fg=ACCENT if mine else MUTED)
         except queue.Empty:
             pass
 
