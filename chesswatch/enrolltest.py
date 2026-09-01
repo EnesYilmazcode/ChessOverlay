@@ -637,9 +637,11 @@ def stub_app(reader):
         colour_choice=types.SimpleNamespace(get=lambda: "auto"),
         coach_on=types.SimpleNamespace(get=lambda: False),
         arrow_on=types.SimpleNamespace(get=lambda: True),
+        think_choice=types.SimpleNamespace(get=lambda: "1s"),
         taught_sheet=None,
         lbl_check=Blank(),
         worker=types.SimpleNamespace(reader=reader))
+    app._think_seconds = lambda: CW.App._think_seconds(app)
     app._save_config = lambda: CW.App._save_config(app)
     app._load_config = lambda: CW.App._load_config(app)
     return app
@@ -777,7 +779,7 @@ def wiring():
     src = {name: inspect.getsource(getattr(CW.App, name))
            for name in ("_render", "_drain", "_drain_coach", "_stop", "_start",
                         "_toggle_arrow", "_toggle_coach", "_clear_arrows",
-                        "_show_arrow", "_sync_arrow", "_use_taught")}
+                        "_show_arrow", "_sync_arrow", "_use_taught", "_build")}
 
     check("_render finishes every frame by syncing the arrow",
           src["_render"].rstrip().endswith("self._sync_arrow()"), True)
@@ -806,6 +808,8 @@ def wiring():
           [n for n in src if ".arrow.show(" in src[n]], ["_sync_arrow"])
     check("a taught sheet is handed to every worker that is started",
           "_use_taught" in src["_start"], True)
+    check("the think time out of the config file goes through the clamp",
+          "CO.nearest_think(" in src["_build"], True)
 
     esrc = inspect.getsource(E)
     check("enroll builds a root only for its own standalone run",

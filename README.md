@@ -40,9 +40,9 @@ with **pick board manually** and everything else carries on as normal.
 
 | Folder | What it is | State |
 | --- | --- | --- |
-| [`chesswatch/`](chesswatch/) | Screen recorder. Finds the board, reads it, saves PGN + JSON. | Finished. 78 headless checks plus two on-screen tests. |
+| [`chesswatch/`](chesswatch/) | Screen recorder. Finds the board, reads it, saves PGN + JSON. | Finished. 87 headless checks plus two on-screen tests. |
 | [`chesswatch/position.py`](chesswatch/position.py) | Picks all 64 squares as one legal position instead of one at a time. | Works. 29 checks. Nothing calls it yet. |
-| [`chesswatch/coach.py`](chesswatch/coach.py) | Stockfish on the position being watched, in plain words. | Works. 18 checks. Off by default. |
+| [`chesswatch/coach.py`](chesswatch/coach.py) | Stockfish on the position being watched, read while it thinks. | Works. 52 checks. Off by default. |
 | [`chesswatch/overlay.py`](chesswatch/overlay.py) | That move drawn on the real board, click-through. | Works. 16 checks, measured on screen. |
 | [`holochess/`](holochess/) | Local board, Stockfish 18, best move as a hologram arrow. | Works. 17 checks. |
 
@@ -81,10 +81,18 @@ It names the piece and both squares rather than only the notation, says what a
 capture takes and when a move gives check, and counts a forced mate in moves.
 That is aimed at a player who has not learned to read `Nxe5+` yet.
 
-The engine runs on its own thread with a 300 ms budget, so the reader never
-waits for it, and an answer to a position that has already been played past is
-thrown away rather than shown against the wrong board. The switch is remembered
-in `config.json`.
+The engine runs on its own thread and is read while it is still thinking, so
+the reader never waits for it and neither do you: a first answer is on the
+label in about a hundredth of a second and improves from there. One that is not
+the last word yet ends in `...`. An answer to a position that has already been
+played past is thrown away rather than shown against the wrong board.
+
+**think** sets how long the engine gets on one position: 0.3, 1 or 2.5 seconds.
+Because the first answer arrives at once either way, a longer think does not
+make you wait, it only searches deeper on a board you are still sitting in
+front of. It is bounded rather than open ended on purpose, since a search left
+running while you decide on a move would hold a whole core for as long as you
+took. Both switches and the think time are remembered in `config.json`.
 
 Tick **arrow on board** as well and the move is drawn on the board itself, over
 whatever program is showing it. The window is click-through, so it does not get
@@ -185,8 +193,8 @@ happens to allow.
 
 ```
 cd chesswatch
-python selftest.py      78 headless checks, including real screenshots
-python coachtest.py     18 checks on the engine wrapper and its label
+python selftest.py      87 headless checks, including real screenshots
+python coachtest.py     52 checks on the engine wrapper and its label
 python overlaytest.py   17 checks that the arrow cannot corrupt a reading
 python settletest.py    move animation, driven off a real clock
 python livetest.py      plays whole games past the real capture worker
