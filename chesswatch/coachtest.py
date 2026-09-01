@@ -138,32 +138,69 @@ def label_checks(path):
              "path": None, "saved": 0, "joined": False, "board": "",
              "check": "", "templates": "", "fen": None}
 
-    app.coach_on.set(True)
-    app._toggle_coach()
+    app.coaching.set(True)
+    app._toggle_coaching()
     check("switching it on starts the engine", app.coach is not None, True)
 
     mate = "6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1"
     frame["fen"] = mate
     app._render(frame)
     end = time.time() + 15
-    while time.time() + 0 < end and "thinking" in app.lbl_coach.cget("text"):
+    while time.time() + 0 < end and "thinking" in app.lbl_detail.cget("text"):
         app._drain_coach()
         root.update()
         time.sleep(0.05)
-    check("your move is labelled as yours",
-          app.lbl_coach.cget("text").startswith("your move  Ra8#"), True)
+    check("the move is the big thing on screen", app.lbl_move.cget("text"), "Ra8#")
+    check("  said in words underneath it",
+          app.lbl_detail.cget("text"), "rook: a1 to a8, with check")
+    check("  and whose move it is", app.lbl_turn.cget("text"), "your move")
+    def points(widget):
+        return max(int(part) for part in str(widget.cget("font")).split()
+                   if part.isdigit())
+
+    check("  the move is the biggest text in the window",
+          points(app.lbl_move) > max(points(w) for w in
+                                     (app.lbl_detail, app.lbl_turn,
+                                      app.lbl_status, app.lbl_result)), True)
 
     # The same position with black to play is the opponent's move, and the
     # advice for the position just left behind must not be shown against it.
-    app.lbl_coach.configure(text="stale")
+    app.lbl_move.configure(text="stale")
     app.coach_fen = "something else entirely"
     app._drain_coach()
     check("advice for a position already played past is dropped",
-          app.lbl_coach.cget("text"), "stale")
+          app.lbl_move.cget("text"), "stale")
 
-    app.coach_on.set(False)
-    app._toggle_coach()
-    check("switching it off clears the label", app.lbl_coach.cget("text"), "")
+    # One switch now. It used to be two, and turning the arrow on already
+    # force-enabled the advice behind it, so they were never independent.
+    check("there is one coaching switch, not two",
+          (hasattr(app, "coaching"), hasattr(app, "coach_on"),
+           hasattr(app, "arrow_on")), (True, False, False))
+    app.coaching.set(False)
+    app._toggle_coaching()
+    check("switching it off clears the move", app.lbl_move.cget("text"), "")
+
+    # The drawer holds everything that exists to debug the reader.
+    check("the diagnostics start hidden", app.drawer.winfo_manager(), "")
+    app._toggle_drawer()
+    check("  and the drawer shows them", app.drawer.winfo_manager(), "pack")
+    app._toggle_drawer()
+    check("  and puts them away again", app.drawer.winfo_manager(), "")
+
+    # A missing engine has to say so where the move would have been, rather
+    # than silently unticking a box and leaving the window empty.
+    engine, running = CO.find_engine, app.coach
+    try:
+        CO.find_engine = lambda: None
+        app.coach = None
+        app.coaching.set(True)
+        app._toggle_coaching()
+    finally:
+        CO.find_engine = engine
+        app.coach = running
+    check("a missing engine says so in the move's place",
+          ("Stockfish" in app.lbl_detail.cget("text"), app.coaching.get()),
+          (True, False))
 
     app.coach.stop()
     root.destroy()
