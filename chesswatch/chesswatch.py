@@ -371,6 +371,7 @@ class App:
         self.colour_choice = tk.StringVar(value=self.cfg.get("colour", "auto"))
         self.coach = None            # started the first time it is switched on
         self.coach_fen = None        # the position the advice on screen is for
+        self.coach_uci = None        # the move the arrow is currently drawn for
         self.my_colour = None
         self.arrow = None            # the on-screen arrow, built on demand
         self.region = None
@@ -443,6 +444,18 @@ class App:
                        command=self._toggle_arrow, bg=BG, fg=MUTED, selectcolor=BG,
                        activebackground=BG, activeforeground=FG,
                        font=("Segoe UI", 8), cursor="hand2").pack(side="left")
+        tk.Label(switches, text="think:", bg=BG, fg=MUTED,
+                 font=("Segoe UI", 8)).pack(side="left", padx=(10, 2))
+        self.think_choice = tk.StringVar(
+            value="%gs" % float(self.cfg.get("think_seconds", 1.0)))
+        think = tk.OptionMenu(switches, self.think_choice,
+                              *["%gs" % s for s in CO.THINK_CHOICES],
+                              command=self._set_think)
+        think.configure(bg=BG, fg=MUTED, activebackground=BG, activeforeground=FG,
+                        highlightthickness=0, relief="flat", cursor="hand2",
+                        font=("Segoe UI", 8), indicatoron=0, padx=6, pady=0)
+        think["menu"].configure(bg=PANEL, fg=FG, font=("Segoe UI", 8))
+        think.pack(side="left")
 
         self.lbl_coach = tk.Label(self.root, text="", bg=BG, fg=ACCENT,
                                   font=("Segoe UI", 10, "bold"), anchor="w")
@@ -546,6 +559,7 @@ class App:
         if not self.coach_on.get():
             self.lbl_coach.configure(text="")
             self.coach_fen = None
+            self.coach_uci = None
             if self.arrow:
                 self.arrow.hide()
             return
@@ -556,9 +570,20 @@ class App:
                 self.lbl_coach.configure(
                     text="no Stockfish found. See the README.", fg=WARN)
                 return
-            self.coach = CO.Coach(path)
+            self.coach = CO.Coach(path, think_seconds=self._think_seconds())
             self.coach.start()
         self.lbl_coach.configure(text="thinking...", fg=MUTED)
+
+    def _think_seconds(self):
+        return float(self.think_choice.get()[:-1])
+
+    def _set_think(self, _value=None):
+        """A longer think is a better answer, not a slower one: it only
+        changes how long the engine keeps going on a board you are still
+        sitting in front of."""
+        self._save_config()
+        if self.coach is not None:
+            self.coach.think_seconds = self._think_seconds()
 
     def _toggle_arrow(self):
         """The arrow needs the coach, since it draws what the coach found."""
@@ -627,18 +652,30 @@ class App:
                         continue
                     if payload.get("over"):
                         self.lbl_coach.configure(text="the game is over", fg=MUTED)
+                        self.coach_uci = None
                         self._show_arrow(None)
                         continue
                     whose = ("your move" if payload["turn"] == self.my_colour
                              else "their move")
                     # Only your own move is worth drawing on the board. Their
                     # move is still shown in words.
-                    self._show_arrow(payload["uci"] if whose == "your move"
-                                     or self.my_colour is None else None)
+                    uci = (payload["uci"] if whose == "your move"
+                           or self.my_colour is None else None)
+                    # Redrawing the same arrow makes it blink, and an answer
+                    # the engine is still working on repeats the same move
+                    # most of the time.
+                    if uci != self.coach_uci:
+                        self.coach_uci = uci
+                        self._show_arrow(uci)
+                    # An answer that is not finished with can still change, and
+                    # saying so is worth more to a learner than the depth it
+                    # happens to have got to.
                     self.lbl_coach.configure(
-                        text="%s  %s  (%s)  %s" % (whose, payload["san"],
-                                                   payload["text"],
-                                                   payload["score"]),
+                        text="%s  %s  (%s)  %s%s" % (whose, payload["san"],
+                                                     payload["text"],
+                                                     payload["score"],
+                                                     "" if payload.get("final")
+                                                     else "  ..."),
                         fg=ACCENT if whose == "your move" else MUTED)
         except queue.Empty:
             pass
@@ -719,10 +756,17 @@ class App:
         if self.coach is not None and self.coach_on.get():
             if f.get("fen") and f["result"] == "*":
                 self.coach.ask(f["fen"])
-                self.coach_fen = f["fen"]
+                if f["fen"] != self.coach_fen:
+                    # The arrow belongs to the position it was found for, so it
+                    # comes down as soon as the board moves on and goes back up
+                    # a moment later on the new one.
+                    self.coach_fen = f["fen"]
+                    self.coach_uci = None
+                    self._show_arrow(None)
             else:
                 self.lbl_coach.configure(text="")
                 self.coach_fen = None
+                self.coach_uci = None
                 self._show_arrow(None)
 
         if f["path"]:
@@ -742,6 +786,7 @@ class App:
             json.dump({"board_region": self.board_region,
                        "colour": self.colour_choice.get(),
                        "coach": bool(self.coach_on.get()),
+                       "think_seconds": self._think_seconds(),
                        "arrow": bool(self.arrow_on.get())}, fh, indent=2)
         os.replace(tmp, CONFIG_PATH)
 
