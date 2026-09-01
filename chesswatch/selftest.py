@@ -469,6 +469,51 @@ def main():
     r.append(check("  reads a board shrunk to 240px", worst is not None and worst <= 240,
                    True))
 
+    # -- board widths that do not divide by 8 ------------------------------
+    # Squares then land on fractional pixel boundaries, so one square's sampled
+    # window can start a pixel out from its neighbour's.
+    odd = [size for size in (823, 501, 333, 259, 205)
+           if W.read_occupancy(full.resize((size, size), Image.LANCZOS)) != want]
+    r.append(check("  reads a board whose width is not a multiple of 8", odd, []))
+
+    # -- the arithmetic at one square's decision boundaries -----------------
+    # Real captures never happen to land on a boundary, so these counts are
+    # placed pixel by pixel. MIN_COVERAGE is 4.86 pixels out of 324, so 4
+    # bright pixels is an empty square and 5 is not, and an exact tie reads B,
+    # not W. Every border is filled with alternating black and white, so a
+    # reading that strays outside the middle 56% cannot come back ".".
+    step = W.GRID // 8
+    margin = int(step * 0.22)
+    inset = step - 2 * margin
+    area = inset * inset
+    on = next(n for n in range(area + 1) if n / area >= W.MIN_COVERAGE)
+    under, half = on - 1, area // 2
+    counts = [
+        [(n, 0) for n in range(8)],
+        [(0, n) for n in range(8)],
+        [(n, n) for n in range(8)],
+        [(n + 1, n) for n in range(8)],
+        [(n, n + 1) for n in range(8)],
+        [(area, 0), (0, area), (half, half), (half + 1, half - 1),
+         (half - 1, half + 1), (area - on, on), (on, area - on), (1, area - 1)],
+        [(half - 1, half), (half, half - 1), (half - 2, half + 2),
+         (half + 2, half - 2), (on, on), (under, under), (0, on), (on, 0)],
+        [(0, 0), (0, under), (under, 0), (0, on), (on, 0), (under, on),
+         (on, under), (under, under)],
+    ]
+    pixels = bytearray([0, 255] * (W.GRID * W.GRID // 2))
+    for row, pairs in enumerate(counts):
+        for col, (bright, dark) in enumerate(pairs):
+            fill = [255] * bright + [0] * dark + [150] * (area - bright - dark)
+            top, left = row * step + margin, col * step + margin
+            for i, value in enumerate(fill):
+                pixels[(top + i // inset) * W.GRID + left + i % inset] = value
+    r.append(check("  counts the coverage line, the tie and the border exactly",
+                   W.read_occupancy(Image.frombytes("L", (W.GRID, W.GRID),
+                                                    bytes(pixels))),
+                   [".....WWW", ".....BBB", ".....BBB", "....WWWW",
+                    "....BBBB", "WBBWBWBB", "BWBWB.BW", "...BWBW."]))
+
     # -- real screenshots -------------------------------------------------
     shots = sys.argv[1:] or [shot(n) for n in ("1", "2", "4", "5")]
     print()

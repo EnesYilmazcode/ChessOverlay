@@ -264,7 +264,7 @@ rectangle is in use.
 
 ## Checking it still works
 
-    python selftest.py      76 checks, including real screenshots
+    python selftest.py      78 checks, including real screenshots
     python coachtest.py     18 checks on the engine wrapper and its label
     python overlaytest.py   16 checks that the arrow cannot corrupt a reading
     python settletest.py    move animation, with the screen on a clock
