@@ -1018,10 +1018,41 @@ class BoardTracker:
         self._pending = None
 
     def learn_pieces(self, board_img):
-        """Relearn the piece templates from a position we are certain about."""
+        """Relearn the piece templates from a position we are certain about.
+
+        Needs all twelve piece types on the board at once, so the caller uses
+        it at the start of a game. A game joined part way through does not
+        reach this, which is why relearn_pieces exists.
+        """
         if self.reader is None or self.board is None:
             return False
         return self.reader.learn(board_img, self.board, self.flipped)
+
+    def relearn_pieces(self, board_img):
+        """Refit the templates mid game, when the board has changed size.
+
+        Needs all twelve piece types, same as learn_pieces, which survives far
+        longer than the starting position: over four master games it held for
+        137 of 151 plies. Endgames are what it cannot do. Failing costs nothing
+        though, because pieces.relearn only drops the templates in hand when
+        they are measurably worse than the bundled sheet, so this is safe to
+        call on spec, and it is the only route to learned templates for a game
+        joined part way through.
+
+        The trap is that learn() names every square out of self.board, so a
+        picture that has moved on since teaches it pieces off squares they have
+        already left. One ply of lag changed the templates on about half the
+        positions in those four games and cost up to 8 squares of 64, as wrong
+        pieces rather than as "?", and a resize is itself a common way to fall
+        behind. Occupancy is the test because a ply always empties a square.
+        self.stuck is not: it stays set after the screen agrees again, until
+        check() clears it.
+        """
+        if self.reader is None or self.board is None:
+            return False
+        if read_occupancy(board_img) != occupancy_of(self.board, self.flipped):
+            return False
+        return self.reader.relearn(board_img, self.board, self.flipped)
 
     def ascii_board(self):
         return "" if self.board is None else str(self.board)

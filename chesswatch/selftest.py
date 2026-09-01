@@ -445,6 +445,68 @@ def main():
     r.append(check("  and it joined at the right position",
                    told.board.board_fen(), bd5.board_fen()))
 
+    # -- refitting the templates part way through a game -------------------
+    # The app calls relearn_pieces every time the board on screen changes size.
+    # That means it gets called on positions it cannot possibly learn, so what
+    # a failure costs matters more here than what a success buys.
+    ENDGAME = "8/5k2/8/8/8/3K4/4P3/8 w - - 0 1"
+
+    r.append(check("no reader means no relearn rather than a crash",
+                   W.BoardTracker(directory=tempfile.mkdtemp())
+                   .relearn_pieces(render.render(chess.Board())), False))
+    r.append(check("  nor is there one before a position is locked on",
+                   W.BoardTracker(directory=tempfile.mkdtemp(),
+                                  reader=P.PieceReader())
+                   .relearn_pieces(render.render(chess.Board())), False))
+
+    mid, bmid = tracked(6)
+    r.append(check("a midgame position still holds all twelve piece types",
+                   mid.relearn_pieces(
+                       render.render(bmid).resize((560, 560), Image.LANCZOS)),
+                   True))
+    r.append(check("  so the templates end up fitted to the size on screen",
+                   (mid.reader.source, mid.reader.learned_size),
+                   ("learned from your screen", 560)))
+
+    # An endgame can never be relearned: black is down to a king and a pawn, so
+    # four of the twelve types are gone for good. Every resize from here on will
+    # try and fail, and none of them may cost the templates already in hand.
+    kept = W.BoardTracker(directory=tempfile.mkdtemp(), reader=P.PieceReader())
+    kept.feed(W.START_WHITE_VIEW)
+    kept.learn_pieces(render.render(chess.Board()))
+    kept.board = chess.Board(ENDGAME)
+    held = dict(kept.reader.templates)
+    r.append(check("an endgame cannot be relearned",
+                   kept.relearn_pieces(render.render(kept.board)), False))
+    r.append(check("  and failing leaves a good learned set alone",
+                   (kept.reader.source, kept.reader.templates == held),
+                   ("learned from your screen", True)))
+
+    # A frame the fast reader has fallen behind on carries a picture of one
+    # position and a label for another, so it has to be refused outright.
+    lag, blag = tracked(6)
+    lag.relearn_pieces(render.render(blag))
+    ahead = blag.copy()
+    ahead.push_san(LINE[6])
+    r.append(check("a picture the tracker has fallen behind on is refused",
+                   lag.relearn_pieces(render.render(ahead)), False))
+    r.append(check("  leaving the templates it did learn in place",
+                   (lag.reader.source, lag.reader.learned_size),
+                   ("learned from your screen", 824)))
+
+    # The exception, and the only reason relearn is allowed to throw anything
+    # away: a set learned on a board with fewer screen pixels per square than
+    # the grid they are compared on was blurred at birth, and reads a bigger
+    # board worse than the bundled sheet does.
+    tiny = W.BoardTracker(directory=tempfile.mkdtemp(), reader=P.PieceReader())
+    tiny.feed(W.START_WHITE_VIEW)
+    tiny.learn_pieces(render.render(chess.Board()).resize((200, 200),
+                                                          Image.LANCZOS))
+    tiny.board = chess.Board(ENDGAME)
+    r.append(check("  but an undersized set is dropped rather than kept",
+                   (tiny.relearn_pieces(render.render(tiny.board)),
+                    tiny.reader.source), (False, "bundled")))
+
     # -- small browser windows --------------------------------------------
     # A narrow window hides the move list but shrinks the board too, so check
     # how far down it still reads. LANCZOS, because a real small board is
