@@ -41,32 +41,41 @@ MIN_OVERLAP = 0.30        # below this, call it unrecognised rather than guess
 # usable band is narrow and 0.05 sits well inside it.
 MIN_MARGIN = 0.05
 
+# Templates learned on a board smaller than this were upsampled into the NORM
+# grid at birth, and stay coarse however big the board later gets. See stale().
+MIN_LEARN_PX = NORM * 8
+
 
 # Same cutoffs the occupancy reader uses, so the two always agree on what counts
 # as a piece pixel.
 from watcher import BRIGHT, DARK, MIN_COVERAGE, grid_of
 
 
-def _bits(mask):
-    return bin(mask).count("1")
+_PIECE_LUT = [255 if (v > BRIGHT or v < DARK) else 0 for v in range(256)]
 
 
 def _mask(square_img):
     """A square as one integer, one bit per pixel of the 40x40 grid.
 
-    A bitset rather than a list of bytes because a board is now scored against
-    all twelve templates instead of six, and & and | do a whole 1600 pixel
-    intersection in one operation. On the 824px reference board that is 14 ms
-    per board against the 26 ms the old pairwise loop took over half as many
-    templates.
+    A bitset rather than a list of bytes so that & and | intersect all 1600
+    pixels at once. That is where the speed is, and all of it lands in
+    _overlap: scoring the 824px reference board against twelve templates went
+    from 50 ms to 0.2 ms. Building the mask is no part of that win. Spelled as
+    a string of ones and zeros it was slower than the byte list it replaced,
+    and point() only gets that back by thresholding in C, 7.9 ms a board down
+    to 2.4 ms.
+
+    Rows of a mode "1" image pad up to a whole byte, and Pillow zeroes the
+    padding, so a NORM that is not a multiple of 8 changes what the integer is
+    without changing any score: zero bits add nothing to an and, an or or a
+    popcount.
     """
     grey = square_img.convert("L").resize((NORM, NORM), Image.NEAREST)
-    return int("".join("1" if (v > BRIGHT or v < DARK) else "0"
-                       for v in grey.getdata()), 2)
+    return int.from_bytes(grey.point(_PIECE_LUT, "1").tobytes(), "big")
 
 
 def _coverage(mask):
-    return _bits(mask) / (NORM * NORM)
+    return mask.bit_count() / (NORM * NORM)
 
 
 def _is_white(square_img):
@@ -76,9 +85,14 @@ def _is_white(square_img):
 
 
 def _overlap(a, b):
-    """Intersection over union of two binary masks."""
-    union = _bits(a | b)
-    return _bits(a & b) / union if union else 0.0
+    """Intersection over union of two binary masks.
+
+    bit_count() is a C popcount and wants Python 3.10 or newer. Worth the
+    floor: bin(mask).count("1") builds a 1600 character string every time, and
+    this runs 768 times a board.
+    """
+    union = (a | b).bit_count()
+    return (a & b).bit_count() / union if union else 0.0
 
 
 def squares(board_img, size=None):
@@ -176,23 +190,34 @@ class PieceReader:
     def relearn(self, board_img, board, flipped=False):
         """Learn again part way through a game, after the window changed size.
 
-        Same rules as learn(), but the failure is not silent. Templates learned
-        at a size that is no longer on screen are worse than the bundled sheet,
-        because every mask is normalised by resampling and the scores drop, so
-        a relearn that cannot see all twelve pieces falls back to the sheet.
+        Same rules as learn(). Failing costs nothing unless what we are already
+        holding is worse than the sheet, so the caller can just ask.
         """
         if self.learn(board_img, board, flipped):
             return True
-        self.use_bundled()
+        if self.stale(board_img.size[0]):
+            self.use_bundled()
         return False
 
-    def stale(self, board_size, tolerance=0.03):
-        """True when the board on screen is no longer the size the templates
-        were learned at, which is the cue to relearn. The bundled sheet is never
-        stale, it was not learned from any particular window."""
+    def stale(self, board_size):
+        """True when the templates in hand are worse than the bundled sheet.
+
+        Not "the window changed size". Measured over 152 learn-size and
+        read-size pairs, a set learned on a board of at least MIN_LEARN_PX read
+        every board from 200px to 1600px with no loss against the sheet, in
+        either direction, so a size change on its own is never a reason to
+        throw one away. What does cost is learning below that floor and then
+        growing: at 240px it gives up 3.0 points to the sheet, at 200px 14.4,
+        and it is the only case in the whole study that ever named a WRONG
+        piece rather than "?".
+
+        The floor is NORM rather than a tuned number. Under it a square held
+        fewer screen pixels than the grid its mask is compared on, so the
+        template was an upsample the moment it was learned and stays coarse.
+        """
         if self.learned_size is None:
             return False
-        return abs(board_size - self.learned_size) > self.learned_size * tolerance
+        return self.learned_size < MIN_LEARN_PX and board_size > self.learned_size
 
     def classify(self, board_img):
         """Read the whole board. Returns 8 rows of piece letters and dots, plus

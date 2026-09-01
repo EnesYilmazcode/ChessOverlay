@@ -200,6 +200,7 @@ class Worker(threading.Thread):
         self._frames = 0
         self._since_check = 0
         self._accepted = None      # the last reading we acted on
+        self._board_px = None      # board width the templates were last fitted to
         self.settle_stats = [0, 0]  # readings taken, readings acted on
 
     def run(self):
@@ -240,6 +241,22 @@ class Worker(threading.Thread):
         else:
             self._quiet += 1
 
+        # A resize is the one moment mid game worth spending a relearn on, and
+        # a width already fitted is not worth a second one. New widths arrive
+        # only as fast as _should_refind re-hunts the board, so dragging the
+        # window edge with a different findable width on screen every single
+        # frame measured 7 relearns over 172 frames, at 4.7 ms against a frame
+        # of 120. A newgame has just refitted them off a starting position.
+        #
+        # The width is recorded even when relearn_pieces refuses the frame, so
+        # a resize seen while the reader is behind costs one skipped relearn
+        # rather than a retry every frame. Skipping is the cheap side: a set
+        # learned at another size reads this board at no measured cost.
+        resized = self._board_px is not None and shot.size[0] != self._board_px
+        self._board_px = shot.size[0]
+        if resized and event != "newgame":
+            self.tracker.relearn_pieces(shot)
+
         if self._run_check(shot, event):
             if self.tracker.game and self.tracker.game.moves:
                 self.tracker.game.save()
@@ -267,7 +284,14 @@ class Worker(threading.Thread):
 
     def _run_check(self, shot, event):
         """The piece-level pass. Runs on a timer, whenever the fast reader has
-        been stuck for a while, and whenever you press the button."""
+        been stuck for a while, and whenever you press the button.
+
+        The button also refreshes the templates, always rather than only when
+        they look wrong for this board. Nothing on screen says the bundled
+        sheet is a poor likeness of your pieces, so a condition would refuse
+        the one game that most needs it: joined part way through, still on the
+        sheet, with no learned size to be judged stale against.
+        """
         asked = self.check_now.is_set()
         self._since_check += 1
         due = (asked
@@ -277,6 +301,8 @@ class Worker(threading.Thread):
             return False
         self._since_check = 0
         self.check_now.clear()
+        if asked:
+            self.tracker.relearn_pieces(shot)
         before = self.tracker.game.moves if self.tracker.game else None
         result = self.tracker.check(shot)
         return result not in ("position confirmed", "board unclear") or \
@@ -473,7 +499,8 @@ class App:
     def _check_now(self):
         if self.worker:
             self.worker.check_now.set()
-            self.lbl_check.configure(text="checking every square...", fg=MUTED)
+            self.lbl_check.configure(text="relearning the pieces, then checking "
+                                          "every square...", fg=MUTED)
 
     def _set_colour(self):
         self._save_config()
@@ -680,9 +707,12 @@ class App:
             self.board_box.insert("1.0", f["board"] or "(no position yet)")
             self.board_box.configure(state="disabled")
 
+        # Which templates are reading the board decides how much the rest of
+        # this line is worth, so it shows on its own and not only when there
+        # happens to be a check note to hang it off.
         note = f.get("check") or ""
-        if f.get("templates") and note:
-            note += "   (pieces %s)" % f["templates"]
+        if f.get("templates"):
+            note = (note + "   " if note else "") + "(pieces %s)" % f["templates"]
         self.lbl_check.configure(
             text=note, fg=ACCENT if "confirmed" in note else MUTED)
 
