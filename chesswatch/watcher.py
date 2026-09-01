@@ -219,29 +219,47 @@ def find_board(img, min_grid=0.78):
 
 # ------------------------------------------------------- reading the board
 
+# One byte per grey level, tagging it 1 bright, 2 dark or 0 neither, so both
+# tallies come off the bytes in one C pass. Tags are counted, never averaged: an
+# 8 bit BOX resize of the same window looks equivalent and is not, because
+# 255/324 is under one unit per pixel, so two different counts land on the same
+# byte and a bright square reads as a tie, which scores B.
+PIXEL_TAG = bytes(1 if v > BRIGHT else (2 if v < DARK else 0) for v in range(256))
+
+
 def read_occupancy(board_img):
     """Classify all 64 squares. Returns 8 strings of W/B/. , top screen row
-    first, each string running left to right across the screen."""
-    small = board_img.convert("L").resize((GRID, GRID), Image.NEAREST)
-    px = small.load()
+    first, each string running left to right across the screen.
+
+    Only the middle 56% of each square is counted. The border is where the
+    coordinate labels, the move badge and the neighbouring square's antialiased
+    seam live, and letting those vote would put pieces on empty squares.
+
+    That window is one bytes.count rather than 324 pixel reads. A row of squares
+    cropped to its sampled pixel rows and transposed is a band 18 bytes wide, so
+    each board column becomes one 18 byte row and a square's 18 columns become a
+    single unbroken 324 byte run.
+    """
+    # Greyscale after the downscale, not before. NEAREST picks whole source
+    # pixels and the conversion is per pixel, so the two commute exactly, and
+    # this converts 65536 pixels instead of the whole board.
+    small = board_img.resize((GRID, GRID), Image.NEAREST).convert("L")
     step = GRID // 8
     margin = int(step * 0.22)
-    lo, hi = margin, step - margin
-    area = (hi - lo) ** 2
+    inset = step - 2 * margin
+    area = inset * inset
 
     rows = []
     for r in range(8):
+        top = r * step + margin
+        band = small.crop((0, top, GRID, top + inset)).transpose(
+            Image.TRANSPOSE).tobytes().translate(PIXEL_TAG)
         line = []
         for c in range(8):
-            bright = dark = 0
-            for y in range(r * step + lo, r * step + hi):
-                for x in range(c * step + lo, c * step + hi):
-                    v = px[x, y]
-                    if v > BRIGHT:
-                        bright += 1
-                    elif v < DARK:
-                        dark += 1
-            bf, df = bright / area, dark / area
+            at = (c * step + margin) * inset
+            end = at + area
+            bf = band.count(1, at, end) / area
+            df = band.count(2, at, end) / area
             if bf < MIN_COVERAGE and df < MIN_COVERAGE:
                 line.append(".")
             else:

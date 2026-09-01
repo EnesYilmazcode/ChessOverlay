@@ -38,7 +38,7 @@ with **pick board manually** and everything else carries on as normal.
 
 | Folder | What it is | State |
 | --- | --- | --- |
-| [`chesswatch/`](chesswatch/) | Screen recorder. Finds the board, reads it, saves PGN + JSON. | Finished. 76 headless checks plus two on-screen tests. |
+| [`chesswatch/`](chesswatch/) | Screen recorder. Finds the board, reads it, saves PGN + JSON. | Finished. 78 headless checks plus two on-screen tests. |
 | [`chesswatch/coach.py`](chesswatch/coach.py) | Stockfish on the position being watched, in plain words. | Works. 18 checks. Off by default. |
 | [`chesswatch/overlay.py`](chesswatch/overlay.py) | That move drawn on the real board, click-through. | Works. 16 checks, measured on screen. |
 | [`holochess/`](holochess/) | Local board, Stockfish 18, best move as a hologram arrow. | Works. 17 checks. |
@@ -177,7 +177,7 @@ happens to allow.
 
 ```
 cd chesswatch
-python selftest.py      76 headless checks, including real screenshots
+python selftest.py      78 headless checks, including real screenshots
 python coachtest.py     18 checks on the engine wrapper and its label
 python overlaytest.py   16 checks that the arrow cannot corrupt a reading
 python settletest.py    move animation, driven off a real clock
