@@ -52,6 +52,11 @@ STILL_A_BOARD = 0.7
 CHECK_EVERY = 35
 STUCK_CHECK = 6
 
+# And sooner still when the last-move highlight says the wrong side just moved.
+# Two frames rather than none so a check that cannot settle the argument is not
+# then run on every frame after it.
+DISPUTE_CHECK = 2
+
 # Settling. When the board looks different from the last thing we accepted, the
 # new reading has to HOLD for this long before it is believed.
 #
@@ -257,7 +262,7 @@ class Worker(threading.Thread):
         if resized and event != "newgame":
             self.tracker.relearn_pieces(shot)
 
-        if self._run_check(shot, event):
+        if self._run_check(shot, occ, event):
             if self.tracker.game and self.tracker.game.moves:
                 self.tracker.game.save()
 
@@ -282,9 +287,10 @@ class Worker(threading.Thread):
             "templates": self.reader.source,
         }))
 
-    def _run_check(self, shot, event):
+    def _run_check(self, shot, occ, event):
         """The piece-level pass. Runs on a timer, whenever the fast reader has
-        been stuck for a while, and whenever you press the button.
+        been stuck for a while, whenever the highlight says we have the wrong
+        side to move, and whenever you press the button.
 
         The button also refreshes the templates, always rather than only when
         they look wrong for this board. Nothing on screen says the bundled
@@ -296,7 +302,9 @@ class Worker(threading.Thread):
         self._since_check += 1
         due = (asked
                or self._since_check >= CHECK_EVERY
-               or (self.tracker.stuck and self._since_check >= STUCK_CHECK))
+               or (self.tracker.stuck and self._since_check >= STUCK_CHECK)
+               or (self._since_check >= DISPUTE_CHECK
+                   and self.tracker.turn_disputed(occ, shot)))
         if not due or event:
             return False
         self._since_check = 0

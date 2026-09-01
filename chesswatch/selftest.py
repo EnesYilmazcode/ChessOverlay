@@ -445,6 +445,88 @@ def main():
     r.append(check("  and it joined at the right position",
                    told.board.board_fen(), bd5.board_fen()))
 
+    # -- the last-move highlight -------------------------------------------
+    # A second opinion on whether the tracker is still in step with the screen,
+    # and the only one it has that does not come from the same occupancy it has
+    # already believed. It never moves a game on, so every one of these is a
+    # question about what it REFUSES as much as what it answers.
+    HL = W.DEFAULT_HIGHLIGHT
+    r.append(check("the highlight colours come out of the square colours",
+                   HL, ((245, 246, 130), (185, 202, 67))))
+
+    def lit_tracker(board, flipped=False):
+        t = W.BoardTracker(directory=tempfile.mkdtemp())
+        t.board = board.copy()
+        t.flipped = flipped
+        t.game = W.Game("black" if flipped else "white", t.directory)
+        return t
+
+    def mover(board, lit, flipped=False, highlight=HL):
+        img = render.render(board, flipped, lit, highlight)
+        return lit_tracker(board, flipped).last_mover(W.read_occupancy(img), img)
+
+    bh = chess.Board()
+    bh.push_san("e4")
+    r.append(check("finds the two squares of the move just played",
+                   W.highlight_squares(render.render(bh, lit=(chess.E2, chess.E4),
+                                                     highlight=HL)),
+                   [(4, 4), (6, 4)]))
+    r.append(check("  and nothing at all before a move is played",
+                   W.highlight_squares(render.render(chess.Board())), []))
+    r.append(check("the occupied one of the two lit squares says who moved",
+                   mover(bh, (chess.E2, chess.E4)), chess.WHITE))
+    r.append(check("  which holds with the board turned round",
+                   mover(bh, (chess.E2, chess.E4), True), chess.WHITE))
+
+    # Castling moves two pieces, so which pair chess.com lights is a guess.
+    # Every guess but one still names the mover, and that one has two empty
+    # squares and has to say so rather than pick.
+    bc = chess.Board("4k3/8/8/8/8/8/8/4K2R w K - 0 1")
+    bc.push_san("O-O")
+    r.append(check("a castle still names the mover however it is drawn",
+                   [mover(bc, pair) for pair in ((chess.E1, chess.G1),
+                                                 (chess.H1, chess.F1),
+                                                 (chess.E1, chess.F1))],
+                   [chess.WHITE] * 3))
+    r.append(check("  except lit king square to rook square, which refuses",
+                   mover(bc, (chess.E1, chess.H1)), None))
+
+    # The one construction that could hand back the wrong colour: chess.com may
+    # well light a picked up piece in this same yellow, and then two of the
+    # three lit squares hold pieces of opposite colours.
+    r.append(check("three lit squares are refused rather than chosen between",
+                   mover(bh, (chess.E2, chess.E4, chess.E7)), None))
+    r.append(check("  and so is one, the other being under a dialog",
+                   mover(bh, (chess.E4,)), None))
+
+    agree = lit_tracker(bh)
+    seen = render.render(bh, False, (chess.E2, chess.E4), HL)
+    r.append(check("no dispute while the turn agrees with the screen",
+                   agree.turn_disputed(W.read_occupancy(seen), seen), False))
+    adrift = lit_tracker(bh)
+    adrift.board.turn = chess.WHITE      # where one missed move leaves it
+    r.append(check("  and a dispute the moment it does not",
+                   adrift.turn_disputed(W.read_occupancy(seen), seen), True))
+
+    # The colour is sampled off your own board rather than trusted, so that a
+    # repaint can only ever switch the signal off, never make it lie.
+    OTHER = ((247, 202, 100), (188, 148, 55))
+    other = render.render(bh, False, (chess.E2, chess.E4), OTHER)
+    r.append(check("a highlight colour we never hardcoded reads as nothing",
+                   W.highlight_squares(other), []))
+    learn = lit_tracker(chess.Board())
+    learn._apply([chess.Move.from_uci("e2e4")], other)
+    r.append(check("  until one move samples it off the screen",
+                   W.highlight_squares(other, learn._highlight_colours()),
+                   [(4, 4), (6, 4)]))
+    covered = other.copy()
+    covered.paste(Image.new("RGB", (render.step, render.step), (40, 40, 46)),
+                  (4 * render.step, 6 * render.step))
+    shy = lit_tracker(chess.Board())
+    shy._apply([chess.Move.from_uci("e2e4")], covered)
+    r.append(check("  but a square with something over it teaches nothing",
+                   shy.highlight, [None, None]))
+
     # -- refitting the templates part way through a game -------------------
     # The app calls relearn_pieces every time the board on screen changes size.
     # That means it gets called on positions it cannot possibly learn, so what
@@ -611,7 +693,8 @@ def main():
             continue
         x, y, size = rect
         print("      %s: board at (%d,%d) %dx%d" % (name, x, y, size, size))
-        occ = W.read_occupancy(img.crop((x, y, x + size, y + size)))
+        board_img = img.crop((x, y, x + size, y + size))
+        occ = W.read_occupancy(board_img)
 
         if name.startswith("1."):
             b = chess.Board()
@@ -628,6 +711,13 @@ def main():
         r.append(check(label, occ, expect))
         r.append(check("  grid check is confident on " + name,
                        W.grid_score(img, x, y, size) > 0.95, True))
+        # 1.png: black has just played c7-c5. 5.png: white has just played
+        # Ra7-h7+, which is the one fixture lighting a light square and a dark
+        # one at once.
+        r.append(check("  names the squares of the last move in " + name,
+                       W.highlight_squares(board_img),
+                       [(1, 2), (3, 2)] if name.startswith("1.")
+                       else [(1, 0), (1, 7)]))
 
     # -- speed -------------------------------------------------------------
     img = Image.open(shot("1")).convert("RGB")
