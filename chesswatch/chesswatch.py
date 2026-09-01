@@ -526,6 +526,9 @@ class App:
             game.save()
             self.lbl_file.configure(text="saved " + os.path.basename(game.path))
         self.worker = None
+        # Nothing will update it once the frames stop, and it is up on every
+        # move now rather than every other one, so take it down here.
+        self._show_arrow(None)
         self.btn.configure(text="Start watching", bg=ACCENT,
                            activebackground="#6d9245")
         self.lbl_status.configure(text="stopped", fg=MUTED)
@@ -573,14 +576,15 @@ class App:
         if self.arrow is None and self.coach_on.get():
             self.arrow = OV.Arrow(self.root)
 
-    def _show_arrow(self, uci):
+    def _show_arrow(self, uci, mine=True):
         """Draw the suggestion on the board itself, if it is wanted and we know
-        where the board is."""
+        where the board is. mine picks which of the two colours it gets."""
         if not (self.arrow_on.get() and self.arrow and self.region and uci):
             if self.arrow:
                 self.arrow.hide()
             return
-        self.arrow.show(self.region, chess.Move.from_uci(uci), self.flipped)
+        self.arrow.show(self.region, chess.Move.from_uci(uci), self.flipped,
+                        mine)
 
     def _toggle_board(self):
         if self.show_board.get():
@@ -629,17 +633,18 @@ class App:
                         self.lbl_coach.configure(text="the game is over", fg=MUTED)
                         self._show_arrow(None)
                         continue
-                    whose = ("your move" if payload["turn"] == self.my_colour
-                             else "their move")
-                    # Only your own move is worth drawing on the board. Their
-                    # move is still shown in words.
-                    self._show_arrow(payload["uci"] if whose == "your move"
-                                     or self.my_colour is None else None)
+                    # Their best move is what they are threatening, so it is
+                    # drawn too, in the other colour. Until the orientation
+                    # settles my_colour is None and nothing is yours yet, which
+                    # puts the arrow in their colour and the label agrees.
+                    mine = payload["turn"] == self.my_colour
+                    whose = "your move" if mine else "their move"
+                    self._show_arrow(payload["uci"], mine)
                     self.lbl_coach.configure(
                         text="%s  %s  (%s)  %s" % (whose, payload["san"],
                                                    payload["text"],
                                                    payload["score"]),
-                        fg=ACCENT if whose == "your move" else MUTED)
+                        fg=ACCENT if mine else MUTED)
         except queue.Empty:
             pass
 

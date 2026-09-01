@@ -61,30 +61,39 @@ sits over the board without getting between you and it.
 
 ![the arrow over a board](../docs/arrow.png)
 
+There is an arrow for every position, not only for your own turn. The engine's
+answer to your opponent's position is what they are threatening, which is worth
+seeing, so the two are told apart by colour: cyan is your move, violet is
+theirs. The label underneath still says which one it is.
+
 The awkward part is that the recorder is reading the same pixels the arrow is
 painting on, and it must not be able to corrupt a game.
 
 `read_occupancy` converts the board to grey and counts only pixels brighter
 than 244 or darker than 70. Everything in between is already thrown away, which
-is how highlights, coordinate labels and the check marker are ignored. So the
-arrow is drawn in a colour that lands in that gap. Cyan greys to 165, and even
-blended at 85 per cent over pure white or pure black it stays inside the band.
-The reader cannot see it.
+is how highlights, coordinate labels and the check marker are ignored. So both
+arrow colours land in that gap. Cyan greys to 165 and violet to 123, and
+blended at 85 per cent over pure white or pure black each one stays inside the
+band on its own account, not on the other's. The reader cannot see either.
 
-The one thing arrow coverage can still do is hide a piece, which would make an
-occupied square read empty. That position matches no legal move, so the frame
-is ignored and the recorder waits, exactly as it does for a piece in mid
+The one thing arrow coverage can still do is change what a square reads as: a
+white pawn with the shaft painted down its file can lose enough bright pixels
+to come back as a black piece. That position matches no legal move, so the
+frame is ignored and the recorder waits, exactly as it does for a piece in mid
 animation. It cannot write down a move that did not happen.
 
 `overlaytest.py` measures this rather than asserting it. It covers the desktop,
 paints a real board, puts the real overlay over it, captures the screen through
 mss and reads it back. Sixteen arrows across the crowded ranks, arrows landing
-on pieces, at 664px and again at 240px: every one of them is confirmed to be on
-screen, and not one of them changed a single square. Then it plays a whole game
-with an arrow up for every frame and checks the moves came out right.
+on pieces, at 664px and again at 240px, in both colours: every one of them is
+confirmed to be on screen, and not one of them changed a single square. Then it
+plays a whole game with an arrow up for every frame, changing colour every half
+move, and checks the moves came out right.
 
 The check that the arrow is really visible is the important one. Without it an
 overlay that drew nothing at all would pass every other check in the file.
+There is one per colour, and neither of the two answers for the other, so a
+colour that never got painted cannot hide behind the one that did.
 
 ## How it works
 
@@ -266,7 +275,7 @@ rectangle is in use.
 
     python selftest.py      78 checks, including real screenshots
     python coachtest.py     18 checks on the engine wrapper and its label
-    python overlaytest.py   16 checks that the arrow cannot corrupt a reading
+    python overlaytest.py   21 checks that the arrow cannot corrupt a reading
     python settletest.py    move animation, with the screen on a clock
     python livetest.py      full loop against the real screen
 
