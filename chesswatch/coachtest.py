@@ -279,6 +279,112 @@ def label_checks(path):
     root.destroy()
 
 
+def capture_checks():
+    """The screen grabber and the idle board hunt, neither of which needs a
+    screen: the grabber is stood in for, and the hunt is driven off a clock we
+    control."""
+    import threading
+    import chesswatch as C
+
+    print("\n-- capture ----------------------------------------------")
+
+    class Shot:
+        width, height = 1, 1
+        bgra = bytes(4)
+
+    class Fake:
+        """Stands in for mss, which wants a display this run has not got.
+        Counts what it is asked for, because one per screenshot was the bug."""
+        built = 0
+        closed = 0
+
+        def __init__(self):
+            Fake.built += 1
+
+        def grab(self, box):
+            return Shot()
+
+        def close(self):
+            Fake.closed += 1
+
+    real = C._MSS
+    C.close_sct()          # the stub only reaches grab() if the real one is gone
+    C._MSS = Fake
+    try:
+        C.grab((0, 0, 1, 1))
+        C.grab((0, 0, 1, 1))
+        check("two screenshots, one grabber built", Fake.built, 1)
+        mine = C._sct()
+        theirs = {}
+        t = threading.Thread(target=lambda: theirs.setdefault("sct", C._sct()))
+        t.start()
+        t.join()
+        check("  and another thread gets its own", theirs["sct"] is mine, False)
+        C.close_sct()
+        check("  closing drops it", getattr(C._local, "sct", None), None)
+        check("  and shuts it rather than leaking the device context",
+              Fake.closed, 1)
+    finally:
+        C._MSS = real
+        C.close_sct()
+
+    # The bug this replaced: `self.region is None or self._should_refind()`
+    # meant the left half was true for as long as no board was found, so the
+    # backoff never got a say and the hunt ran on every tick.
+    class Idle:
+        locked_on = False
+
+    w = C.Worker.__new__(C.Worker)
+    w.region = None
+    w.manual = False
+    w.lost = False
+    w._quiet = 0
+    w._frames = 0
+    w.tracker = Idle()
+
+    w._misses, w._last_hunt = 0, 0.0
+    check("hunts at once when nothing has been tried",
+          C.Worker._should_refind(w), True)
+
+    w._misses, w._last_hunt = 3, time.time()
+    check("  but not again straight away", C.Worker._should_refind(w), False)
+    w._last_hunt = time.time() - (C.IDLE_BACKOFF[3] + 0.05)
+    check("  and does once the gap has passed", C.Worker._should_refind(w), True)
+
+    # Read the widening through _should_refind rather than off the table, since
+    # the index that clamps it is the part that can be wrong. Half a second
+    # clears the early steps and not the late ones, and the miss count is run
+    # well past the end of the table to show it clamps instead of raising.
+    w._last_hunt = time.time() - 0.55
+    w._misses = 0
+    early = C.Worker._should_refind(w)
+    w._misses = len(C.IDLE_BACKOFF) * 10
+    late = C.Worker._should_refind(w)
+    check("half a second is enough early and not enough later", (early, late),
+          (True, False))
+    w._last_hunt = time.time() - (max(C.IDLE_BACKOFF) + 0.05)
+    check("  and the wait stops widening rather than running away",
+          C.Worker._should_refind(w), True)
+
+    # A board that turns up has to reset the wait, or one idle stretch would
+    # slow every later hunt down for the rest of the session. _tick does that
+    # by zeroing _misses, so drive the real thing rather than assert the table.
+    w.region = None
+    w._misses, w._last_hunt = 5, 0.0
+    w.out = queue.Queue()
+    found = (100, 100, 400, 400)
+    # Stop the tick once the hunt has been dealt with. Everything past this is
+    # the reader, which has a screen of its own to be tested against.
+    w._read_settled = lambda: (None, None, False)
+    hunt = C.find_board_on_screen
+    try:
+        C.find_board_on_screen = lambda: found
+        C.Worker._tick(w)
+    finally:
+        C.find_board_on_screen = hunt
+    check("finding a board resets the wait", (w.region, w._misses), (found, 0))
+
+
 def main():
     print("mode: headless. The label checks build the real Tk app with its"
           " window withdrawn")
@@ -287,6 +393,7 @@ def main():
     print("      desktop is never screenshotted. They need Stockfish to run at"
           " all.\n")
     wording()
+    capture_checks()
     launch_checks()
     path = CO.find_engine()
     print("\n      engine:", path or "not found")

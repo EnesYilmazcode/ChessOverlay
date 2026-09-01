@@ -31,6 +31,7 @@ two are already what overlaytest.py measures.
 import ast
 import os
 import sys
+import time
 import queue
 import inspect
 import shutil
@@ -581,13 +582,21 @@ def board_goes_away():
 
         # And it is not a wedge: the board coming back is picked up again and
         # the game carries on.
+        #
+        # Sleeping POLL_SECONDS is what makes this the real cadence. With no
+        # board anywhere the hunt now backs off by the clock, so a loop that
+        # spends no wall time at all would step through twenty ticks inside one
+        # gap and prove nothing about how long you actually wait.
         desk.there = True
-        back = None
+        back, began = None, time.time()
         for i in range(20):
             worker._tick()
             if worker.region is not None:
                 back = i + 1
                 break
+            time.sleep(CW.POLL_SECONDS)
+        print("      back on tick %s of 20, %.2fs after it returned"
+              % (back, time.time() - began))
         check("the board coming back is picked up again",
               back is not None and back <= 20, True)
         desk.board.push_san("e5")
