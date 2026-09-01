@@ -169,8 +169,74 @@ def label_checks(path):
     root.destroy()
 
 
+def capture_checks():
+    """The screen grabber and the idle board hunt, neither of which needs a
+    screen to be tested: the grabber is asked what it hands back rather than
+    what it captured, and the hunt is driven off a clock we control."""
+    import threading
+    import chesswatch as C
+
+    print("\n-- capture ----------------------------------------------")
+    mine = C._sct()
+    check("one screen grabber per thread, reused", C._sct() is mine, True)
+    theirs = {}
+    t = threading.Thread(target=lambda: theirs.setdefault("sct", C._sct()))
+    t.start()
+    t.join()
+    check("  and another thread gets its own", theirs["sct"] is mine, False)
+    C.close_sct()
+    check("  closing drops it", getattr(C._local, "sct", None), None)
+
+    # The bug this replaced: `self.region is None or self._should_refind()`
+    # meant the left half was true for as long as no board was found, so the
+    # backoff never got a say and the hunt ran on every tick.
+    class Idle:
+        locked_on = False
+
+    w = C.Worker.__new__(C.Worker)
+    w.region = None
+    w.manual = False
+    w._quiet = 0
+    w._frames = 0
+    w.tracker = Idle()
+
+    w._misses, w._last_hunt = 0, 0.0
+    check("hunts at once when nothing has been tried",
+          C.Worker._should_refind(w), True)
+
+    w._misses, w._last_hunt = 3, time.time()
+    check("  but not again straight away", C.Worker._should_refind(w), False)
+    w._last_hunt = time.time() - (C.IDLE_BACKOFF[3] + 0.05)
+    check("  and does once the gap has passed", C.Worker._should_refind(w), True)
+
+    check("the gap widens with each miss",
+          list(C.IDLE_BACKOFF) == sorted(C.IDLE_BACKOFF)
+          and C.IDLE_BACKOFF[0] == 0.0 and C.IDLE_BACKOFF[-1] > 0.5, True)
+    check("  and stops widening rather than running away",
+          max(C.IDLE_BACKOFF) <= 5.0, True)
+
+    # A board that turns up has to reset the wait, or one idle stretch would
+    # slow every later hunt down for the rest of the session. _tick does that
+    # by zeroing _misses, so drive the real thing rather than assert the table.
+    w.region = None
+    w._misses, w._last_hunt = 5, 0.0
+    w.out = queue.Queue()
+    found = (100, 100, 400, 400)
+    # Stop the tick once the hunt has been dealt with. Everything past this is
+    # the reader, which has a screen of its own to be tested against.
+    w._read_settled = lambda: (None, None, False)
+    hunt = C.find_board_on_screen
+    try:
+        C.find_board_on_screen = lambda: found
+        C.Worker._tick(w)
+    finally:
+        C.find_board_on_screen = hunt
+    check("finding a board resets the wait", (w.region, w._misses), (found, 0))
+
+
 def main():
     wording()
+    capture_checks()
     path = CO.find_engine()
     print("\n      engine:", path or "not found")
     if path is None:
