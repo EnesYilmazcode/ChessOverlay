@@ -375,10 +375,17 @@ class App:
         self.arrow = None            # the on-screen arrow, built on demand
         self.region = None
         self.flipped = False
+        self.ambiguous = False       # the tracker cannot tell which way round
+        # One switch, not two. They were never independent: turning the arrow
+        # on already force-enabled the advice behind it.
+        self.coaching = tk.BooleanVar(value=bool(self.cfg.get("coaching", True)))
+        self.drawer_open = False
 
         root.title("ChessWatch")
         root.configure(bg=BG)
-        root.geometry("430x690")
+        # Short enough that the move is the whole window at rest, and it grows
+        # into the move list as a game fills it.
+        root.geometry("420x520")
         root.minsize(400, 560)
 
         self._build()
@@ -392,109 +399,131 @@ class App:
         self._start()
 
     def _build(self):
+        """The move you should play is the only thing here that is big.
+
+        Everything that exists to debug the reader (where the board is, what
+        the templates are, the ASCII position, the manual pick) lives in the
+        drawer, because none of it means anything to someone who came here to
+        be told what to play.
+
+        Widths are the trap in this file. A widget that does not fit its row is
+        not clipped and does not raise, it is silently not drawn at all, so
+        every row below is either one item or short enough to survive the 400px
+        minimum.
+        """
         head = tk.Frame(self.root, bg=BG)
-        head.pack(fill="x", padx=12, pady=(12, 8))
-        self.btn = tk.Button(head, text="Stop watching", command=self._toggle,
+        head.pack(fill="x", padx=12, pady=(10, 2))
+        self.btn = tk.Button(head, text="stop", command=self._toggle,
                              bg="#b33a3a", fg="white", relief="flat",
-                             font=("Segoe UI", 11, "bold"), padx=14, pady=7,
+                             font=("Segoe UI", 9, "bold"), padx=10, pady=3,
                              activebackground="#8f2f2f", cursor="hand2")
-        self.btn.pack(side="left")
+        self.btn.pack(side="right")
         self.lbl_status = tk.Label(head, text="starting", bg=BG, fg=MUTED,
-                                   font=("Segoe UI", 9), justify="left")
-        self.lbl_status.pack(side="left", padx=10)
+                                   font=("Segoe UI", 9), anchor="w")
+        self.lbl_status.pack(side="left", fill="x", expand=True)
 
-        bar = tk.Frame(self.root, bg=BG)
-        bar.pack(fill="x", padx=12, pady=(0, 8))
-        self.lbl_board = tk.Label(bar, text="looking for the board", bg=BG,
-                                  fg=MUTED, font=("Segoe UI", 8), anchor="w")
-        self.lbl_board.pack(side="left", fill="x", expand=True)
-        tk.Button(bar, text="pick board manually", command=self._pick,
-                  relief="flat", bg="#3d3a37", fg=FG, cursor="hand2",
-                  font=("Segoe UI", 8)).pack(side="right")
+        hero = tk.Frame(self.root, bg=BG)
+        hero.pack(fill="x", padx=12, pady=(6, 2))
+        self.lbl_move = tk.Label(hero, text="", bg=BG, fg=ACCENT,
+                                 font=("Segoe UI", 26, "bold"), anchor="w")
+        self.lbl_move.pack(fill="x")
+        under = tk.Frame(hero, bg=BG)
+        under.pack(fill="x")
+        self.lbl_detail = tk.Label(under, text="", bg=BG, fg=FG,
+                                   font=("Segoe UI", 10), anchor="w")
+        self.lbl_detail.pack(side="left", fill="x", expand=True)
+        self.lbl_eval = tk.Label(under, text="", bg=BG, fg=MUTED,
+                                 font=("Consolas", 10), anchor="e")
+        self.lbl_eval.pack(side="right")
+        self.lbl_turn = tk.Label(hero, text="", bg=BG, fg=MUTED,
+                                 font=("Segoe UI", 9), anchor="w")
+        self.lbl_turn.pack(fill="x")
 
-        tools = tk.Frame(self.root, bg=BG)
-        tools.pack(fill="x", padx=12, pady=(0, 6))
-        tk.Button(tools, text="check the pieces now", command=self._check_now,
-                  relief="flat", bg="#3d3a37", fg=FG, cursor="hand2",
-                  font=("Segoe UI", 8)).pack(side="left")
-        tk.Label(tools, text="I play:", bg=BG, fg=MUTED,
-                 font=("Segoe UI", 8)).pack(side="left", padx=(10, 2))
-        for text, value in (("auto", "auto"), ("white", "white"),
-                            ("black", "black")):
-            tk.Radiobutton(tools, text=text, value=value,
+        # Only packed while the tracker cannot work out which way round the
+        # board is, which is the only time the answer matters.
+        self.ask_colour = tk.Frame(self.root, bg=BG)
+        tk.Label(self.ask_colour, text="which colour are you?", bg=BG, fg=WARN,
+                 font=("Segoe UI", 8)).pack(side="left", padx=(0, 4))
+        for text, value in (("white", "white"), ("black", "black")):
+            tk.Radiobutton(self.ask_colour, text=text, value=value,
                            variable=self.colour_choice, command=self._set_colour,
                            bg=BG, fg=MUTED, selectcolor=BG, activebackground=BG,
                            activeforeground=FG, font=("Segoe UI", 8),
                            cursor="hand2").pack(side="left")
 
-        # Their own row: the tools row above is already full at this width, and
-        # a Checkbutton that does not fit is silently not drawn at all.
-        switches = tk.Frame(self.root, bg=BG)
-        switches.pack(fill="x", padx=12, pady=(0, 4))
-        tk.Label(switches, text="coaching:", bg=BG, fg=MUTED,
-                 font=("Segoe UI", 8)).pack(side="left", padx=(0, 4))
-        self.coach_on = tk.BooleanVar(value=bool(self.cfg.get("coach", False)))
-        tk.Checkbutton(switches, text="best move", variable=self.coach_on,
-                       command=self._toggle_coach, bg=BG, fg=MUTED, selectcolor=BG,
-                       activebackground=BG, activeforeground=FG,
-                       font=("Segoe UI", 8), cursor="hand2").pack(side="left")
-        self.arrow_on = tk.BooleanVar(value=bool(self.cfg.get("arrow", False)))
-        tk.Checkbutton(switches, text="arrow on board", variable=self.arrow_on,
-                       command=self._toggle_arrow, bg=BG, fg=MUTED, selectcolor=BG,
-                       activebackground=BG, activeforeground=FG,
-                       font=("Segoe UI", 8), cursor="hand2").pack(side="left")
-
-        self.lbl_coach = tk.Label(self.root, text="", bg=BG, fg=ACCENT,
-                                  font=("Segoe UI", 10, "bold"), anchor="w")
-        self.lbl_coach.pack(fill="x", padx=12, pady=(2, 0))
-
-        self.lbl_check = tk.Label(self.root, text="", bg=BG, fg=MUTED,
-                                  font=("Segoe UI", 8), anchor="w")
-        self.lbl_check.pack(fill="x", padx=12)
-
         self.lbl_result = tk.Label(self.root, text="", bg=BG, fg=ACCENT,
-                                   font=("Segoe UI", 11, "bold"))
+                                   font=("Segoe UI", 11, "bold"), anchor="w")
         self.lbl_result.pack(fill="x", padx=12)
 
         self.moves_box = tk.Text(self.root, bg=PANEL, fg=FG, relief="flat",
-                                 font=("Consolas", 12), state="disabled",
-                                 padx=12, pady=10, height=13)
-        self.moves_box.pack(fill="both", expand=True, padx=12, pady=(4, 6))
+                                 font=("Consolas", 11), state="disabled",
+                                 padx=10, pady=8, height=6)
+        self.moves_box.pack(fill="both", expand=True, padx=12, pady=(6, 6))
         self.moves_box.tag_configure("num", foreground=MUTED)
         self.moves_box.tag_configure("mine", foreground=ACCENT,
-                                     font=("Consolas", 12, "bold"))
+                                     font=("Consolas", 11, "bold"))
         self.moves_box.tag_configure("theirs", foreground=FG)
         self.moves_box.tag_configure("hint", foreground=MUTED,
-                                     font=("Consolas", 10))
+                                     font=("Consolas", 9))
         self.moves_box.tag_configure("warn", foreground=WARN,
-                                     font=("Consolas", 10))
+                                     font=("Consolas", 9))
 
-        self.show_board = tk.BooleanVar(value=True)
-        self.board_box = tk.Text(self.root, bg="#1e1c1a", fg=MUTED, relief="flat",
-                                 font=("Consolas", 10), height=8, padx=10, pady=6,
-                                 state="disabled")
-        self.board_box.pack(fill="x", padx=12, pady=(0, 6))
+        self.drawer = tk.Frame(self.root, bg=BG)
+        self.lbl_board = tk.Label(self.drawer, text="", bg=BG, fg=MUTED,
+                                  font=("Segoe UI", 8), anchor="w")
+        self.lbl_board.pack(fill="x")
+        self.lbl_check = tk.Label(self.drawer, text="", bg=BG, fg=MUTED,
+                                  font=("Segoe UI", 8), anchor="w")
+        self.lbl_check.pack(fill="x")
+        tools = tk.Frame(self.drawer, bg=BG)
+        tools.pack(fill="x", pady=(4, 0))
+        tk.Button(tools, text="pick board", command=self._pick, relief="flat",
+                  bg="#3d3a37", fg=FG, cursor="hand2",
+                  font=("Segoe UI", 8)).pack(side="left")
+        tk.Button(tools, text="check pieces", command=self._check_now,
+                  relief="flat", bg="#3d3a37", fg=FG, cursor="hand2",
+                  font=("Segoe UI", 8)).pack(side="left", padx=6)
+        # Its own row. Two buttons and three radios do not fit at 400px, and
+        # what does not fit is not drawn at all.
+        play = tk.Frame(self.drawer, bg=BG)
+        play.pack(fill="x", pady=(4, 0))
+        tk.Label(play, text="I play:", bg=BG, fg=MUTED,
+                 font=("Segoe UI", 8)).pack(side="left", padx=(0, 2))
+        for text, value in (("auto", "auto"), ("white", "white"),
+                            ("black", "black")):
+            tk.Radiobutton(play, text=text, value=value,
+                           variable=self.colour_choice, command=self._set_colour,
+                           bg=BG, fg=MUTED, selectcolor=BG, activebackground=BG,
+                           activeforeground=FG, font=("Segoe UI", 8),
+                           cursor="hand2").pack(side="left")
+        self.board_box = tk.Text(self.drawer, bg="#1e1c1a", fg=MUTED,
+                                 relief="flat", font=("Consolas", 9), height=8,
+                                 padx=8, pady=4, state="disabled")
+        self.board_box.pack(fill="x", pady=(4, 0))
 
         foot = self.foot = tk.Frame(self.root, bg=BG)
         foot.pack(fill="x", padx=12, pady=(0, 10))
-        self.lbl_file = tk.Label(foot, text="", bg=BG, fg=MUTED,
-                                 font=("Segoe UI", 8), anchor="w")
-        self.lbl_file.pack(side="left", fill="x", expand=True)
-        tk.Checkbutton(foot, text="show board", variable=self.show_board,
-                       command=self._toggle_board, bg=BG, fg=MUTED, selectcolor=BG,
-                       activebackground=BG, activeforeground=FG,
-                       font=("Segoe UI", 8), cursor="hand2").pack(side="right", padx=6)
-        tk.Button(foot, text="open games folder", command=self._open_folder,
-                  relief="flat", bg="#3d3a37", fg=FG, cursor="hand2",
+        tk.Checkbutton(foot, text="coaching", variable=self.coaching,
+                       command=self._toggle_coaching, bg=BG, fg=MUTED,
+                       selectcolor=BG, activebackground=BG, activeforeground=FG,
+                       font=("Segoe UI", 8), cursor="hand2").pack(side="left")
+        tk.Button(foot, text="games", command=self._open_folder, relief="flat",
+                  bg="#3d3a37", fg=FG, cursor="hand2",
                   font=("Segoe UI", 8)).pack(side="right")
+        self.btn_drawer = tk.Button(foot, text="advanced ▾",
+                                    command=self._toggle_drawer, relief="flat",
+                                    bg=BG, fg=MUTED, cursor="hand2",
+                                    activebackground=BG, activeforeground=FG,
+                                    font=("Segoe UI", 8))
+        self.btn_drawer.pack(side="right", padx=6)
 
     # -- actions -----------------------------------------------------
     def _apply_saved_switches(self):
-        """Idempotent: whichever of the two is already running is left alone."""
-        if self.coach_on.get() and self.coach is None:
-            self._toggle_coach()
-        if self.arrow_on.get() and self.arrow is None:
-            self._toggle_arrow()
+        """Idempotent, and it runs once the window really exists: the arrow is
+        a toplevel that has to sit over a mapped window, and a switch honoured
+        any earlier comes back ticked and does nothing."""
+        if self.coaching.get() and self.coach is None:
+            self._toggle_coaching()
 
     def _check_now(self):
         if self.worker:
@@ -514,7 +543,7 @@ class App:
         self.worker = Worker(self.board_region, self.q)
         self.worker.tracker.set_colour(self.colour_choice.get())
         self.worker.start()
-        self.btn.configure(text="Stop watching", bg="#b33a3a",
+        self.btn.configure(text="stop", bg="#b33a3a",
                            activebackground="#8f2f2f")
 
     def _stop(self):
@@ -524,9 +553,8 @@ class App:
         game = self.worker.tracker.game
         if game and game.moves:
             game.save()
-            self.lbl_file.configure(text="saved " + os.path.basename(game.path))
         self.worker = None
-        self.btn.configure(text="Start watching", bg=ACCENT,
+        self.btn.configure(text="watch", bg=ACCENT,
                            activebackground="#6d9245")
         self.lbl_status.configure(text="stopped", fg=MUTED)
 
@@ -540,11 +568,17 @@ class App:
             self._stop()
         self._start()
 
-    def _toggle_coach(self):
-        """Stockfish is only started when you actually ask for advice."""
+    def _toggle_coaching(self):
+        """One switch for the advice and the arrow it draws.
+
+        Stockfish is started here rather than at launch, so someone who only
+        wants games on disk pays nothing for it. A missing engine says so where
+        the move would have gone, rather than silently unticking a box and
+        leaving the window empty, which is what it used to do.
+        """
         self._save_config()
-        if not self.coach_on.get():
-            self.lbl_coach.configure(text="")
+        if not self.coaching.get():
+            self._say_move("", "", "", "")
             self.coach_fen = None
             if self.arrow:
                 self.arrow.hide()
@@ -552,41 +586,41 @@ class App:
         if self.coach is None:
             path = CO.find_engine()
             if path is None:
-                self.coach_on.set(False)
-                self.lbl_coach.configure(
-                    text="no Stockfish found. See the README.", fg=WARN)
+                self.coaching.set(False)
+                self._say_move("no engine", "Stockfish was not found. "
+                               "See the README.", "", "", warn=True)
                 return
             self.coach = CO.Coach(path)
             self.coach.start()
-        self.lbl_coach.configure(text="thinking...", fg=MUTED)
-
-    def _toggle_arrow(self):
-        """The arrow needs the coach, since it draws what the coach found."""
-        self._save_config()
-        if not self.arrow_on.get():
-            if self.arrow:
-                self.arrow.hide()
-            return
-        if not self.coach_on.get():
-            self.coach_on.set(True)
-            self._toggle_coach()
-        if self.arrow is None and self.coach_on.get():
+        if self.arrow is None:
             self.arrow = OV.Arrow(self.root)
+        self._say_move("", "thinking...", "", "")
+
+    def _say_move(self, move, detail, evaluation, turn, warn=False):
+        """Everything that goes in the hero block, in one place, so the four
+        labels can never disagree about which position they are showing."""
+        self.lbl_move.configure(text=move, fg=WARN if warn else ACCENT)
+        self.lbl_detail.configure(text=detail, fg=WARN if warn else FG)
+        self.lbl_eval.configure(text=evaluation)
+        self.lbl_turn.configure(text=turn)
 
     def _show_arrow(self, uci):
         """Draw the suggestion on the board itself, if it is wanted and we know
         where the board is."""
-        if not (self.arrow_on.get() and self.arrow and self.region and uci):
+        if not (self.coaching.get() and self.arrow and self.region and uci):
             if self.arrow:
                 self.arrow.hide()
             return
         self.arrow.show(self.region, chess.Move.from_uci(uci), self.flipped)
 
-    def _toggle_board(self):
-        if self.show_board.get():
-            self.board_box.pack(fill="x", padx=12, pady=(0, 6), before=self.foot)
+    def _toggle_drawer(self):
+        self.drawer_open = not self.drawer_open
+        if self.drawer_open:
+            self.drawer.pack(fill="x", padx=12, pady=(0, 6), before=self.foot)
+            self.btn_drawer.configure(text="advanced ▴")
         else:
-            self.board_box.pack_forget()
+            self.drawer.pack_forget()
+            self.btn_drawer.configure(text="advanced ▾")
 
     def _open_folder(self):
         os.makedirs(W.GAMES_DIR, exist_ok=True)
@@ -620,13 +654,14 @@ class App:
                 kind, payload = self.coach.out.get_nowait()
                 if kind == "engine":
                     if payload != "ready":
-                        self.lbl_coach.configure(text=payload[:70], fg=WARN)
-                        self.coach_on.set(False)
-                elif kind == "advice" and self.coach_on.get():
+                        self._say_move("no engine", payload[:60], "", "",
+                                       warn=True)
+                        self.coaching.set(False)
+                elif kind == "advice" and self.coaching.get():
                     if payload["fen"] != self.coach_fen:
                         continue
                     if payload.get("over"):
-                        self.lbl_coach.configure(text="the game is over", fg=MUTED)
+                        self._say_move("", "the game is over", "", "")
                         self._show_arrow(None)
                         continue
                     whose = ("your move" if payload["turn"] == self.my_colour
@@ -635,11 +670,8 @@ class App:
                     # move is still shown in words.
                     self._show_arrow(payload["uci"] if whose == "your move"
                                      or self.my_colour is None else None)
-                    self.lbl_coach.configure(
-                        text="%s  %s  (%s)  %s" % (whose, payload["san"],
-                                                   payload["text"],
-                                                   payload["score"]),
-                        fg=ACCENT if whose == "your move" else MUTED)
+                    self._say_move(payload["san"], payload["text"],
+                                   payload["score"], whose)
         except queue.Empty:
             pass
 
@@ -653,13 +685,28 @@ class App:
                 text="board %dx%d at %d,%d" % (region[2], region[3],
                                                region[0], region[1]))
 
-        if not f["locked"]:
-            self.lbl_status.configure(
-                text="waiting for a game to start", fg=MUTED)
+        # One line, not two. It used to say "waiting for a game" above a
+        # separate line giving the board rectangle, which say the same thing
+        # twice to anyone who is not debugging the reader.
+        if not region:
+            self.lbl_status.configure(text="looking for a board", fg=MUTED)
+        elif not f["locked"]:
+            self.lbl_status.configure(text="watching, waiting for a game",
+                                      fg=MUTED)
         else:
             self.lbl_status.configure(
-                text="recording  |  %d moves  |  %d saved" % (f["count"], f["saved"]),
+                text="recording  %d moves  %d saved" % (f["count"], f["saved"]),
                 fg=ACCENT)
+
+        # "I play" only matters while the tracker cannot work the orientation
+        # out for itself, and it already knows when that is.
+        ambiguous = bool(region) and not f["locked"] and f["color"] is None
+        if ambiguous != self.ambiguous:
+            self.ambiguous = ambiguous
+            if ambiguous:
+                self.ask_colour.pack(fill="x", padx=12, before=self.lbl_result)
+            else:
+                self.ask_colour.pack_forget()
 
         if f["result"] != "*":
             word = {"won": "You won", "lost": "You lost",
@@ -701,7 +748,7 @@ class App:
         box.configure(state="disabled")
         box.see("end")
 
-        if self.show_board.get():
+        if self.drawer_open:
             self.board_box.configure(state="normal")
             self.board_box.delete("1.0", "end")
             self.board_box.insert("1.0", f["board"] or "(no position yet)")
@@ -716,33 +763,36 @@ class App:
         self.lbl_check.configure(
             text=note, fg=ACCENT if "confirmed" in note else MUTED)
 
-        if self.coach is not None and self.coach_on.get():
+        if self.coach is not None and self.coaching.get():
             if f.get("fen") and f["result"] == "*":
                 self.coach.ask(f["fen"])
                 self.coach_fen = f["fen"]
             else:
-                self.lbl_coach.configure(text="")
+                self._say_move("", "", "", "")
                 self.coach_fen = None
                 self._show_arrow(None)
 
-        if f["path"]:
-            self.lbl_file.configure(text="games\\" + os.path.basename(f["path"]))
-
     # -- config ------------------------------------------------------
     def _load_config(self):
+        """A config written before the two switches were folded into one has
+        "coach" and "arrow" instead of "coaching". Either one having been on
+        means coaching was wanted; neither is read as never having chosen,
+        which now means on, because that is why the app exists."""
         try:
             with open(CONFIG_PATH, encoding="utf-8") as fh:
-                return json.load(fh)
+                cfg = json.load(fh)
         except Exception:
             return {}
+        if "coaching" not in cfg and ("coach" in cfg or "arrow" in cfg):
+            cfg["coaching"] = bool(cfg.get("coach") or cfg.get("arrow"))
+        return cfg
 
     def _save_config(self):
         tmp = CONFIG_PATH + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump({"board_region": self.board_region,
                        "colour": self.colour_choice.get(),
-                       "coach": bool(self.coach_on.get()),
-                       "arrow": bool(self.arrow_on.get())}, fh, indent=2)
+                       "coaching": bool(self.coaching.get())}, fh, indent=2)
         os.replace(tmp, CONFIG_PATH)
 
     def _quit(self):
