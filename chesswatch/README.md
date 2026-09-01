@@ -159,7 +159,8 @@ Everything above only ever asks "white piece, black piece, or empty?". That is
 fast, but it cannot tell you what is on a square it has lost track of. So there
 is a second, slower reader that identifies the actual piece on all 64 squares,
 and it runs every few seconds, whenever the fast reader has been stuck for a
-while, and whenever you press **check the pieces now**.
+while, whenever the last-move highlight says the wrong side is to move, and
+whenever you press **check the pieces now**.
 
 It works the same way as everything else here: a square is reduced to a mask of
 its very bright and very dark pixels, which is the piece and nothing else, since
@@ -219,6 +220,34 @@ half a turn is itself a legal game, so a knight or queen move explains the
 screen equally well both ways up. A pawn move does not, because pawns only move
 one way, so the first pawn move settles it, usually within seconds. If you would
 rather not wait, set **I play** to white or black and any move will do.
+
+## The last-move highlight
+
+chess.com paints the two squares of the move just played. The side that did NOT
+just move is the side to move, so those two squares are the one thing on screen
+that says whose turn it is without going back through the move history the
+tracker has already believed. That makes it worth reading as a second opinion,
+and it is the only second opinion there is.
+
+Of the two lit squares exactly one holds a piece, and its colour is the side
+that just moved. That survives castling, which moves two pieces but both of
+them the mover's, and en passant and promotion, which change nothing about the
+two lit squares. Anything else is refused rather than guessed at: there are no
+lit squares at all at the start of a game or in Game Review, there may well be
+three while a piece is picked up, and a castle drawn from the king square to the
+rook square lights two empty ones.
+
+It never moves a game on. A disagreement only means the piece checker runs now
+rather than in four seconds. On a deliberately desynced tracker that is a median
+of one frame instead of eighteen, and on a clean feed of 56,496 frames it never
+spoke at all.
+
+The colour is the square colour washed at half opacity with `#FFFF33`, so both
+shades come straight out of `LIGHT_SQUARE` and `DARK_SQUARE` rather than being
+constants of their own. The first move on each shade then samples the real
+colour off your own board, in case your theme paints it differently, and a
+sample is only kept if reading the board back with it lights exactly the two
+squares that move touched.
 
 ## Things it copes with
 

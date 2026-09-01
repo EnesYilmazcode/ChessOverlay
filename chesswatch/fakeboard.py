@@ -56,15 +56,23 @@ class Renderer:
             if key not in ("light", "dark"):
                 self.masks[key] = _cutout(sprite)
 
-    def render(self, board, flipped=False):
+    def render(self, board, flipped=False, lit=(), highlight=None):
+        """`lit` names board squares to paint with the last-move highlight, in
+        the (light, dark) pair of colours given. The reference screenshot has no
+        highlighted square to cut a sprite from, so those squares are filled
+        flat, which is what chess.com draws under a piece anyway."""
         out = Image.new("RGB", (self.size, self.size))
         ranks = range(8) if flipped else range(7, -1, -1)
         for row, rank in enumerate(ranks):
             files = range(7, -1, -1) if flipped else range(8)
             for col, file in enumerate(files):
                 pos = (col * self.step, row * self.step)
-                out.paste(self.sprites["light" if (row + col) % 2 == 0 else "dark"],
-                          pos)
+                shade = (row + col) % 2
+                if chess.square(file, rank) in lit:
+                    out.paste(Image.new("RGB", (self.step, self.step),
+                                        highlight[shade]), pos)
+                else:
+                    out.paste(self.sprites["light" if shade == 0 else "dark"], pos)
                 piece = board.piece_at(chess.square(file, rank))
                 if piece:
                     key = piece.symbol()
