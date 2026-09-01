@@ -45,6 +45,21 @@ MIN_MARGIN = 0.05
 # grid at birth, and stay coarse however big the board later gets. See stale().
 MIN_LEARN_PX = NORM * 8
 
+# Confirming one named piece rather than choosing among twelve, which is a
+# question that survives something being drawn over the square. See _confirms.
+# Measured over 10078 squares that classify gave up on, taken from four games
+# under a mouse pointer, a two, three and four square hover tooltip, a two
+# pixel crop error and a board shrunk to 280px: at these numbers 3441 of those
+# squares were filled back in and 6 of the 3441 wrongly, every one of the 6 a
+# capture hidden under a tooltip wide enough to cover the whole square.
+# CONFIRM_EMPTY is the tight one. At 0.08 a real piece starts passing as an
+# empty square and the 6 becomes 33; at 0.02 it costs 2214 correct fills and
+# saves none. CONFIRM_CONTAIN is flat anywhere from 0.70 to 0.80 and only
+# starts costing fills past 0.85.
+CONFIRM_CONTAIN = 0.80
+CONFIRM_MARGIN = 0.05
+CONFIRM_EMPTY = 0.05
+
 
 # Same cutoffs the occupancy reader uses, so the two always agree on what counts
 # as a piece pixel.
@@ -95,6 +110,13 @@ def _overlap(a, b):
     return (a & b).bit_count() / union if union else 0.0
 
 
+def _one_square(board_img, row, col):
+    """One square cropped out of a whole board, by screen position."""
+    step = board_img.size[0] / 8.0
+    return board_img.crop((int(col * step), int(row * step),
+                           int((col + 1) * step), int((row + 1) * step)))
+
+
 def squares(board_img, size=None):
     """Yield (row, col, square image), row 0 being the top of the screen."""
     size = size or board_img.size[0]
@@ -103,6 +125,43 @@ def squares(board_img, size=None):
         for c in range(8):
             yield r, c, board_img.crop((int(c * step), int(r * step),
                                         int((c + 1) * step), int((r + 1) * step)))
+
+
+def _confirms(square_img, templates, symbol):
+    """Could this square be holding exactly this piece, with something drawn on
+    top of it? Returns True or False, and never a guess at what else it is.
+
+    A narrower question than _decide's, and answerable when that one is not. A
+    mouse pointer, a hover tooltip or a neighbour's half dragged piece only ADD
+    pixels to a square: the mask counts very dark pixels as well as very bright
+    ones, so whatever is drawn over the piece joins the mask rather than
+    erasing the piece from it. Overlap divides by the union, so those extra
+    pixels sink all twelve scores together and the winner stops beating the
+    runner up, which is exactly the "?" this exists to answer. Asking how much
+    of ONE template is present divides by that template instead, and nothing
+    drawn on top can make that smaller.
+
+    The trap is that a large piece's outline swallows a small one's, so a queen
+    standing where a pawn used to would confirm the pawn. Hence the second
+    half: the named piece has to be the best fit of the twelve and not merely a
+    present one. What survives that is colour, which these masks cannot see at
+    all, a black pawn and a white one being the same silhouette. So a pawn
+    captured by the other side's pawn is confirmed as still standing. That
+    costs a refusal rather than a wrong move, because the capture is then left
+    with nowhere to land, but it is why this may only ever confirm a piece
+    already believed to be there and may never be used to name one.
+    """
+    mask = _mask(square_img)
+    if symbol == ".":
+        return _coverage(mask) < CONFIRM_EMPTY
+    if _coverage(mask) < MIN_COVERAGE:
+        return False
+    present = {}
+    for sym, template in templates.items():
+        whole = template.bit_count()
+        present[sym] = (mask & template).bit_count() / whole if whole else 0.0
+    return (present.get(symbol, 0.0) >= CONFIRM_CONTAIN
+            and max(present.values()) - present[symbol] < CONFIRM_MARGIN)
 
 
 def _decide(square_img, templates):
@@ -244,8 +303,17 @@ class PieceReader:
         Returns a piece letter, "." for empty, or None when unsure."""
         if not self.ready:
             return None
-        size = board_img.size[0]
-        step = size / 8.0
-        sq = board_img.crop((int(col * step), int(row * step),
-                             int((col + 1) * step), int((row + 1) * step)))
-        return _decide(sq, self.templates)[0]
+        return _decide(_one_square(board_img, row, col), self.templates)[0]
+
+    def confirm(self, board_img, row, col, symbol):
+        """Is one square consistent with holding exactly this piece?
+
+        The second half of a two pass read: classify names what it can, and
+        whatever it refused is put back to this as a yes or no question about
+        the piece already believed to be standing there. Only ever confirms;
+        see _confirms for what it cannot see.
+        """
+        if not self.ready:
+            return False
+        return _confirms(_one_square(board_img, row, col), self.templates,
+                         symbol)

@@ -728,19 +728,48 @@ class BoardTracker:
     # move order and gets refused anyway.
     MAX_CATCHUP = 4
 
+    # And how far it may reach when some square is unreadable. A shorter story
+    # for less evidence: every hidden square is one the answer is not allowed
+    # to touch, so a longer sequence is being pinned down by fewer squares at
+    # the same time as the search over it grows. Measured over 2508 checks, the
+    # obscured boards this recovers are almost all one and two ply gaps, at 44%
+    # and 42%; three and four ply gaps come back right 15% and 10% of the time
+    # and cost seconds each, because the search that fails walks the whole
+    # tree. Fully readable boards keep all four, where the cost is main's.
+    HIDDEN_CATCHUP = 2
+
+    # How many squares may still be unreadable after the second look before the
+    # pass gives up. Measured over 2728 checks: a mouse pointer leaves at most
+    # two squares unreadable and a four square tooltip at most five, and the
+    # second look clears nearly all of those, so a real obstruction seldom
+    # leaves more than one behind. What is left past this is not a board with
+    # something on top of it, it is a board being drawn wrong, and those are
+    # the boards that carry confidently WRONG letters as well as unreadable
+    # ones. See _second_look.
+    MAX_UNREADABLE = 4
+
     def check(self, board_img, depth=None):
         """Look at what is actually on every square and reconcile.
 
         Returns a short human-readable status, and is safe to call as often as
         you like. This is what recovers a game after missed moves, and what
         lets a game already in progress be picked up.
+
+        A square the piece reader could not name no longer stops the pass. It
+        is put back to the reader as a yes or no question about the piece we
+        already believe is on it, and only what survives that counts as
+        unreadable. A square left unreadable then agrees with nothing and
+        disagrees with nothing, and no move is allowed to land on one, so it
+        can go along with an explanation but never carry one.
         """
         if not self.reader or not self.reader.ready:
             self.last_check = "no piece templates"
             return self.last_check
 
         rows, _ = self.reader.classify(board_img)
-        if any("?" in row for row in rows):
+        rows = self._second_look(rows, board_img)
+        hidden = self._unreadable(rows)
+        if hidden > self.MAX_UNREADABLE:
             self.last_check = "board unclear"
             return self.last_check
 
@@ -752,13 +781,13 @@ class BoardTracker:
             self.last_check = "game finished, leaving the record alone"
             return self.last_check
 
-        if rows == grid_of(self.board, self.flipped):
+        if self._looks_like(rows, self.board):
             self._pending = None
             self.last_check = "position confirmed"
             return self.last_check
 
-        caught = self._search_grid(rows, min(depth or self.MAX_CATCHUP,
-                                             self.MAX_CATCHUP))
+        reach = self.MAX_CATCHUP if hidden == 0 else self.HIDDEN_CATCHUP
+        caught = self._search_grid(rows, min(depth or reach, reach))
         if caught:
             self._apply(caught, board_img)
             self.last_check = "caught up %d missed move%s" % (
@@ -774,6 +803,63 @@ class BoardTracker:
 
         self.last_check = self._resume_from(rows)
         return self.last_check
+
+    def _second_look(self, rows, board_img):
+        """Fill in squares the piece reader gave up on, wherever the pixels
+        still positively agree with the piece we already believe is there.
+
+        This is the whole point of reading twice. classify has to pick one of
+        twelve pieces and says "?" when two of them come out too close, which
+        is what a pointer, a tooltip or a neighbour's half dragged piece does
+        to all twelve scores at once. Asking whether one named piece is present
+        is a question those extra pixels cannot spoil, so most obscured squares
+        come back readable and the search that follows stays as strict as it
+        was.
+
+        Only ever confirms what we already think, which is what keeps a piece
+        in mid flight out of the game record. The square it is sliding across
+        holds no piece we believe in, so it fails the test, stays unreadable,
+        and the move it is impersonating has nowhere to land. There is nothing
+        to confirm against before a position is locked on, so a cold start is
+        left exactly as unreadable as the reader found it.
+        """
+        if self.board is None:
+            return rows
+        believed = grid_of(self.board, self.flipped)
+        out = rows
+        for r in range(8):
+            for c in range(8):
+                if rows[r][c] != "?":
+                    continue
+                if self.reader.confirm(board_img, r, c, believed[r][c]):
+                    if out is rows:
+                        out = [list(row) for row in rows]
+                    out[r][c] = believed[r][c]
+        return out
+
+    @staticmethod
+    def _unreadable(rows):
+        return sum(1 for row in rows for square in row if square == "?")
+
+    def _looks_like(self, rows, board):
+        """Is this screen reading the given position?
+
+        Unreadable squares agree with anything, with one exception: a square we
+        cannot read may not be one of the squares that tells this position
+        apart from the one already in hand. Otherwise a board with four squares
+        hidden matches half the game at once and _earlier_match rewinds to the
+        first of them.
+        """
+        grid = grid_of(board, self.flipped)
+        held = grid_of(self.board, self.flipped)
+        for r in range(8):
+            for c in range(8):
+                if rows[r][c] == "?":
+                    if grid[r][c] != held[r][c]:
+                        return False
+                elif rows[r][c] != grid[r][c]:
+                    return False
+        return True
 
     # A single move rewrites at most four squares: castling moves a king and a
     # rook. So a position N squares wrong cannot be reached in fewer than N/4
@@ -800,8 +886,13 @@ class BoardTracker:
         return piece.symbol()
 
     def _wrong_squares(self, target, colour_only=False):
+        """How many squares disagree with the position in hand. A square left
+        unreadable is skipped rather than counted, because it is not evidence
+        either way, and counting it as a mismatch is what used to let one mouse
+        pointer disable the entire pass."""
         return sum(1 for sq in chess.SQUARES
-                   if self._symbol_at(sq, colour_only) != target[sq])
+                   if target[sq] != "?"
+                   and self._symbol_at(sq, colour_only) != target[sq])
 
     def _touched(self, move):
         """Which squares a move rewrites. Must be asked before the move is
@@ -848,23 +939,51 @@ class BoardTracker:
             shapes = {tuple((m.from_square, m.to_square) for m in seq)
                       for seq in found}
             if len(shapes) == 1:
-                return found[0]
+                return found[0] if self._all_readable(found[0], target) else None
             if shapes:
                 return None            # more than one story fits, so do not pick
         return None
 
+    def _all_readable(self, moves, target):
+        """Does this sequence keep to squares we could actually read?
+
+        An unreadable square may go along with an explanation but never carry
+        one, and this is where that line is drawn. It is what keeps a piece
+        drawn part way to its destination out of the record: the move such a
+        piece impersonates always lands on the square it is crossing, which is
+        exactly the square the reader could not name, so the only story that
+        fits is one this refuses to tell.
+        """
+        touched, pushed = [], 0
+        for move in moves:
+            touched += self._touched(move)
+            self.board.push(move)
+            pushed += 1
+        for _ in range(pushed):
+            self.board.pop()
+        return all(target[sq] != "?" for sq in touched)
+
     def _walk(self, target, k, wrong, prefix, limit=3, colour_only=False):
         """Every sequence of exactly k legal moves reaching the target squares.
         Stops early once `limit` have been found, since one alternative is
-        already enough to make the answer ambiguous."""
+        already enough to make the answer ambiguous.
+
+        Moves that rewrite a square we could not read are walked like any
+        other, even though _solve will not hand one back. They have to be, or
+        the count of how many stories fit is taken over the wrong set: a
+        tooltip sitting on the evidence for the move that really happened would
+        leave a different move looking like the only explanation, and it would
+        be written down. Refusing at the end costs a search; refusing here
+        costs a game.
+        """
         out = []
         for move in _ordered_moves(self.board):
             touched = self._touched(move)
-            before = sum(1 for sq in touched
-                         if self._symbol_at(sq, colour_only) != target[sq])
+            before = sum(1 for sq in touched if target[sq] != "?"
+                         and self._symbol_at(sq, colour_only) != target[sq])
             self.board.push(move)
-            after = sum(1 for sq in touched
-                        if self._symbol_at(sq, colour_only) != target[sq])
+            after = sum(1 for sq in touched if target[sq] != "?"
+                        and self._symbol_at(sq, colour_only) != target[sq])
             now = wrong + after - before
             if k == 1:
                 if now == 0:
@@ -879,13 +998,15 @@ class BoardTracker:
 
     def _earlier_match(self, rows):
         """Number of moves after which the game looked like this, if it did.
-        That is what a takeback looks like from the outside."""
+        That is what a takeback looks like from the outside. Unreadable squares
+        are allowed to agree, but not the ones a takeback would have changed,
+        because a takeback nobody can see is not one worth believing."""
         board = self.game.board_at_start()
-        if grid_of(board, self.flipped) == rows:
+        if self._looks_like(rows, board):
             return 0
         for i, san in enumerate(self.game.moves, 1):
             board.push_san(san)
-            if grid_of(board, self.flipped) == rows and i < len(self.game.moves):
+            if self._looks_like(rows, board) and i < len(self.game.moves):
                 return i
         return None
 
