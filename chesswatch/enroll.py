@@ -8,9 +8,12 @@ at once, so a game joined part way through never gets one, and on a piece set
 the bundled sheet has never seen such a game reads almost nothing. This is the
 way out of that corner: point at one piece of each type and say what it is.
 
-It opens with the reader's own answer already filled in, one letter and one
-score per square, so only the squares it got wrong need touching. On a set it
-already reads that is a few clicks; on a set it cannot read at all it is twelve.
+It opens with the reader's own answer already filled in, a letter per square and
+a score where there is one to give, so only the squares it got wrong need
+touching. On a set it already reads that is a few clicks; on a set it cannot
+read at all it is twelve. The letters come from classify(), the same call the
+recorder trusts, so a square shown with a piece on it is one the recorder would
+also name, and a square it refuses is never offered as a template.
 
 Saving writes the same twelve slot PNG make_templates.py writes, because that
 is the only format the reader loads. Nothing here changes pieces.png.
@@ -52,27 +55,39 @@ def board_of(img):
     return img.crop((x, y, x + size, y + size))
 
 
+def _scores(reader, board_img):
+    """A number per square for how close the reader's call was, or None if this
+    build of pieces.py does not hand one out.
+
+    Only ever a decoration. It comes from the module's private per square
+    decision, which does not carry the board-measured levels or the trust gate
+    that classify() applies on top, so it can be generous where classify() is
+    not. That is why nothing downstream is allowed to read the symbol off it.
+    """
+    try:
+        out = [[None] * 8 for _ in range(8)]
+        for r, c, sq in pieces.squares(board_img):
+            out[r][c] = float(pieces._decide(sq, reader.templates)[1])
+        return out
+    except Exception:
+        return None
+
+
 def beliefs(reader, board_img):
     """What the reader thinks is on each square, as an 8x8 grid of
     (symbol, score). Symbol is a piece letter, "." for empty, or "?" when the
-    reader will not name it.
+    reader will not name it. Score is None when there is no number to give.
 
-    classify() is the stable way to ask and is what the app itself uses, but it
-    only ever says "?" and never how close the call was. The score behind that
-    answer comes from the module's own per square decision, which is private
-    and free to change, so it is used when it is there and the grid falls back
-    to a flat 1.0 for a named square when it is not.
+    The symbol always comes from classify(), never from the scorer. classify()
+    is where the trust gate lives, and the gate only bites on a foreign piece
+    set, which is the one case this whole tool exists for. Showing a confident
+    letter the recorder itself would refuse, and then seeding a template off
+    it, is how a wrong crop would get into the permanent record.
     """
     rows, _ = reader.classify(board_img)
-    flat = [[(s, 0.0 if s == "?" else 1.0) for s in row] for row in rows]
-    try:
-        scored = [[(".", 1.0)] * 8 for _ in range(8)]
-        for r, c, sq in pieces.squares(board_img):
-            symbol, score = pieces._decide(sq, reader.templates)
-            scored[r][c] = ("?" if symbol is None else symbol, float(score))
-        return scored
-    except Exception:
-        return flat
+    scores = _scores(reader, board_img)
+    return [[(rows[r][c], scores[r][c] if scores else None)
+             for c in range(8)] for r in range(8)]
 
 
 def seed_slots(scored):
@@ -89,8 +104,12 @@ def seed_slots(scored):
             symbol, score = scored[r][c]
             if symbol in (".", "?"):
                 continue
-            if symbol not in best or score > best[symbol][0]:
-                best[symbol] = (score, (r, c))
+            # No score at all still seeds, first square wins. A square without
+            # a number was still named by classify(), which is the part that
+            # decides whether a square may be seeded at all.
+            rank = -1.0 if score is None else score
+            if symbol not in best or rank > best[symbol][0]:
+                best[symbol] = (rank, (r, c))
     return {symbol: rc for symbol, (_, rc) in best.items()}
 
 
@@ -144,8 +163,9 @@ class Labels:
                 NAMES[self.pending.upper()])
         if self.sel:
             symbol, score = self.scored[self.sel[0]][self.sel[1]]
-            return "that square reads %s at %.02f. Say what it really is." % (
-                symbol, score)
+            how = "" if score is None else " at %.02f" % score
+            return "that square reads %s%s. Say what it really is." % (symbol,
+                                                                       how)
         return ("Click a square, then say what is on it. Green squares are the "
                 "ones the sheet will be cut from.")
 
@@ -279,6 +299,10 @@ class Enroller:
                 if symbol != ".":
                     self._tag(x + 3, y + 2, symbol,
                               C.WARN if symbol == "?" else C.FG, "bold")
+                if score is not None and symbol != ".":
+                    # Nothing invented. A build with no score to give shows the
+                    # letter and no number, rather than a made up 1.00 sitting
+                    # where a measurement should be.
                     self._tag(x + step - 3, y + step - 2, "%.02f" % score,
                               C.MUTED, "", anchor="se")
                 taught = chosen.get((r, c))

@@ -195,6 +195,7 @@ class Worker(threading.Thread):
         self.reader = pieces.PieceReader()
         self.tracker = W.BoardTracker(directory=directory, reader=self.reader)
         self.manual = region is not None
+        self.lost = False          # the region stopped holding a board
         self.check_now = threading.Event()
         self._quiet = 0
         self._frames = 0
@@ -219,7 +220,14 @@ class Worker(threading.Thread):
             if found:
                 self.region = found
                 self._quiet = 0
-            elif self.region is None:
+            elif self.region is None or self.lost:
+                # The rectangle we were watching has stopped holding a board
+                # and the hunt found no other one, so let it go. Keeping it
+                # went on reading a position off pixels that are no longer a
+                # board, and reporting that position every frame for as long as
+                # the app ran, which is what left the coaching arrow drawn over
+                # whatever took the board's place.
+                self.region = None
                 self.out.put(("searching", None))
                 return
 
@@ -280,6 +288,7 @@ class Worker(threading.Thread):
             "flipped": self.tracker.flipped,
             "check": self.tracker.last_check,
             "templates": self.reader.source,
+            "sheet": self.reader.sheet,
         }))
 
     def _run_check(self, shot, event):
@@ -347,7 +356,13 @@ class Worker(threading.Thread):
         A region you picked by hand is left alone while it still holds a board,
         but not for ever: a stale pick that no longer points at one would
         otherwise wedge the app permanently.
+
+        Sets self.lost on the way past. A routine re-hunt while idle and a
+        region that has stopped holding a board both ask for the same search,
+        but only the second is a reason to give the region up when the search
+        comes back empty, and _tick needs to tell them apart.
         """
+        self.lost = False
         if not self.tracker.locked_on and not self.manual:
             return self._frames % REFIND_IDLE == 0
         if not self._quiet or self._quiet % REFIND_CHECK:
@@ -355,8 +370,10 @@ class Worker(threading.Thread):
         try:
             here = grab(self.region)
         except Exception:
+            self.lost = True
             return True
-        return W.grid_score(here, 0, 0, self.region[2]) < STILL_A_BOARD
+        self.lost = W.grid_score(here, 0, 0, self.region[2]) < STILL_A_BOARD
+        return self.lost
 
 
 # ------------------------------------------------------------------ app
@@ -377,6 +394,7 @@ class App:
         self.arrow_fen = None        # the position it named it for
         self.arrow_cleared = None    # a position whose arrow was cleared by hand
         self.teacher = None          # the teach-the-pieces window, if it is open
+        self.taught_sheet = self.cfg.get("sheet")   # pieces taught by hand
         self.region = None
         self.flipped = False
 
@@ -421,9 +439,6 @@ class App:
         tk.Button(tools, text="check the pieces now", command=self._check_now,
                   relief="flat", bg="#3d3a37", fg=FG, cursor="hand2",
                   font=("Segoe UI", 8)).pack(side="left")
-        tk.Button(tools, text="teach the pieces", command=self._teach_pieces,
-                  relief="flat", bg="#3d3a37", fg=FG, cursor="hand2",
-                  font=("Segoe UI", 8)).pack(side="left", padx=(4, 0))
         tk.Label(tools, text="I play:", bg=BG, fg=MUTED,
                  font=("Segoe UI", 8)).pack(side="left", padx=(10, 2))
         for text, value in (("auto", "auto"), ("white", "white"),
@@ -450,9 +465,20 @@ class App:
                        command=self._toggle_arrow, bg=BG, fg=MUTED, selectcolor=BG,
                        activebackground=BG, activeforeground=FG,
                        font=("Segoe UI", 8), cursor="hand2").pack(side="left")
-        tk.Button(switches, text="clear arrows", command=self._clear_arrows,
+
+        # A row of their own, for the reason written above the switches. The
+        # tools row is full at 400px already, and Segoe UI grows with the
+        # display scaling while the 400px floor does not, so at 150% a widget
+        # added to a full row is the one silently not drawn. Both pack left, so
+        # neither of these is the one on the end that goes first.
+        extras = tk.Frame(self.root, bg=BG)
+        extras.pack(fill="x", padx=12, pady=(0, 4))
+        tk.Button(extras, text="clear arrows", command=self._clear_arrows,
                   relief="flat", bg="#3d3a37", fg=FG, cursor="hand2",
-                  font=("Segoe UI", 8)).pack(side="right")
+                  font=("Segoe UI", 8)).pack(side="left")
+        tk.Button(extras, text="teach the pieces", command=self._teach_pieces,
+                  relief="flat", bg="#3d3a37", fg=FG, cursor="hand2",
+                  font=("Segoe UI", 8)).pack(side="left", padx=(6, 0))
 
         self.lbl_coach = tk.Label(self.root, text="", bg=BG, fg=ACCENT,
                                   font=("Segoe UI", 10, "bold"), anchor="w")
@@ -523,6 +549,12 @@ class App:
     def _start(self):
         self.worker = Worker(self.board_region, self.q)
         self.worker.tracker.set_colour(self.colour_choice.get())
+        # Every worker builds a fresh reader on the bundled sheet, so pieces
+        # taught by hand have to be handed back on every start or they would
+        # last only until the next restart, which is most of the point of
+        # having taught them.
+        if self.taught_sheet:
+            self._use_taught(self.taught_sheet)
         self.worker.start()
         self.btn.configure(text="Stop watching", bg="#b33a3a",
                            activebackground="#8f2f2f")
@@ -541,7 +573,7 @@ class App:
         self.lbl_status.configure(text="stopped", fg=MUTED)
         # No frames are coming any more, so nothing else would ever take it
         # down and it would sit on the board pointing at a dead position.
-        self._show_arrow(None)
+        self._hide_arrow()
 
     def _pick(self):
         picked = RegionPicker(self.root, "Drag a box around the BOARD, corner to corner").result
@@ -559,7 +591,7 @@ class App:
         if not self.coach_on.get():
             self.lbl_coach.configure(text="")
             self.coach_fen = None
-            self._show_arrow(None)
+            self._hide_arrow()
             return
         if self.coach is None:
             path = CO.find_engine()
@@ -583,14 +615,24 @@ class App:
             self._toggle_coach()
         if self.arrow is None and self.coach_on.get():
             self.arrow = OV.Arrow(self.root)
-        OV.close_orphans(self.root, keep=self.arrow)
         self._sync_arrow()
 
-    def _show_arrow(self, uci, fen=None):
+    def _show_arrow(self, uci, fen):
         """Remember what the engine said and which position it said it about.
-        Whether that is still worth drawing is _sync_arrow's decision."""
+        Whether that is still worth drawing is _sync_arrow's decision.
+
+        fen has no default on purpose. None is also the "nothing cleared"
+        sentinel, so a call that forgot to pass one would suppress the arrow
+        for the rest of the session rather than fail.
+        """
         self.arrow_uci = uci
         self.arrow_fen = fen
+        self._sync_arrow()
+
+    def _hide_arrow(self):
+        """Forget the advice as well as taking the arrow down, so a later frame
+        cannot decide it is still current."""
+        self.arrow_uci = self.arrow_fen = None
         self._sync_arrow()
 
     def _sync_arrow(self):
@@ -625,10 +667,7 @@ class App:
         brings arrows back on its own.
         """
         self.arrow_cleared = self.coach_fen
-        self._show_arrow(None)
-        # A half built Arrow leaves a Toplevel nothing holds a handle to. That
-        # window is exactly what this button is for.
-        OV.close_orphans(self.root, keep=self.arrow)
+        self._hide_arrow()
 
     def _teach_pieces(self):
         """Label the pieces on the board by hand. The only route into a game
@@ -647,9 +686,17 @@ class App:
                                        on_saved=self._use_taught)
 
     def _use_taught(self, path):
-        """Read with the sheet that was just taught. use_bundled() is the one
-        public way in: it loads self.sheet whatever that points at, all or
-        nothing, and resets the learned size that stale() judges."""
+        """Read with the sheet that was just taught, and keep reading with it
+        after a restart.
+
+        use_bundled() is the one public way in: it loads self.sheet whatever
+        that points at, all or nothing, and resets the learned size stale()
+        judges. It replaces the whole set rather than merging, which is the
+        right way round here. Teaching is only ever reached by clicking the
+        button, it is offered for a board nothing can read, and the first
+        starting position of the next game relearns from the screen and takes
+        the better set straight back.
+        """
         reader = self.worker.reader if self.worker else None
         if reader is None:
             return
@@ -657,14 +704,21 @@ class App:
         reader.sheet = path
         if reader.use_bundled():
             reader.source = "taught by hand"
+            self.taught_sheet = path
+            self._save_config()
             self.lbl_check.configure(text="reading with the pieces you taught",
                                      fg=ACCENT)
-        else:
-            # relearn() falls back on this path when a learned set goes stale,
-            # so leaving it pointed at a sheet that will not load would break
-            # the fallback as well as this.
-            reader.sheet = was
-            self.lbl_check.configure(text="that sheet would not load", fg=WARN)
+            return
+        # relearn() falls back on this path when a learned set goes stale, so
+        # leaving it pointed at a sheet that will not load would break the
+        # fallback as well as this.
+        reader.sheet = was
+        if self.taught_sheet == path:
+            # It loaded once and has since been deleted or damaged. Forget it
+            # rather than complaining about it at every launch from now on.
+            self.taught_sheet = None
+            self._save_config()
+        self.lbl_check.configure(text="that sheet would not load", fg=WARN)
 
     def _toggle_board(self):
         if self.show_board.get():
@@ -715,7 +769,7 @@ class App:
                         continue
                     if payload.get("over"):
                         self.lbl_coach.configure(text="the game is over", fg=MUTED)
-                        self._show_arrow(None)
+                        self._hide_arrow()
                         continue
                     whose = ("your move" if payload["turn"] == self.my_colour
                              else "their move")
@@ -801,7 +855,15 @@ class App:
         # happens to be a check note to hang it off.
         note = f.get("check") or ""
         if f.get("templates"):
-            note = (note + "   " if note else "") + "(pieces %s)" % f["templates"]
+            kind = f["templates"]
+            loaded = f.get("sheet")
+            if kind == "bundled" and loaded not in (None, pieces.TEMPLATE_SHEET):
+                # use_bundled() calls whatever self.sheet points at "bundled",
+                # and relearn() calls use_bundled(), so the reader's own word
+                # for a taught sheet does not survive the first relearn. Which
+                # file is loaded does.
+                kind = "taught by hand"
+            note = (note + "   " if note else "") + "(pieces %s)" % kind
         self.lbl_check.configure(
             text=note, fg=ACCENT if "confirmed" in note else MUTED)
 
@@ -812,10 +874,17 @@ class App:
             else:
                 self.lbl_coach.configure(text="")
                 self.coach_fen = None
-                self._show_arrow(None)
+                self._hide_arrow()
 
         if f["path"]:
             self.lbl_file.configure(text="games\\" + os.path.basename(f["path"]))
+
+        # A cleared arrow is cleared for one position, not for the rest of the
+        # session. Two games in a sitting reach byte-identical opening FENs,
+        # clocks and move numbers included, so a suppression left lying about
+        # would swallow the arrow in the next game with nothing clicked in it.
+        if f.get("event") == "newgame" or self.arrow_cleared != self.coach_fen:
+            self.arrow_cleared = None
 
         # Last, because it reads the region, the flip and the position this
         # frame just set. Any of the three changing is what makes an arrow
@@ -836,7 +905,8 @@ class App:
             json.dump({"board_region": self.board_region,
                        "colour": self.colour_choice.get(),
                        "coach": bool(self.coach_on.get()),
-                       "arrow": bool(self.arrow_on.get())}, fh, indent=2)
+                       "arrow": bool(self.arrow_on.get()),
+                       "sheet": self.taught_sheet}, fh, indent=2)
         os.replace(tmp, CONFIG_PATH)
 
     def _quit(self):

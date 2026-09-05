@@ -26,7 +26,6 @@ import chess
 COLOUR = "#00E8FF"        # greys to 165, between the reader's 70 and 244
 KEY = "#010101"           # becomes transparent; never drawn
 ALPHA = 0.85
-ARROW_TAG = "_chesswatch_arrow"    # marks an arrow window, see close_orphans
 
 GWL_EXSTYLE = -20
 WS_EX_LAYERED = 0x00080000
@@ -78,41 +77,13 @@ def wanted(on, region, position, advice_for, advice_uci, cleared,
     complete description of the arrow, so a caller that redraws whenever this
     changes cannot leave a stale one behind.
     """
-    if not (on and region and advice_uci):
-        return None
+    if not (on and region and advice_uci and position):
+        return None            # nothing on screen to be advising about
     if advice_for != position:
         return None            # the board has moved past this advice
-    if advice_for == cleared:
+    if cleared is not None and advice_for == cleared:
         return None            # taken down by hand, and not for one frame only
     return tuple(region), advice_uci, bool(flipped)
-
-
-def _orphans(children, spare):
-    """The arrow windows among a list of widgets, except the one in use."""
-    return [c for c in children
-            if getattr(c, ARROW_TAG, False) and c is not spare]
-
-
-def close_orphans(root, keep=None):
-    """Destroy every arrow window except the one still in use, and say how many
-    went.
-
-    Nothing in the app builds a second Arrow, but an Arrow whose __init__ fails
-    after the Toplevel exists leaves a window Tk still owns and Python no
-    longer points at. The caller's self.arrow stays None, so nothing is left to
-    take that window down with, and it sits on the board for the rest of the
-    session. Tk keeps every child in root.children whether or not anything
-    references it, so the tag set at creation is enough to find one.
-    """
-    gone = 0
-    spare = getattr(keep, "win", None)
-    for child in _orphans(list(root.winfo_children()), spare):
-        try:
-            child.destroy()
-        except tk.TclError:
-            pass
-        gone += 1
-    return gone
 
 
 def make_click_through(win):
@@ -136,7 +107,6 @@ class Arrow:
 
     def __init__(self, root):
         self.win = tk.Toplevel(root)
-        setattr(self.win, ARROW_TAG, True)   # so close_orphans can find it
         try:
             self.win.withdraw()
             self.win.overrideredirect(True)
@@ -153,8 +123,13 @@ class Arrow:
             self.click_through = make_click_through(self.win)
         except BaseException:
             # Take the window with us. Whoever asked for the Arrow never gets a
-            # reference back, so this is the last moment anything can.
-            self.win.destroy()
+            # reference back, so nothing after this could destroy it and it
+            # would sit on the board for the rest of the session. Tearing it
+            # down must not replace the exception that caused the teardown.
+            try:
+                self.win.destroy()
+            except BaseException:
+                pass
             raise
         self._styled = False
         self._shown = False
