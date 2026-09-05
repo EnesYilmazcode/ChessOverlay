@@ -98,16 +98,31 @@ def tally(reader, board_img, truth):
     return correct, wrong, unknown
 
 
-def slots_from(truth):
-    """Where somebody clicking through the board ends up: the first square
-    holding each of the twelve types."""
+def slots_from(truth, paired=True):
+    """Where somebody clicking through the board ends up: the first square of
+    each colour holding each of the twelve types.
+
+    With paired False it is the first square of any colour, which is the person
+    who clicked twelve times and stopped.
+    """
     out = {}
     for r in range(8):
         for c in range(8):
             symbol = truth[r][c]
-            if symbol != "." and symbol not in out:
-                out[symbol] = (r, c)
+            if symbol == ".":
+                continue
+            here = out.setdefault(symbol, {})
+            if paired or not here:
+                here.setdefault(E.light_square(r, c), (r, c))
     return out
+
+
+def h8_ranking(reader, board_img):
+    """Every piece type scored against h8, best first. Row 0 column 7 on
+    screen, with white at the bottom."""
+    levels = P._levels(board_img)
+    feat = P._board_features(board_img, levels)[7]
+    return P.ranking(feat, reader.templates)
 
 
 # ---------------------------------------------------------------- the sheet
@@ -118,13 +133,18 @@ def sheet():
     tmp = tempfile.mkdtemp()
     try:
         path = E.write_sheet(b1, slots_from(TRUTH_1), os.path.join(tmp, "a.png"))
-        check("the sheet is the size make_templates.py writes",
+        check("the sheet holds each piece on each square colour",
               Image.open(path).size,
-              (P.TEMPLATE_PX * len(P.ORDER), P.TEMPLATE_PX))
+              (P.TEMPLATE_PX * P.PAIRED_SLOTS, P.TEMPLATE_PX))
 
         taught = P.PieceReader(path)
         check("and the ordinary reader loads it without being told anything",
               taught.ready, True)
+        check("  as two templates a piece",
+              sorted({len(v) for v in taught.templates.values()}), [2])
+        check("  which know which colour they came off",
+              sorted({t.light for v in taught.templates.values() for t in v}),
+              [False, True])
         check("a board taught from itself then reads back with nothing wrong",
               tally(taught, b1, TRUTH_1), (64, 0, 0))
 
@@ -139,11 +159,42 @@ def sheet():
         print("      6.png, a set the bundled sheet has never seen:")
         print("        bundled  correct %d  wrong %d  unknown %d" % base)
         print("        taught   correct %d  wrong %d  unknown %d" % got)
-        check("  teaching reads at least the 51 squares of 6.png it read here",
-              got[0] >= 51, True)
+        check("  teaching reads at least the 59 squares of 6.png it read here",
+              got[0] >= 59, True)
         check("  and names nothing wrong doing it", got[1], 0)
-        check("  which beats the 33 the bundled sheet managed",
+        check("  which beats the 40 the bundled sheet managed",
               got[0] > base[0], True)
+
+        # The square colour is what does that, and h8 is where it shows. A
+        # rook cut only from light a8 loses that square to a pawn cut from dark
+        # a7, on parity rather than on shape, and no threshold reaches it
+        # because both scores are honest.
+        one = E.write_sheet(b6, slots_from(TRUTH_6, paired=False),
+                            os.path.join(tmp, "d.png"))
+        flat = tally(P.PieceReader(one), b6, TRUTH_6)
+        print("        one colour only: correct %d  wrong %d  unknown %d" % flat)
+        check("  one square a piece is what got h8 wrong", flat[1], 1)
+        for label, sheet_path in (("one colour", one), ("both colours", path6)):
+            ranked = h8_ranking(P.PieceReader(sheet_path), b6)
+            print("      h8, a black rook on a dark square, taught from %s:"
+                  % label)
+            for score, symbol in ranked[:3]:
+                print("        %s  %.4f%s" % (symbol, score,
+                                              "   <- correct" if symbol == "r"
+                                              else ""))
+        check("  and teaching both colours puts the rook back on top",
+              h8_ranking(P.PieceReader(path6), b6)[0][1], "r")
+        check("  clear of the pawn by more than the margin asks",
+              h8_ranking(P.PieceReader(path6), b6)[0][0]
+              - h8_ranking(P.PieceReader(path6), b6)[1][0] > P.MIN_MARGIN, True)
+
+        # A person who clicks twelve times and stops has to be no worse off
+        # than the one slot sheet left them, which means the same reading.
+        check("twelve clicks still writes a whole sheet",
+              Image.open(one).size,
+              (P.TEMPLATE_PX * P.PAIRED_SLOTS, P.TEMPLATE_PX))
+        check("  and reads the board no worse than one slot a piece did",
+              flat[0] >= 58 and flat[1] <= 1, True)
 
         # A slot left black is not a sheet with a hole in it, it is a template
         # that matches every square, so it has to be refused before it is
@@ -160,6 +211,53 @@ def sheet():
               failed, "nothing taught for K q")
         check("  and no file is left behind",
               os.path.exists(os.path.join(tmp, "c.png")), False)
+
+        # The bundled sheet is still twelve slots and has to keep loading
+        # exactly as it did, with no colour claimed for anything.
+        plain = P.PieceReader()
+        check("the sheet that ships is still read as one template a piece",
+              (Image.open(P.TEMPLATE_SHEET).size[0] // P.TEMPLATE_PX,
+               sorted({len(v) for v in plain.templates.values()})),
+              (P.PLAIN_SLOTS, [1]))
+        check("  and claims no square colour it cannot know",
+              {t.light for v in plain.templates.values() for t in v}, {None})
+
+        # Cut short. Under twelve is rubble. Past twelve it falls back to the
+        # first twelve slots and reads as a plain sheet. Cut to exactly twelve
+        # it is refused, and rightly: those twelve are every light square and
+        # nothing else, so _levels finds one board colour where it needs two
+        # and every slot reduces to nothing. All three are all or nothing,
+        # which is the guarantee that matters.
+        wide = Image.open(path6)
+        for slots, want in ((5, False), (P.PLAIN_SLOTS, False),
+                            (P.PLAIN_SLOTS + 4, True), (P.PAIRED_SLOTS, True)):
+            cut = os.path.join(tmp, "cut%d.png" % slots)
+            wide.crop((0, 0, slots * P.TEMPLATE_PX, P.TEMPLATE_PX)).save(cut)
+            reader = P.PieceReader(cut)
+            check("  a %d slot cut of a paired sheet loads: %s"
+                  % (slots, want), reader.ready, want)
+            if want:
+                check("    as %d template(s) a piece"
+                      % (2 if slots >= P.PAIRED_SLOTS else 1),
+                      sorted({len(v) for v in reader.templates.values()}),
+                      [2] if slots >= P.PAIRED_SLOTS else [1])
+            else:
+                check("    and leaves whatever was loaded alone",
+                      reader.source, "none")
+
+        # Which is why a sheet has to be refused at the point it is written,
+        # where the reason can still be said plainly.
+        one_colour = {s: {True: rc[True]} for s, rc in slots_from(TRUTH_1).items()
+                      if True in rc}
+        one_colour.update({s: {True: (0, 0)} for s in P.ORDER
+                           if s not in one_colour})
+        failed = ""
+        try:
+            E.write_sheet(b1, one_colour, os.path.join(tmp, "e.png"))
+        except ValueError as exc:
+            failed = str(exc)
+        check("teaching every piece off one square colour is refused",
+              failed, "every square taught is the same colour")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -185,16 +283,25 @@ def knows():
         named = {(r, c) for r in range(8) for c in range(8)
                  if rows[r][c] not in (".", "?")}
         seeded = E.seed_slots(scored)
+        picked = [(s, rc) for s, here in seeded.items() for rc in here.values()]
         check("  and no square classify() refused is seeded",
-              [rc for rc in seeded.values() if rc not in named], [])
-        right = sum(1 for s, (r, c) in seeded.items() if truths[name][r][c] == s)
-        print("      %s.png: proposes %d of 12 squares, %d of them right"
-              % (name, len(seeded), right))
+              [rc for _, rc in picked if rc not in named], [])
+        right = sum(1 for s, (r, c) in picked if truths[name][r][c] == s)
+        pairs = sum(1 for here in seeded.values() if len(here) == 2)
+        print("      %s.png: proposes %d of 12 pieces, %d on both colours, "
+              "%d squares, %d of them right"
+              % (name, len(seeded), pairs, len(picked), right))
         check("  and every square it does propose holds that piece",
-              right, len(seeded))
+              right, len(picked))
 
+    seeded1 = E.seed_slots(E.beliefs(bundled, boards["1"]))
     check("on a set it can read there is nothing left to click",
-          len(E.seed_slots(E.beliefs(bundled, boards["1"]))), 12)
+          len(seeded1), 12)
+    # Eight of the twelve types stand on both square colours in that position.
+    # The two kings and the two queens have one square each, so four cannot be
+    # paired from any board, and are the ones written into both halves.
+    check("  and it proposes both colours wherever both are there",
+          sum(1 for here in seeded1.values() if len(here) == 2), 8)
     check("on the set from issue #20 it proposes almost nothing",
           len(E.seed_slots(E.beliefs(bundled, boards["6"]))) < 4, True)
 
@@ -235,12 +342,27 @@ def labels():
     lab = E.Labels(scored)
     seeded = dict(lab.slots)
 
+    lab.slots.clear()
+
+    # a8 is light, h8 is dark, both hold a black rook.
     lab.square(0, 0)
     check("a square clicked on its own just waits", (lab.sel, lab.pending),
           ((0, 0), None))
     lab.symbol("r")
-    check("  and the piece named next is taken from it", lab.slots["r"], (0, 0))
+    check("  and the piece named next is taken from it",
+          lab.slots["r"], {True: (0, 0)})
     check("  with nothing left waiting", (lab.sel, lab.pending), (None, None))
+
+    lab.symbol("r")
+    lab.square(0, 7)
+    check("the other colour is kept alongside, not instead",
+          lab.slots["r"], {True: (0, 0), False: (0, 7)})
+    check("  which is what makes it a pair", lab.paired(), ["r"])
+    lab.symbol("r")
+    lab.square(0, 4)
+    check("but a second square of a colour it has replaces that one",
+          lab.slots["r"], {True: (0, 4), False: (0, 7)})
+    lab.slots["r"] = {True: (0, 0), False: (0, 7)}
 
     lab.symbol("k")
     check("a piece clicked first waits for a square", lab.pending, "k")
@@ -248,27 +370,46 @@ def labels():
     check("  clicking it again puts it back down", lab.pending, None)
     lab.symbol("k")
     lab.square(0, 4)
-    check("  and the next square clicked answers it", lab.slots["k"], (0, 4))
+    check("  and the next square clicked answers it",
+          lab.slots["k"], {True: (0, 4)})
+    lab.symbol("k")
+    check("the hint asks for the colour that would help, and calls it optional",
+          lab.hint(), "now a dark square holding the black king, if there is one")
+    lab.pending = None
 
-    check("the ones it started with are still there where untouched",
-          [s for s in seeded if lab.slots.get(s) == seeded[s]],
-          [s for s in seeded if s not in ("r", "k")])
-
+    check("nothing taught for a piece is what missing means",
+          "".join(lab.missing()), "KQRBNPqbnp")
     lab.slots.clear()
-    check("nothing taught means all twelve are missing",
+    check("  so an empty sheet is all twelve",
           "".join(lab.missing()), P.ORDER)
     check("  and the count says so",
           lab.status().startswith("0 of 12 taught"), True)
-    for symbol, rc in slots_from(TRUTH_6).items():
-        lab.slots[symbol] = rc
+
+    lab.slots.update(slots_from(TRUTH_6))
     check("all twelve taught leaves nothing missing", lab.missing(), [])
     check("  and says it is ready", lab.status().endswith("ready to save"), True)
-    check("two pieces cannot be taken from one square without saying so",
-          len(set(lab.chosen())), 12)
+    check("  and says how many are on both colours",
+          lab.status().startswith("12 of 12 taught, %d on both colours"
+                                  % len(lab.paired())), True)
+    check("the starting position pairs everything but the kings and queens",
+          "".join(s for s in P.ORDER if s not in lab.paired()), "KQkq")
+    check("every square it will cut from is a different one",
+          len(lab.chosen()),
+          sum(len(here) for here in lab.slots.values()))
 
+    # The white king starts on e1, a dark square, and has no light one to pair
+    # with. The white pawns cover both colours already.
+    lab.pending = "K"
+    check("the hint names the colour still worth a click",
+          lab.hint(), "now a light square holding the white king, "
+                      "if there is one")
     lab.pending = "P"
-    check("the hint says what the next click will do",
+    check("  and stops asking once a piece has both",
           lab.hint(), "now click the square holding the white pawn")
+    lab.slots.pop("P")
+    check("  as it does before a piece has any",
+          lab.hint(), "now click the square holding the white pawn")
+    lab.slots.update(slots_from(TRUTH_6))
     lab.pending = None
     lab.sel = (0, 0)
     check("  and a picked square says what it currently reads",

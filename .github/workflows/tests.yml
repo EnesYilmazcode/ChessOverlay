@@ -62,6 +62,15 @@ jobs:
       - name: settletest
         if: always()
         run: python -X utf8 settletest.py
+      - name: banktest
+        if: always()
+        run: python -X utf8 banktest.py
+      - name: positiontest
+        if: always()
+        run: python -X utf8 positiontest.py
+      - name: enrolltest
+        if: always()
+        run: python -X utf8 enrolltest.py
       - name: overlaytest
         if: always()
         run: python -X utf8 overlaytest.py

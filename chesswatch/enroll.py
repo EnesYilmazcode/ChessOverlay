@@ -27,7 +27,7 @@ from PIL import Image, ImageTk
 
 import watcher as W
 import pieces
-from pieces import ORDER, TEMPLATE_PX
+from pieces import ORDER, TEMPLATE_PX, PAIRED_SLOTS
 
 # chesswatch is imported for the screen grab and the colours, and it is safe
 # from here because chesswatch only imports this file inside the button that
@@ -53,6 +53,13 @@ def board_of(img):
         return img
     x, y, size = rect
     return img.crop((x, y, x + size, y + size))
+
+
+def light_square(row, col):
+    """True when a screen square is a light one. a8 and h1 are both light, so
+    screen parity says which colour a square is whichever way round the board
+    is being looked at."""
+    return (row + col) % 2 == 0
 
 
 def _scores(reader, board_img):
@@ -91,12 +98,15 @@ def beliefs(reader, board_img):
 
 
 def seed_slots(scored):
-    """The reader's own pick of which square to cut each piece from: for every
-    symbol it named, the square it scored highest on.
+    """The reader's own pick of which squares to cut each piece from: for every
+    symbol it named, the square it scored highest on of each colour.
 
     This is the half that turns twelve labels into a correction. A reader that
     names nothing seeds nothing and the window opens empty, which is the honest
     picture of what it knows.
+
+    A pair of opposite colours is what is worth having, so both are seeded
+    whenever the reader named the piece on both. See write_sheet.
     """
     best = {}
     for r in range(8):
@@ -108,14 +118,23 @@ def seed_slots(scored):
             # a number was still named by classify(), which is the part that
             # decides whether a square may be seeded at all.
             rank = -1.0 if score is None else score
-            if symbol not in best or rank > best[symbol][0]:
-                best[symbol] = (rank, (r, c))
-    return {symbol: rc for symbol, (_, rc) in best.items()}
+            here = best.setdefault(symbol, {})
+            light = light_square(r, c)
+            if light not in here or rank > here[light][0]:
+                here[light] = (rank, (r, c))
+    return {symbol: {light: rc for light, (_, rc) in here.items()}
+            for symbol, here in best.items()}
 
 
 class Labels:
-    """Which square each of the twelve pieces will be cut from, and the two
+    """Which squares each of the twelve pieces will be cut from, and the two
     ways a person arrives at that.
+
+    Up to one square of each colour per piece, because that is what the sheet
+    can carry and what the reader wants. Twelve is still the whole job: a piece
+    taught on one colour is written into both halves and is no worse off than
+    it was when the sheet held one slot each. A thirteenth click, on the same
+    piece standing on the other colour, is what buys the better read.
 
     Kept apart from the window on purpose. This is all the bookkeeping there
     is, so it can be checked without opening anything, and the window is left
@@ -128,12 +147,18 @@ class Labels:
         self.sel = None          # a square waiting to be told what it holds
         self.pending = None      # a piece waiting to be shown where it is
 
+    def _teach(self, symbol, row, col):
+        """A second square of the same colour replaces the first, since it is a
+        correction. A second of the other colour is kept alongside, since it is
+        the extra the pair is made of."""
+        self.slots.setdefault(symbol, {})[light_square(row, col)] = (row, col)
+
     def square(self, row, col):
         """A square either answers the piece that is waiting for one, or
         becomes the square waiting for a piece. Both orders work because there
         is no telling which way round someone will click."""
         if self.pending:
-            self.slots[self.pending] = (row, col)
+            self._teach(self.pending, row, col)
             self.pending = self.sel = None
         else:
             self.sel = (row, col)
@@ -142,25 +167,33 @@ class Labels:
         """A piece either lands on the square already picked, or waits for one.
         Clicking the waiting piece again puts it back down."""
         if self.sel:
-            self.slots[symbol] = self.sel
+            self._teach(symbol, *self.sel)
             self.sel = self.pending = None
         else:
             self.pending = None if self.pending == symbol else symbol
 
     def missing(self):
-        return [s for s in ORDER if s not in self.slots]
+        return [s for s in ORDER if not self.slots.get(s)]
+
+    def paired(self):
+        """The pieces taught on both square colours."""
+        return [s for s in ORDER if len(self.slots.get(s, ())) == 2]
 
     def chosen(self):
         """The square each piece is coming from, keyed the way the board is
         drawn rather than the way the sheet is written."""
-        return {rc: s for s, rc in self.slots.items()}
+        return {rc: s for s, here in self.slots.items() for rc in here.values()}
 
     def hint(self):
         """One line saying what a click will do next."""
         if self.pending:
-            return "now click the square holding the %s%s" % (
-                "white " if self.pending.isupper() else "black ",
-                NAMES[self.pending.upper()])
+            name = ("white " if self.pending.isupper() else "black ") \
+                   + NAMES[self.pending.upper()]
+            here = self.slots.get(self.pending)
+            if here and len(here) == 1:
+                return "now a %s square holding the %s, if there is one" % (
+                    "dark" if next(iter(here)) else "light", name)
+            return "now click the square holding the " + name
         if self.sel:
             symbol, score = self.scored[self.sel[0]][self.sel[1]]
             how = "" if score is None else " at %.02f" % score
@@ -171,32 +204,57 @@ class Labels:
 
     def status(self):
         missing = self.missing()
-        return "%d of 12 taught%s" % (
-            12 - len(missing),
-            ("   still missing: " + " ".join(missing)) if missing
-            else "   ready to save")
+        if missing:
+            return "%d of 12 taught   still missing: %s" % (
+                12 - len(missing), " ".join(missing))
+        # The pair count is shown rather than demanded. Twelve saves, and a
+        # piece on both colours reads better than the same piece on one.
+        return "12 of 12 taught, %d on both colours   ready to save" % len(
+            self.paired())
 
 
 def write_sheet(board_img, slots, path=TAUGHT_SHEET):
-    """Write the twelve slot sheet, in make_templates.py's layout.
+    """Write the paired sheet: the twelve pieces as they look on a light
+    square, then the same twelve on a dark one.
 
-    slots maps a piece symbol to the (row, col) of a square on this board that
-    holds one, row 0 being the top of the screen. All twelve are required.
+    slots maps a piece symbol to {light: (row, col)}, squares on this board
+    holding that piece, row 0 being the top of the screen. All twelve symbols
+    are required, one colour each at the least.
+
+    The square colour is why this is 24 slots rather than make_templates.py's
+    12. One crop per piece meant a rook taught from a light square was the only
+    rook a dark square rook could be compared with, and it lost to a pawn
+    taught from a dark square: on 6.png the h8 rook scored 0.518 as a pawn and
+    0.413 as a rook, which no threshold reaches because both are honest.
+
+    A piece known on only one colour is written into both halves. That is what
+    the picture holds, a king only ever stands on one square, and it leaves
+    such a piece exactly where the one slot sheet left it.
+
     A sheet with a slot left black would not fail to load, it would load as a
-    solid mask that matches every square, so a missing slot has to be refused
-    here rather than written and discovered later.
+    template matching every square, so a missing piece is refused here rather
+    than written and discovered later.
     """
-    missing = [s for s in ORDER if s not in slots]
+    missing = [s for s in ORDER if not slots.get(s)]
     if missing:
         raise ValueError("nothing taught for " + " ".join(missing))
+    # The reader measures the two board colours off the sheet itself, so a
+    # sheet cut entirely from one colour holds only one and every slot reduces
+    # to nothing. Unreachable from a real position, where the two kings alone
+    # stand on opposite colours, but the error it would otherwise give is a
+    # blank slot a long way from the cause.
+    if len({light for here in slots.values() for light in here}) < 2:
+        raise ValueError("every square taught is the same colour")
     step = board_img.size[0] / 8.0
-    sheet = Image.new("RGB", (TEMPLATE_PX * len(ORDER), TEMPLATE_PX))
-    for slot, symbol in enumerate(ORDER):
-        r, c = slots[symbol]
-        crop = board_img.crop((int(c * step), int(r * step),
-                               int((c + 1) * step), int((r + 1) * step)))
-        sheet.paste(crop.resize((TEMPLATE_PX, TEMPLATE_PX), Image.LANCZOS),
-                    (slot * TEMPLATE_PX, 0))
+    sheet = Image.new("RGB", (TEMPLATE_PX * PAIRED_SLOTS, TEMPLATE_PX))
+    for half, light in enumerate((True, False)):
+        for i, symbol in enumerate(ORDER):
+            here = slots[symbol]
+            r, c = here.get(light) or next(iter(here.values()))
+            crop = board_img.crop((int(c * step), int(r * step),
+                                   int((c + 1) * step), int((r + 1) * step)))
+            sheet.paste(crop.resize((TEMPLATE_PX, TEMPLATE_PX), Image.LANCZOS),
+                        ((half * len(ORDER) + i) * TEMPLATE_PX, 0))
     # Written beside then moved into place, so an interrupted save leaves the
     # sheet that was already working rather than half of a new one.
     tmp = path + ".tmp"

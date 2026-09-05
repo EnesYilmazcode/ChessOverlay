@@ -192,8 +192,16 @@ almost nothing. **teach the pieces** is the way out: it shows the board cut into
 its 64 squares with what the reader currently believes about each one, and you
 click a square and say what is on it. Twelve labels is the whole job, and it
 starts from the reader's own answer, so on a set it already half reads you only
-correct what is wrong. What it writes is an ordinary template sheet, kept in
-`taught.png` and loaded again next time you start.
+correct what is wrong. What it writes is a template sheet, kept in `taught.png`
+and loaded again next time you start.
+
+It keeps one square of each colour per piece where it can, and clicking a second
+square of the other colour is what buys the better read. Board colour is not
+thrown away by the mask, so a rook cut from a light square is being compared
+against a dark square rook on the square colour as much as on the shape: teach
+the pieces of 6.png from single squares and its h8 rook scores 0.518 as a pawn
+against 0.413 as a rook and is read as a pawn. With both colours the same rook
+scores 0.749 and every one of the 64 squares that is read at all is read right.
 
 It runs on its own too, against a screenshot rather than the screen:
 
@@ -295,7 +303,7 @@ rectangle is in use.
     python selftest.py      87 checks, including real screenshots
     python piecetest.py     49 checks on the piece reader under a bad capture
     python positiontest.py  29 checks on the whole board solver, no pixels
-    python enrolltest.py    92 checks on teaching the pieces and on the arrow
+    python enrolltest.py   119 checks on teaching the pieces and on the arrow
     python coachtest.py     18 checks on the engine wrapper and its label
     python overlaytest.py   17 checks that the arrow cannot corrupt a reading
     python settletest.py    move animation, with the screen on a clock

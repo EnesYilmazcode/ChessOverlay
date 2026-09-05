@@ -50,6 +50,15 @@ CACHE_DIR = os.path.join(APP_DIR, "learned")
 
 ORDER = "KQRBNPkqrbnp"
 TEMPLATE_PX = 96          # size each template is stored at
+
+# The two sheet widths. PLAIN_SLOTS is one template per piece, which is what
+# pieces.png ships as and what make_templates.py writes, and it says nothing
+# about which square colour each piece was standing on. PAIRED_SLOTS is those
+# twelve as they look on a light square followed by the same twelve on a dark
+# one, which is what learn() keeps in memory and what enroll.py writes. See
+# _read_sheet.
+PLAIN_SLOTS = len(ORDER)
+PAIRED_SLOTS = 2 * len(ORDER)
 NORM = 40                 # size every mask is compared at
 MIN_OVERLAP = 0.30        # below this, call it unrecognised rather than guess
 
@@ -700,24 +709,52 @@ class PieceReader:
         return len(self.templates) == 12
 
     def _read_sheet(self, path):
+        """Load a sheet of either width. See PLAIN_SLOTS and PAIRED_SLOTS.
+
+        The reader has always held a list of templates per piece and scored a
+        square against the best of them, so a paired sheet needs nothing new
+        below this: it is only the file that could not say it. What it buys is
+        the square colour. A rook cut from a light square is compared against a
+        dark square rook on parity as much as on shape, which is how a taught
+        starting position read the h8 rook as a pawn: p scored 0.518 against a
+        pawn cut from a dark square and r scored 0.413 against a rook cut from
+        a light one.
+        """
         img = Image.open(path).convert("RGB")
         # crop() pads out of bounds with black, and black counts as a piece
         # pixel, so a truncated sheet would load as solid masks that match
         # everything rather than fail. Check the width instead.
-        if img.size[0] < len(ORDER) * TEMPLATE_PX:
+        #
+        # A paired sheet cut short falls back to its first twelve slots, which
+        # are a whole plain sheet. Cut to exactly twelve it is refused instead,
+        # and correctly: those twelve are all light squares, so _levels finds
+        # one board colour rather than two and every slot reduces to nothing.
+        # Either way loading is all or nothing and nothing loads as rubble.
+        whole = img.size[0] // TEMPLATE_PX
+        if whole >= PAIRED_SLOTS:
+            slots = PAIRED_SLOTS
+        elif whole >= PLAIN_SLOTS:
+            slots = PLAIN_SLOTS
+        else:
             raise ValueError("template sheet holds fewer than twelve pieces")
-        # The sheet is twelve real squares side by side, board colours and all,
-        # so its own two greys measure the same way a board's do.
+        # The sheet is real squares side by side, board colours and all, so its
+        # own two greys measure the same way a board's do.
         levels = _levels(img)
         out = {}
         feats = []
-        for slot, symbol in enumerate(ORDER):
+        for slot in range(slots):
+            symbol = ORDER[slot % PLAIN_SLOTS]
             feat = _features(img.crop((slot * TEMPLATE_PX, 0,
                                        (slot + 1) * TEMPLATE_PX, TEMPLATE_PX)),
                              levels)
             if feat is None:
                 raise ValueError("template sheet holds a blank slot")
-            out[symbol] = [_Template(feat)]
+            # A plain sheet does not record which colour anything stood on, and
+            # None is the honest answer there: observe() then leaves the sheet
+            # template alone and starts its own average per colour instead of
+            # folding real squares into one that may be the wrong colour.
+            light = slot < PLAIN_SLOTS if slots == PAIRED_SLOTS else None
+            out.setdefault(symbol, []).append(_Template(feat, light))
             feats.append(feat)
         return out, _signature(feats, levels, TEMPLATE_PX)
 
