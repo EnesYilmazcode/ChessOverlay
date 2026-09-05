@@ -1,0 +1,64 @@
+# Runs the test suite on GitHub's machines instead of on a developer's desktop.
+#
+# That distinction matters more here than in most projects. Three of the six
+# suites paint a real window and grab it back, and livetest.py covers the whole
+# desktop, every monitor, while it runs. Anyone who wanted to know whether a
+# change was safe had to give up their screen for the length of the run. Here
+# nobody's screen is involved.
+#
+# Everything runs under xvfb-run, including the suites that need no display.
+# mss imports on a headless Linux box but raises the moment it opens a
+# connection, and a suite that is display-free today can grow a capture test
+# tomorrow. Costs a second, removes a whole class of confusing failure.
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  headless:
+    name: suites that need no display
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: chesswatch
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"      # pieces.py uses int.bit_count, 3.10 floor
+      - run: sudo apt-get update && sudo apt-get install -y xvfb
+      - run: pip install -r requirements.txt
+      - name: selftest
+        run: xvfb-run -a python -X utf8 selftest.py
+      - name: piecetest
+        run: xvfb-run -a python -X utf8 piecetest.py
+      - name: settletest
+        run: xvfb-run -a python -X utf8 settletest.py
+
+  windowed:
+    name: suites that open a window
+    runs-on: ubuntu-latest
+    # Not required yet. livetest.py fails on main for a real reason: the test
+    # renderer cuts its empty-square sprites from a5 and a6, which carry the
+    # rank labels, so every rendered board wears 64 stray glyphs and find_board
+    # lands in the wrong place. PR #21 fixes it. Make this required once that
+    # merges, so the failure is not normalised in the meantime.
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: chesswatch
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: sudo apt-get update && sudo apt-get install -y xvfb python3-tk
+      - run: pip install -r requirements.txt
+      - name: overlaytest
+        run: xvfb-run -a python -X utf8 overlaytest.py
+      - name: livetest
+        run: xvfb-run -a python -X utf8 livetest.py
