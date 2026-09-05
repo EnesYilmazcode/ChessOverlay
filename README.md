@@ -39,6 +39,7 @@ with **pick board manually** and everything else carries on as normal.
 | Folder | What it is | State |
 | --- | --- | --- |
 | [`chesswatch/`](chesswatch/) | Screen recorder. Finds the board, reads it, saves PGN + JSON. | Finished. 78 headless checks plus two on-screen tests. |
+| [`chesswatch/position.py`](chesswatch/position.py) | Picks all 64 squares as one legal position instead of one at a time. | Works. 29 checks. Nothing calls it yet. |
 | [`chesswatch/coach.py`](chesswatch/coach.py) | Stockfish on the position being watched, in plain words. | Works. 18 checks. Off by default. |
 | [`chesswatch/overlay.py`](chesswatch/overlay.py) | That move drawn on the real board, click-through. | Works. 16 checks, measured on screen. |
 | [`holochess/`](holochess/) | Local board, Stockfish 18, best move as a hologram arrow. | Works. 17 checks. |
