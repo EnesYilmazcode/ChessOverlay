@@ -277,12 +277,17 @@ rectangle is in use.
     python settletest.py    move animation, with the screen on a clock
     python livetest.py      full loop through the real capture worker
 
-None of these open a window. `livetest.py` and `overlaytest.py` render the
-board into a desktop sized image and point the worker's capture at that, so the
-whole suite costs no screen space at all. `--on-screen` paints on the real
-desktop instead, in a window the size of the board plus a margin rather than the
-whole desktop, and every run says which mode it was and what that mode cannot
-prove.
+None of these put anything on screen or screenshot your desktop. `livetest.py`
+and `overlaytest.py` render the board into a desktop sized image and point the
+worker's capture at that; `coachtest.py` builds a real Tk app, since the label
+it checks lives in one, but keeps its window withdrawn and its capture pointed
+at a blank image. `--on-screen` paints on the real desktop instead, in a window
+the size of the board plus a margin rather than the whole desktop, and every run
+says which mode it was and what that mode cannot prove.
+
+Redirecting the capture means the real `grab()` stops being exercised, so both
+files check separately that it still decodes mss's BGRA bytes in the right
+order, against a stubbed mss and no screen.
 
 `livetest.py` cuts real chess.com piece sprites out of a screenshot, plays whole
 games across them, and runs the real capture worker against the result: it hunts

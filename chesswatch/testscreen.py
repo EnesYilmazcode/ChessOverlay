@@ -32,10 +32,58 @@ _MSS = getattr(mss, "MSS", None) or mss.mss
 
 
 def monitors():
-    """Every physical monitor as (left, top, width, height), primary first."""
+    """Every physical monitor as (left, top, width, height), primary first.
+
+    mss hands them back in EnumDisplayMonitors order, which usually starts with
+    the primary but is not promised to, and which one comes first decides where
+    a test puts its window. The sort is stable, so a build of mss that does not
+    say which monitor is primary leaves the order exactly as it was.
+    """
     with _MSS() as sct:
-        return [(m["left"], m["top"], m["width"], m["height"])
-                for m in sct.monitors[1:]]
+        found = list(sct.monitors[1:])
+    found.sort(key=lambda m: not m.get("is_primary", False))
+    return [(m["left"], m["top"], m["width"], m["height"]) for m in found]
+
+
+def grab_reads_bgra():
+    """Does the real capture still turn mss's bytes into the right colours?
+
+    Nothing else in a headless run touches chesswatch.grab, because PaperScreen
+    replaces it. mss hands back BGRA and PIL is told to read it as "BGRX", and
+    swapping that pair swaps red and blue in every frame the app ever reads,
+    which no other check in the suite would notice. mss is stubbed out, so this
+    costs no screen.
+
+    Returns True, False, or None if chesswatch no longer offers the seam.
+    """
+    class Shot:
+        width, height = 2, 1
+        bgra = bytes([0, 0, 255, 0,        # blue, green, red, ignored: red
+                      255, 0, 0, 0])       # blue
+
+    class Stub:
+        asked = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def grab(self, box):
+            Stub.asked = box
+            return Shot()
+
+    real = getattr(C, "_MSS", None)
+    if real is None:
+        return None
+    C._MSS = Stub
+    try:
+        got = list(C.grab((7, 9, 2, 1)).convert("RGB").getdata())
+    finally:
+        C._MSS = real
+    return (got == [(255, 0, 0), (0, 0, 255)]
+            and Stub.asked == {"left": 7, "top": 9, "width": 2, "height": 1})
 
 
 class PaperScreen:
@@ -43,6 +91,7 @@ class PaperScreen:
 
     mode = "headless"
     pause = 0.0                # nothing has to reach a monitor, so wait for nothing
+    settle = 0.0
 
     def __init__(self, width, height):
         self.width, self.height = width, height
@@ -77,7 +126,11 @@ class RealScreen:
     """
 
     mode = "on screen"
-    pause = 0.06               # long enough for a repaint to reach the glass
+    # Both are at least what the full screen version used to sleep in the same
+    # place, since nobody has run this path on a real desktop yet and a repaint
+    # that has not landed reads as a board in the wrong place.
+    pause = 0.12               # one frame reaching the glass
+    settle = 0.30              # a window that has just appeared, moved or resized
 
     def __init__(self, margin=24, topmost=False):
         # Imported here rather than at the top so a machine with no Tk at all

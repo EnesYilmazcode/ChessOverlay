@@ -21,6 +21,7 @@ import tempfile
 import time
 
 import chess
+from PIL import Image
 
 import watcher as W
 import chesswatch as C
@@ -63,7 +64,7 @@ def main():
           " so nothing")
     print("      this proves says anything about mss, DPI, or a window sitting"
           " over the board.\n")
-    render = Renderer(REF, (226, 63, 824))   # where selftest finds it in 1.png
+    render = Renderer(REF, W.find_board(Image.open(REF)))   # measured, not typed
     ok = True
     real_grab = C.grab
 

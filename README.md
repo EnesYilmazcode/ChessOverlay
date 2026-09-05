@@ -193,8 +193,10 @@ python smoke_test.py    engine, moves, hints, undo, flip
 python shot.py          proves the arrow cannot escape the window
 ```
 
-None of the chesswatch tests open a window. They render the board into memory
-and point the capture at that, so the whole suite costs no screen space. Add
+None of the chesswatch tests put anything on screen or screenshot your desktop.
+They render the board into memory and point the capture at that. `coachtest.py`
+does build a real Tk app, because the label it checks lives in one, but its
+window stays withdrawn and its capture is pointed at a blank image. Add
 `--on-screen` to `livetest.py` or `overlaytest.py` to run it against the real
 desktop instead, in a window the size of the board plus a margin, which is the
 only way to exercise mss, DPI scaling, coordinates on a second monitor and

@@ -14,6 +14,11 @@ Scenario 1: full size board on the primary monitor, playing white.
 Scenario 2: small board on the second monitor, playing black, ending in mate.
 Scenario 3: moves skipped with no frame in between, recovered by the checker.
 
+The reference screenshot is where the piece sprites are cut from. Its board is
+measured with find_board rather than typed in, so any screenshot can be passed,
+but it has to be an uncovered board in the starting position or the gate at the
+top of the run will refuse it.
+
 Run:  python livetest.py [reference-screenshot.png] [--on-screen] [--topmost]
 """
 
@@ -33,11 +38,6 @@ import testscreen as TS
 from fakeboard import Renderer
 from shots import shot
 
-# Where the board sits in the reference screenshot. One pixel out here and the
-# renderer cuts a column of whatever is beside the board into every sprite,
-# which moves the board find_board reports by a pixel and darkens the a file
-# enough to fool the piece checker on a small board.
-REF_RECT = (226, 63, 824)          # the board in 1.png, where selftest finds it
 OUT_DIR = os.path.join(W.APP_DIR, "test-games")
 
 # A game with captures, checks and castling on both sides.
@@ -57,7 +57,7 @@ def run_sequence(screen, renderer, worker, sans, flipped=False,
 
     board = chess.Board()
     screen.show(frame(board), at)
-    time.sleep(screen.pause)
+    time.sleep(screen.settle)
     # Wait until it has located THIS board and started a fresh game on it. A
     # previous scenario leaves the tracker locked onto the old region, so
     # locked_on alone is not the signal.
@@ -98,7 +98,9 @@ def say_mode(screen, home, away):
     if screen.mode == "headless":
         print("  proves      : finding the board, reading the 64 squares,"
               " inferring the moves,")
-        print("                the piece checker, the PGN and JSON on disk")
+        print("                the piece checker, the PGN and JSON on disk,"
+              " and that grab()")
+        print("                still decodes mss bytes as BGRA")
         print("  proves NOT  : mss against a real display, DPI scaling, a real"
               " second monitor,")
         print("                anything another window draws over the board."
@@ -126,8 +128,17 @@ def main():
     paths = [a for a in args if not a.startswith("--")]
     ref = paths[0] if paths else shot("1")
 
-    renderer = Renderer(ref, REF_RECT)
-    print("sprites cut from", os.path.basename(ref), "| board", renderer.size, "px")
+    # Measured, never hand copied. A rectangle typed in by hand was one pixel
+    # out for as long as this file has existed, which cut a column of off-board
+    # black into every sprite, and it could only ever have been right for one of
+    # the five screenshots this test will accept on the command line.
+    rect = W.find_board(Image.open(ref))
+    if not rect:
+        print("FAIL: no board found in", ref)
+        return 1
+    renderer = Renderer(ref, rect)
+    print("sprites cut from %s at %s | board %d px"
+          % (os.path.basename(ref), rect, renderer.size))
 
     # Prove the fixture before trusting any result that depends on it.
     start = renderer.render(chess.Board())
@@ -137,7 +148,23 @@ def main():
           % (score, occ == W.START_WHITE_VIEW))
     if score < 0.95 or occ != W.START_WHITE_VIEW:
         print("FAIL: the test renderer itself is wrong, results below are meaningless")
+        print("      The reference has to be an uncovered board in the starting")
+        print("      position. Of the shipped screenshots only 1.png is one that")
+        print("      fakeboard can cut a working sprite set out of.")
         return 1
+
+    ok = True
+
+    # Do this before the screen is swapped out, because swapping it out is what
+    # takes the real capture out of the run.
+    grabs = TS.grab_reads_bgra()
+    if grabs is None:
+        print("SKIP: chesswatch no longer exposes the mss seam to check grab()")
+    else:
+        print("real capture  : grab() decodes mss bytes as BGRA:", grabs)
+        if not grabs:
+            print("FAIL: a swapped byte order makes every board read wrong")
+            ok = False
 
     shutil.rmtree(OUT_DIR, ignore_errors=True)
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -148,7 +175,6 @@ def main():
     q = queue.Queue()
     worker = C.Worker(None, q, directory=OUT_DIR)      # None = find it yourself
 
-    ok = True
     try:
         print("\n--- 1: primary monitor, %dpx board, white ---" % renderer.size)
         at1 = (home[0] + 300, home[1] + (home[3] - renderer.size) // 2)
@@ -201,7 +227,7 @@ def main():
         board = chess.Board()
         screen.show(renderer.render(board).resize((small, small), Image.LANCZOS),
                     at2)
-        time.sleep(screen.pause)
+        time.sleep(screen.settle)
         for _ in range(20):
             worker._tick()
             if worker.tracker.locked_on and not worker.tracker.game.moves:
@@ -214,7 +240,7 @@ def main():
             board.push(move)
         screen.show(renderer.render(board).resize((small, small), Image.LANCZOS),
                     at2)
-        time.sleep(screen.pause)
+        time.sleep(screen.settle)
         worker._tick()
         bridged = worker.tracker.game.moves == expected
         print("after the jump, fast reader has:",

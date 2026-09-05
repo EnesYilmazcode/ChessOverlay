@@ -42,7 +42,6 @@ import testscreen as TS
 from fakeboard import Renderer
 from shots import shot
 
-REF_RECT = (226, 63, 824)          # the board in 1.png, where selftest finds it
 OUT_DIR = os.path.join(W.APP_DIR, "test-games")
 GAME = ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "O-O", "Nf6", "d3", "d6"]
 
@@ -208,12 +207,12 @@ class RealStage:
         self.screen.show(self.renderer.render(position).resize((size, size),
                                                                Image.LANCZOS),
                          self.at)
-        time.sleep(self.screen.pause * 4)
+        time.sleep(self.screen.settle)
 
     def arrow(self, move):
         self.win.show(self.region, move)
         self.screen.root.update()
-        time.sleep(self.screen.pause * 2)
+        time.sleep(self.screen.pause)
 
     def grab(self):
         return C.grab(self.region)
@@ -288,7 +287,10 @@ def arrow_checks(stage):
 
     clean = True
     drawn = []
-    lo, hi = 255, 0
+    # None rather than an empty range. Seeded 255 and 0, an overlay that drew
+    # nothing at all left the band check comparing DARK < 255 and 0 < BRIGHT,
+    # which passes, and printed an impossible 255..0 while doing it.
+    lo, hi = None, None
     for uci in MOVES:
         stage.arrow(chess.Move.from_uci(uci))
         painted = stage.grab()
@@ -298,7 +300,8 @@ def arrow_checks(stage):
             print("FAIL  nothing was drawn for " + uci)
             clean = False
             continue
-        lo, hi = min(lo, dark), max(hi, bright)
+        lo = dark if lo is None else min(lo, dark)
+        hi = bright if hi is None else max(hi, bright)
         occ = W.read_occupancy(painted)
         if occ != base:
             print("FAIL  %s changed the reading" % uci)
@@ -311,9 +314,12 @@ def arrow_checks(stage):
     print("      arrow covers %d to %d pixels of a %dpx board"
           % (min(drawn), max(drawn), size))
     check("and every pixel it changed stayed between the reader's cutoffs",
-          W.DARK < lo and hi < W.BRIGHT, True)
-    print("      they land on greys %d..%d, the reader ignores %d..%d"
-          % (lo, hi, W.DARK, W.BRIGHT))
+          lo is not None and W.DARK < lo and hi < W.BRIGHT, True)
+    if lo is None:
+        print("      nothing was ever drawn, so there was nothing to measure")
+    else:
+        print("      they land on greys %d..%d, the reader ignores %d..%d"
+              % (lo, hi, W.DARK, W.BRIGHT))
 
     # Again on a small board, where the arrow is a bigger share of what it
     # covers and a piece is only a few pixels across.
@@ -335,8 +341,16 @@ def arrow_checks(stage):
             ok_small = False
     check("holds on a %dpx board too" % small, ok_small, True)
 
+    # Only a real window can fail this. PaperStage draws the arrow by
+    # compositing it onto the bare board, so taking it away is a repaint of a
+    # board that never had one on it, and a hide() that did nothing at all
+    # would still pass.
     stage.arrow(None)
-    check("hiding it takes every arrow pixel away", arrow_pixels(stage.grab()), 0)
+    if stage.kind == "real":
+        check("hiding it takes every arrow pixel away",
+              arrow_pixels(stage.grab()), 0)
+    else:
+        print("SKIP  hiding the arrow, there is no window to hide")
 
 
 # ------------------------------------------------------- a whole game
@@ -380,8 +394,9 @@ def say_mode(screen, stage):
     if screen.mode == "headless":
         print("  proves      : the arrow's path, its colour, what it blends to"
               " over the board,")
-        print("                and that the reader and the recorder cannot see"
-              " any of it")
+        print("                that the reader and the recorder cannot see any"
+              " of it, and")
+        print("                that grab() still decodes mss bytes as BGRA")
         print("  proves NOT  : that Windows paints those pixels. The"
               " transparency key, the")
         print("                layered window alpha, the stacking order and"
@@ -400,15 +415,33 @@ def main():
 
     geometry()
 
+    # Before any screen is opened, because PaperScreen replaces chesswatch.grab
+    # and after that nothing in the run touches the real one.
+    grabs = TS.grab_reads_bgra()
+    if grabs is None:
+        print("SKIP  grab(), chesswatch no longer exposes the mss seam")
+    else:
+        check("grab() still decodes mss bytes as BGRA", grabs, True)
+
+    # Measured, never hand copied: the rectangle typed in here was one pixel out
+    # for as long as this file has existed.
+    ref = shot("1")
+    rect = W.find_board(Image.open(ref))
+    if not rect:
+        print("FAIL  no board found in " + os.path.basename(ref))
+        return 1
+    renderer = Renderer(ref, rect)
+    print("      sprites cut from %s at %s" % (os.path.basename(ref), rect))
+
     if on_screen:
         mons = TS.monitors()
         screen = TS.RealScreen(topmost="--topmost" in args)
         at = (mons[0][0] + 300, mons[0][1] + max(0, (mons[0][3] - 664) // 2))
-        stage = RealStage(screen, Renderer(shot("1"), REF_RECT), at)
+        stage = RealStage(screen, renderer, at)
     else:
         screen = TS.PaperScreen(1920, 1080)
         at = (300, 200)
-        stage = PaperStage(screen, Renderer(shot("1"), REF_RECT), at)
+        stage = PaperStage(screen, renderer, at)
 
     try:
         arrow_checks(stage)
