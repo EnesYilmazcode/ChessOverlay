@@ -1,29 +1,85 @@
-"""Test helper: render any position using real chess.com pixels.
+"""Test helper: render any position using real pixels from a screenshot.
 
-The 12 piece sprites and 2 empty squares are cut out of a real screenshot, so a
-rendered position exercises the same classifier thresholds as a live board. It
-is not pixel-perfect chess.com (a sprite keeps whatever square colour it was cut
-from) but the reader only ever counts very bright and very dark pixels, so the
-square colour underneath is irrelevant to what it measures.
+The piece sprites are cut out of a real screenshot, so a rendered position
+exercises the same classifier thresholds as a live board. It is not pixel-perfect
+chess.com (a sprite keeps whatever square colour it was cut from) but the reader
+only ever counts very bright and very dark pixels, so the square colour
+underneath is irrelevant to what it measures.
+
+The reference does not have to be the opening position and does not have to be
+chess.com's piece set. Pass the position that is on screen and the sprites are
+cut from wherever those pieces happen to stand, which is what lets the same
+class render one position in several piece sets and compare them.
 """
 
 import chess
 from PIL import Image
 
-# Where each sprite lives in the reference screenshot, as (row, col) on the
-# board grid with row 0 being rank 8.
-SOURCES = {
-    "r": (0, 0), "n": (0, 1), "b": (0, 2), "q": (0, 3), "k": (0, 4), "p": (1, 0),
-    "R": (7, 0), "N": (7, 1), "B": (7, 2), "Q": (7, 3), "K": (7, 4), "P": (6, 0),
-    "light": (2, 0), "dark": (3, 0),
-}
-
-
+# Fallback square colours, used only if a reference square is too busy to
+# measure. chess.com's default green, as captured.
 LIGHT = (235, 236, 208)
 DARK = (115, 149, 82)
 
+# How far off a square colour a pixel has to be to count as part of the piece,
+# squared, in RGB. Generous, because it only has to separate piece art from two
+# flat colours.
+CUTOUT_TOL = 2000
 
-def _cutout(sprite):
+
+def _grid(board, flipped=False):
+    """8 rows of piece letters as they appear on screen, row 0 at the top."""
+    ranks = range(8) if flipped else range(7, -1, -1)
+    rows = []
+    for rank in ranks:
+        files = range(7, -1, -1) if flipped else range(8)
+        rows.append([(board.piece_at(chess.square(f, rank)).symbol()
+                      if board.piece_at(chess.square(f, rank)) else ".")
+                     for f in files])
+    return rows
+
+
+def _piece_sources(grid):
+    """Where to cut each piece sprite from, as (row, col) on the board grid.
+
+    Scanned down the a file first, then the b file and so on, which on the
+    opening position picks the same squares this helper has always used.
+    """
+    found = {}
+    for col in range(8):
+        for row in range(8):
+            if grid[row][col] != ".":
+                found.setdefault(grid[row][col], (row, col))
+    return found
+
+
+def _empty_sources(grid):
+    """An empty square of each colour to measure the board colours from.
+
+    Interior squares only. A board draws its rank labels down one outer file
+    and its file labels along one outer rank, so the four edges of the grid are
+    where a coordinate glyph lives. This used to read a5 and a6, which on a
+    labelled board are the squares carrying "5" and "6", and every rendered
+    board came out stamped with them. testdata/1.png has no in-square labels
+    and hid it; testdata/6.png has them.
+    """
+    found = {}
+    for col in range(1, 7):
+        for row in range(1, 7):
+            if grid[row][col] == ".":
+                found.setdefault("light" if (row + col) % 2 == 0 else "dark",
+                                 (row, col))
+    return found
+
+
+def _square_colour(sprite, fallback):
+    """The colour a flat square is mostly made of."""
+    counts = sprite.getcolors(sprite.size[0] * sprite.size[1])
+    if not counts:
+        return fallback
+    return max(counts)[1]
+
+
+def _cutout(sprite, light, dark):
     """Mask of the pixels belonging to the piece rather than to the square it
     was cut from, so the piece can be dropped onto the right colour square and
     the checkerboard survives."""
@@ -33,30 +89,66 @@ def _cutout(sprite):
     for y in range(sprite.height):
         for x in range(sprite.width):
             r, g, b = px[x, y][:3]
-            to_light = (r - LIGHT[0]) ** 2 + (g - LIGHT[1]) ** 2 + (b - LIGHT[2]) ** 2
-            to_dark = (r - DARK[0]) ** 2 + (g - DARK[1]) ** 2 + (b - DARK[2]) ** 2
-            if min(to_light, to_dark) > 2000:
+            to_light = (r - light[0]) ** 2 + (g - light[1]) ** 2 + (b - light[2]) ** 2
+            to_dark = (r - dark[0]) ** 2 + (g - dark[1]) ** 2 + (b - dark[2]) ** 2
+            if min(to_light, to_dark) > CUTOUT_TOL:
                 mp[x, y] = 255
     return mask
 
 
 class Renderer:
-    def __init__(self, reference_png, rect):
+    """Sprites cut from one screenshot, ready to redraw any position.
+
+    reference_png and rect are the screenshot and the board rectangle
+    find_board() returned for it. board is the position that screenshot shows,
+    and flipped whether it was seen from black's side; the opening position seen
+    from white is assumed, which is what the reference shots hold.
+    """
+
+    def __init__(self, reference_png, rect, board=None, flipped=False):
         img = Image.open(reference_png).convert("RGB")
         x0, y0, size = rect
         self.step = size // 8
         self.size = self.step * 8
-        self.sprites = {}
-        self.masks = {}
-        for key, (row, col) in SOURCES.items():
+        grid = _grid(board or chess.Board(), flipped)
+
+        def cut(row, col):
             left = x0 + col * size // 8
             top = y0 + row * size // 8
-            sprite = img.crop((left, top, left + self.step, top + self.step))
-            self.sprites[key] = sprite
-            if key not in ("light", "dark"):
-                self.masks[key] = _cutout(sprite)
+            return img.crop((left, top, left + self.step, top + self.step))
 
-    def render(self, board, flipped=False):
+        empties = _empty_sources(grid)
+        self.light, self.dark = LIGHT, DARK
+        if "light" in empties:
+            self.light = _square_colour(cut(*empties["light"]), LIGHT)
+        if "dark" in empties:
+            self.dark = _square_colour(cut(*empties["dark"]), DARK)
+
+        self.sprites = {key: cut(row, col)
+                        for key, (row, col) in _piece_sources(grid).items()}
+        self.masks = {key: _cutout(sprite, self.light, self.dark)
+                      for key, sprite in self.sprites.items()}
+
+        # Empty squares are painted flat from the measured colour rather than
+        # pasted from a cut square. One is drawn up to 64 times a board, so
+        # anything that came along with it, a coordinate glyph, a last-move
+        # highlight, a board border, is drawn 64 times too.
+        self.sprites["light"] = Image.new("RGB", (self.step, self.step), self.light)
+        self.sprites["dark"] = Image.new("RGB", (self.step, self.step), self.dark)
+
+    @property
+    def pieces(self):
+        """The piece letters this reference had on the board, so a caller can
+        skip the positions it cannot draw. A reference that is not an opening
+        position rarely has all twelve."""
+        return set(self.masks)
+
+    def can_render(self, board):
+        return {p.symbol() for p in board.piece_map().values()} <= self.pieces
+
+    def render(self, board, flipped=False, size=None):
+        """Draw a position. size resizes the finished board, which is the same
+        resampling a smaller browser window puts the reader through."""
         out = Image.new("RGB", (self.size, self.size))
         ranks = range(8) if flipped else range(7, -1, -1)
         for row, rank in enumerate(ranks):
@@ -68,5 +160,9 @@ class Renderer:
                 piece = board.piece_at(chess.square(file, rank))
                 if piece:
                     key = piece.symbol()
+                    if key not in self.sprites:
+                        raise KeyError("the reference had no %s to cut" % key)
                     out.paste(self.sprites[key], pos, self.masks[key])
+        if size and size != self.size:
+            out = out.resize((size, size), Image.LANCZOS)
         return out
