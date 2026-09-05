@@ -275,6 +275,7 @@ rectangle is in use.
     python coachtest.py     18 checks on the engine wrapper and its label
     python overlaytest.py   17 checks that the arrow cannot corrupt a reading
     python settletest.py    move animation, with the screen on a clock
+    python banktest.py      33 checks on choosing a piece set
     python livetest.py      full loop through the real capture worker
 
 None of these put anything on screen or screenshot your desktop. `livetest.py`
@@ -306,13 +307,41 @@ replying while your own move is still moving, at animation speeds from 200ms to
 900ms.
 
 `fakeboard.py` is the renderer those tests use. It cuts its piece sprites out
-of a real screenshot, and checks itself before the tests trust it.
+of a real screenshot, and checks itself before the tests trust it. Give it the
+position that screenshot shows and it will cut from any of them, which is how
+`banktest.py` renders the same endgame in two different piece sets without a
+single extra file in the repository.
 
 The screenshots the tests read live in `testdata\`. They are real chess.com
 windows with everything outside the board blacked out, so they carry no account
 name. To run the same checks against your own board theme, point
-`CHESSWATCH_TESTDATA` at a folder holding your own `1.png`, `2.png`, `4.png`
-and `5.png`, or pass paths to `selftest.py` on the command line.
+`CHESSWATCH_TESTDATA` at a folder holding your own `1.png`, `2.png`, `4.png`,
+`5.png` and `6.png`, or pass paths to `selftest.py` on the command line. The
+first four are board themes; `6.png` is a board in a second piece set, and
+`banktest.py` is the only thing that reads it.
+
+## A piece set that is not chess.com's
+
+The reader relearns the pieces from your own screen the moment it sees a
+starting position, so a game watched from move one is exact whatever set you
+play with. A game joined part way through never sees one, and there is nothing
+in the position to relearn from.
+
+`piecebank.py` is the answer to that case. `piecesets\` holds a sheet per piece
+set, and given a board it scores each of them and says which set the board is
+drawn in, needing no particular position to do it. Two pieces on an otherwise
+empty board are enough.
+
+The bank ships two sets, which are the two this project has its own pixels for.
+If you play with a third, enroll it once from a screenshot of a starting
+position:
+
+    python piecebank.py my-screenshot.png my-set
+
+It writes `piecesets\my-set.png` and that set is in the bank from then on. Run
+`python piecebank.py` with no arguments to see what is in there. Nobody else's
+piece art is bundled here and none should be added: the sets are yours to add
+from your own screen.
 
 ## Needs
 

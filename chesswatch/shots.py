@@ -2,8 +2,9 @@
 
 The fixtures in `testdata/` are real chess.com screenshots with everything
 outside the board blacked out. Point CHESSWATCH_TESTDATA at a folder of your
-own `1.png`, `2.png`, `4.png`, `5.png` to run the same checks against your
-board theme.
+own `1.png`, `2.png`, `4.png`, `5.png` and `6.png` to run the same checks
+against your board theme. 6.png is a second piece set rather than a second
+board theme, and banktest.py is the only thing that reads it.
 """
 
 import os
