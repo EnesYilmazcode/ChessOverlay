@@ -59,6 +59,33 @@ def path_points(region, move, flipped):
     return [(x0, y0), (x1, y1)]
 
 
+def wanted(on, region, position, advice_for, advice_uci, cleared,
+           flipped=False):
+    """What the arrow should be showing right now, or None for nothing at all.
+
+    The whole staleness question with no window in it, so it can be reasoned
+    about and checked on its own. Every argument is state the app already
+    holds: whether the switch is on, where the board is, the position now on
+    screen, the position the last engine reply was about, the move it named,
+    and a position whose arrow was cleared by hand.
+
+    An arrow is only ever right about one position. The app used to draw it
+    once, when advice arrived, and never look at it again, so it stayed on the
+    board through the move that made it wrong, stayed put when the window moved
+    under it, and stayed up when the board went away entirely. Deciding it
+    fresh from the current state is what fixes all three: what comes back is a
+    complete description of the arrow, so a caller that redraws whenever this
+    changes cannot leave a stale one behind.
+    """
+    if not (on and region and advice_uci and position):
+        return None            # nothing on screen to be advising about
+    if advice_for != position:
+        return None            # the board has moved past this advice
+    if cleared is not None and advice_for == cleared:
+        return None            # taken down by hand, and not for one frame only
+    return tuple(region), advice_uci, bool(flipped)
+
+
 def make_click_through(win):
     """Let the mouse straight through. Without this the arrow sits between you
     and the board and you cannot play. Windows only; elsewhere the arrow still
@@ -80,19 +107,30 @@ class Arrow:
 
     def __init__(self, root):
         self.win = tk.Toplevel(root)
-        self.win.withdraw()
-        self.win.overrideredirect(True)
-        self.win.attributes("-topmost", True)
         try:
-            self.win.attributes("-transparentcolor", KEY)
-            self.win.attributes("-alpha", ALPHA)
-        except tk.TclError:
-            pass                      # not Windows; the arrow still draws
-        self.canvas = tk.Canvas(self.win, bg=KEY, highlightthickness=0,
-                                borderwidth=0)
-        self.canvas.pack(fill="both", expand=True)
-        self.win.update_idletasks()
-        self.click_through = make_click_through(self.win)
+            self.win.withdraw()
+            self.win.overrideredirect(True)
+            self.win.attributes("-topmost", True)
+            try:
+                self.win.attributes("-transparentcolor", KEY)
+                self.win.attributes("-alpha", ALPHA)
+            except tk.TclError:
+                pass                  # not Windows; the arrow still draws
+            self.canvas = tk.Canvas(self.win, bg=KEY, highlightthickness=0,
+                                    borderwidth=0)
+            self.canvas.pack(fill="both", expand=True)
+            self.win.update_idletasks()
+            self.click_through = make_click_through(self.win)
+        except BaseException:
+            # Take the window with us. Whoever asked for the Arrow never gets a
+            # reference back, so nothing after this could destroy it and it
+            # would sit on the board for the rest of the session. Tearing it
+            # down must not replace the exception that caused the teardown.
+            try:
+                self.win.destroy()
+            except BaseException:
+                pass
+            raise
         self._styled = False
         self._shown = False
         self._last = None

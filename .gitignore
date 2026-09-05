@@ -1,6 +1,8 @@
-# Recorded games and the board you picked by hand: yours, not the project's.
+# Recorded games, the board you picked by hand and the pieces you taught it:
+# yours, not the project's.
 chesswatch/games/
 chesswatch/config.json
+chesswatch/taught.png
 chesswatch/test-games/
 
 # Stockfish. 114 MB, over GitHub's file limit, and GPL licensed separately.

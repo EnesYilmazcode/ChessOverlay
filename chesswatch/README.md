@@ -59,6 +59,13 @@ Tick **arrow on board** as well and the suggestion is drawn on the board itself,
 on top of whatever program is showing it. The window is click-through, so it
 sits over the board without getting between you and it.
 
+The arrow is a function of the position on screen, not of the last thing the
+engine said. Play a move and it comes down at once rather than sitting on the
+new position until a reply arrives, drag the window and it follows, lose the
+board and it goes. **clear arrows** takes it away now and keeps the reply the
+engine is already working on from putting it straight back, which lasts until
+your next move and then stops on its own.
+
 ![the arrow over a board](../docs/arrow.png)
 
 The awkward part is that the recorder is reading the same pixels the arrow is
@@ -178,6 +185,20 @@ The templates ship in `pieces.png`, and are relearned from your own screen every
 time a game starts from the opening position, where what sits on every square is
 already known. The status line says which set is in use.
 
+Relearning needs all twelve piece types on the board at once, which in practice
+means a game you watched from the first move. A game joined part way through on
+a piece set the bundled sheet has never seen has no way to get there, and reads
+almost nothing. **teach the pieces** is the way out: it shows the board cut into
+its 64 squares with what the reader currently believes about each one, and you
+click a square and say what is on it. Twelve labels is the whole job, and it
+starts from the reader's own answer, so on a set it already half reads you only
+correct what is wrong. What it writes is an ordinary template sheet, kept in
+`taught.png` and loaded again next time you start.
+
+It runs on its own too, against a screenshot rather than the screen:
+
+    python enroll.py board.png
+
 The checker does four things:
 
 - **Confirms** the game so far really is what is on screen.
@@ -271,8 +292,10 @@ rectangle is in use.
 
 ## Checking it still works
 
-    python selftest.py      78 checks, including real screenshots
+    python selftest.py      87 checks, including real screenshots
+    python piecetest.py     49 checks on the piece reader under a bad capture
     python positiontest.py  29 checks on the whole board solver, no pixels
+    python enrolltest.py    92 checks on teaching the pieces and on the arrow
     python coachtest.py     18 checks on the engine wrapper and its label
     python overlaytest.py   17 checks that the arrow cannot corrupt a reading
     python settletest.py    move animation, with the screen on a clock
@@ -300,6 +323,12 @@ checkmate, and checks every move, both colours, the result, and the files on
 disk. The second game is deliberately a small board on the second monitor, and a
 third run skips three moves with no frames in between and checks they come back
 in the only legal order.
+
+`enrolltest.py` opens no window at all. The arrow rule and the enrollment
+bookkeeping are written as plain functions so they can be checked without one,
+and the case where the board disappears drives the real capture worker against
+a rendered desktop, because that one is worker behaviour and no rule on its own
+can prove the worker reports it.
 
 `settletest.py` replaces the screen with a clock-driven script, so the
 animation has a real duration rather than a frame count. It covers pawn pushes,
