@@ -27,7 +27,10 @@ as "?" rather than as a confident wrong piece.
 
 Templates come from `pieces.png` to start with, are relearned from your own
 screen the moment a position we are sure of appears, and are cached next to it
-so the next game starts where the last one left off.
+so the next game starts where the last one left off. They also carry the
+signature of the board they came from, and a board whose pieces are drawn
+differently is read with a higher floor, because templates from the wrong set
+produce confident wrong names rather than obvious nonsense.
 """
 
 import base64
@@ -57,6 +60,28 @@ MIN_OVERLAP = 0.30        # below this, call it unrecognised rather than guess
 # shape thinning the margin cost most of a foreign set for nothing, since the
 # colour veto is what decides colour and the shape margin never could.
 MIN_MARGIN = 0.05
+
+# Templates carry the signature of the board they came from. When the board
+# being read has a different one the templates are somebody else's piece set,
+# and a call that is only the best of a bad field is a guess, so the floor
+# rises from MIN_OVERLAP to this.
+#
+# 0.40 is where it has to be. Over 227 confident calls made by 6.png's
+# templates on every size, crop and brightness variant of the reference boards,
+# the highest scoring WRONG one is 0.398 and no lower floor clears them: 0.37
+# still leaves five. It costs right answers too, 40 of 157 surviving, which is
+# the trade this file has always made.
+#
+# 0.16 is the tightest tolerance that costs no correct answer on any capture of
+# the right set. See _trusted for what it does and does not separate.
+TRUST_TOL = 0.16
+MISTRUST_OVERLAP = 0.40
+
+# Outline thickness cannot be compared between two captures whose squares
+# differ by more than this. The smaller one has resampled the outline away
+# rather than been drawn without one, and reads as a different set when it is
+# the same one photographed worse. See _trusted.
+TRUST_SCALE = 2.0
 
 # Templates learned on a board smaller than this were upsampled into the NORM
 # grid at birth, and stay coarse however big the board later gets. See stale().
@@ -425,10 +450,10 @@ def ranking(feat, templates):
                    for symbol, variants in templates.items()), reverse=True)
 
 
-def _decide(square_img, templates, levels=DEFAULT_LEVELS):
-    """The piece on one square. Returns (symbol, score), where symbol is a
-    piece letter, "." for an empty square, or None when the pixels do not
-    settle it.
+def _judge(feat, templates, floor=MIN_OVERLAP):
+    """The piece on one already reduced square. Returns (symbol, score), where
+    symbol is a piece letter, "." for an empty square, or None when the pixels
+    do not settle it.
 
     Every template is scored, both colours. This used to score only the six of
     whichever colour a bright-versus-dark pixel count voted for, which made a
@@ -436,7 +461,6 @@ def _decide(square_img, templates, levels=DEFAULT_LEVELS):
     compared against. Colour now only has to agree with the shape, and the two
     disagreeing is a reason to say nothing rather than to overrule the shape.
     """
-    feat = _features(square_img, levels)
     if feat is None or feat.coverage < MIN_COVERAGE:
         return ".", 1.0
     ranked = ranking(feat, templates)
@@ -447,11 +471,16 @@ def _decide(square_img, templates, levels=DEFAULT_LEVELS):
     # and letting that thin the margin threw away most of a foreign piece set.
     runner_up = next((s for s, symbol in ranked[1:]
                       if symbol.lower() != best.lower()), 0.0)
-    if score < MIN_OVERLAP or score - runner_up < MIN_MARGIN:
+    if score < floor or score - runner_up < MIN_MARGIN:
         return None, score
     if best.isupper() != (feat.bright > feat.dark):
         return None, score
     return best, score
+
+
+def _decide(square_img, templates, levels=DEFAULT_LEVELS, floor=MIN_OVERLAP):
+    """_judge on a square that has not been reduced yet."""
+    return _judge(_features(square_img, levels), templates, floor)
 
 
 class _Template:
@@ -484,35 +513,82 @@ class _Template:
         self.feat = _Square(grids, self.tall, self.wide)
 
 
-def _fingerprint(board_img, levels):
-    """A short label for the board theme and the piece set drawn on it.
+def _board_features(board_img, levels):
+    """Every square of a board reduced at once, empties included as None."""
+    return [_features(sq, levels) for _, _, sq in squares(board_img)]
 
-    The board's two square colours, and how much of a piece is its outline
-    rather than its fill, measured once for the light pieces and once for the
-    dark ones. That is a fact about how the set is drawn and not about what is
-    on the board, which is what the key has to be: chess.com's own set reads
-    0.12 and 0.00 on the opening position of 1.png, on the mating position of
-    5.png and on a rendered endgame with three pieces left, while the flat set
-    on 6.png reads 0.36 and 0.15 whatever is standing on it.
 
-    It does not separate two sets that are drawn alike, and is not meant to.
-    Templates from either of those read the other, so sharing a cache entry is
-    the right answer rather than a collision.
+def _signature(feats, square_px):
+    """How the pieces on this board are drawn, as two numbers and a scale.
+
+    How much of a piece is outline rather than fill, averaged over the light
+    pieces and again over the dark ones. That is a property of the set and not
+    of the position, which is what both the cache key and the trust test need:
+    chess.com's own reads 0.12 and 0.00 on the opening of 1.png, on the mating
+    position of 5.png and on a rendered endgame with three pieces left, while
+    the flat set on 6.png reads 0.36 and 0.15 whatever is standing on it.
+
+    The scale comes along because the measurement needs it. A capture whose
+    squares are much smaller has resampled the outline away, and then reads as
+    a heavier or lighter set than it is: 1.png downsampled to 200px comes out
+    at 0.00 and 0.18, which is further from its own full size capture than the
+    flat set is.
     """
     light, dark = [], []
-    for r, c, sq in squares(board_img):
-        feat = _features(sq, levels)
+    for feat in feats:
         if feat is None or feat.coverage < MIN_COVERAGE:
             continue
         total = feat.bright + feat.dark
+        if not total:
+            continue
         if feat.bright > feat.dark:
             light.append(feat.dark / total)
         else:
             dark.append(feat.bright / total)
+    return (sum(light) / len(light) if light else None,
+            sum(dark) / len(dark) if dark else None,
+            square_px)
+
+
+def _trusted(templates_sig, board_sig):
+    """Whether these templates were drawn from the set now on the board.
+
+    Measured over 149 template-and-board pairs, every capture piecetest builds
+    of both fixtures, and it separates cleanly only while the capture is at the
+    reference brightness. There, over 69 pairs, the same set never sits further
+    than 0.078 and a foreign set never closer than 0.166.
+
+    Add brightness, contrast or blur and the two distributions overlap: the
+    same set reaches 0.171 at 1.25 contrast, a foreign one falls to 0.149 at
+    0.85 brightness, and no threshold separates them at all. Distortion moves
+    what counts as a piece pixel, which moves the outline share, which is the
+    whole measurement. So this catches a foreign set on a clean capture and
+    misses one on a badly distorted capture, and there is no tuning that fixes
+    the second case.
+
+    It rests on two piece sets, which is not many.
+    """
+    if templates_sig is None or board_sig is None:
+        return True
+    a, b = templates_sig[2], board_sig[2]
+    if a and b and max(a, b) > TRUST_SCALE * min(a, b):
+        return True
+    apart = [abs(x - y) for x, y in zip(templates_sig[:2], board_sig[:2])
+             if x is not None and y is not None]
+    return not apart or max(apart) <= TRUST_TOL
+
+
+def _fingerprint(levels, signature):
+    """The cache key: the board theme and the signature, quantised coarsely.
+
+    Coarse on purpose. Two sets drawn alike land in one bucket, and templates
+    from either of those read the other, so sharing an entry is the answer
+    rather than a collision.
+    """
     key = "%d-%d-%.1f-%.1f" % (
         levels[0], levels[1],
-        sum(light) / len(light) if light else -1.0,
-        sum(dark) / len(dark) if dark else -1.0)
+        signature[0] if signature[0] is not None else -1.0,
+        signature[1] if signature[1] is not None else -1.0)
     return hashlib.sha1(key.encode()).hexdigest()[:12]
 
 
@@ -523,6 +599,7 @@ class PieceReader:
         self.templates = {}
         self.source = "none"
         self.learned_size = None
+        self.signature = None
         self._folds = 0
         self._saved = 0
         self.use_bundled()
@@ -542,6 +619,7 @@ class PieceReader:
         # so its own two greys measure the same way a board's do.
         levels = _levels(img)
         out = {}
+        feats = []
         for slot, symbol in enumerate(ORDER):
             feat = _features(img.crop((slot * TEMPLATE_PX, 0,
                                        (slot + 1) * TEMPLATE_PX, TEMPLATE_PX)),
@@ -549,17 +627,19 @@ class PieceReader:
             if feat is None:
                 raise ValueError("template sheet holds a blank slot")
             out[symbol] = [_Template(feat)]
-        return out
+            feats.append(feat)
+        return out, _signature(feats, TEMPLATE_PX)
 
     def use_bundled(self):
         """Go back to the templates that ship with the program. Loading is all
         or nothing, so a sheet that will not read leaves whatever is already in
         use alone instead of half replacing it."""
         try:
-            loaded = self._read_sheet(self.sheet)
+            loaded, signature = self._read_sheet(self.sheet)
         except Exception:
             return False
         self.templates = loaded
+        self.signature = signature
         self.source = "bundled"
         self.learned_size = None
         return True
@@ -583,28 +663,28 @@ class PieceReader:
         """
         grid = grid_of(board, flipped)
         levels = _levels(board_img)
+        feats = _board_features(board_img, levels)
         found = {}
-        for r, c, sq in squares(board_img):
+        for (r, c, _), feat in zip(squares(board_img), feats):
             symbol = grid[r][c]
-            if symbol == ".":
+            if symbol == "." or feat is None:
                 continue
             # a8 and h1 are both light, so screen parity says which colour a
             # square is whichever way round the board is being viewed.
             light = (r + c) % 2 == 0
             variants = found.setdefault(symbol, {})
             if light not in variants:
-                feat = _features(sq, levels)
-                if feat is not None:
-                    variants[light] = _Template(feat, light)
+                variants[light] = _Template(feat, light)
         found = {s: list(v.values()) for s, v in found.items() if v}
         if not found:
             return False
         self.templates = dict(self.templates)
         self.templates.update(found)
         self.learned_size = board_img.size[0]
+        self.signature = _signature(feats, board_img.size[0] / 8.0)
         if len(found) == 12:
             self.source = "learned from your screen"
-            self._cache_write(board_img, levels)
+            self._cache_write(levels)
             return True
         self.source = "learned in part from your screen"
         return False
@@ -628,12 +708,12 @@ class PieceReader:
             return 0
         grid = grid_of(board, flipped)
         levels = _levels(board_img)
+        feats = _board_features(board_img, levels)
         folded = 0
-        for r, c, sq in squares(board_img):
+        for (r, c, _), feat in zip(squares(board_img), feats):
             symbol = grid[r][c]
             if symbol == "." or symbol not in self.templates:
                 continue
-            feat = _features(sq, levels)
             if feat is None or feat.coverage < MIN_COVERAGE:
                 continue
             best = ranking(feat, self.templates)[0][1]
@@ -649,6 +729,7 @@ class PieceReader:
             folded += 1
         if folded:
             self.learned_size = board_img.size[0]
+            self.signature = _signature(feats, board_img.size[0] / 8.0)
             if self.source == "bundled":
                 self.source = "learned in part from your screen"
             self._folds += folded
@@ -658,7 +739,7 @@ class PieceReader:
             # stopped changing.
             if self._folds >= 2 * self._saved:
                 self._saved = self._folds
-                self._cache_write(board_img, levels)
+                self._cache_write(levels)
         return folded
 
     def relearn(self, board_img, board, flipped=False):
@@ -671,10 +752,11 @@ class PieceReader:
         already holding is worse than the sheet, so the caller can just ask.
         """
         held = dict(self.templates)
-        source, size = self.source, self.learned_size
+        source, size, sig = self.source, self.learned_size, self.signature
         if self.learn(board_img, board, flipped):
             return True
-        self.templates, self.source, self.learned_size = held, source, size
+        self.templates, self.source = held, source
+        self.learned_size, self.signature = size, sig
         if self.stale(board_img.size[0]):
             self.use_bundled()
         return False
@@ -701,11 +783,11 @@ class PieceReader:
 
     # ------------------------------------------------------ the disk cache
 
-    def _cache_path(self, board_img, levels):
+    def _cache_path(self, width, levels, signature):
         return os.path.join(self.cache_dir, "%d-%s.json" % (
-            board_img.size[0], _fingerprint(board_img, levels)))
+            width, _fingerprint(levels, signature)))
 
-    def _cache_write(self, board_img, levels):
+    def _cache_write(self, levels):
         """Keep the templates for the next game on this board and piece set.
 
         Learning needs a position we are certain about, which in practice means
@@ -725,13 +807,14 @@ class PieceReader:
             if not os.path.exists(keep):
                 with open(keep, "w") as fh:
                     fh.write("*\n")
-            body = {"norm": NORM, "fill": FILL, "pieces": [
+            body = {"norm": NORM, "fill": FILL,
+                    "signature": self.signature, "pieces": [
                 {"symbol": symbol, "light": t.light, "n": t.n,
                  "tall": t.tall, "wide": t.wide,
                  "grids": [base64.b64encode(zlib.compress(g.tobytes())).decode()
                            for g in t.feat.grids]}
                 for symbol, variants in self.templates.items() for t in variants]}
-            path = self._cache_path(board_img, levels)
+            path = self._cache_path(self.learned_size, levels, self.signature)
             with open(path + ".part", "w") as fh:
                 json.dump(body, fh)
             os.replace(path + ".part", path)
@@ -748,8 +831,10 @@ class PieceReader:
         place.
         """
         levels = _levels(board_img)
+        here = _signature(_board_features(board_img, levels),
+                          board_img.size[0] / 8.0)
         try:
-            with open(self._cache_path(board_img, levels)) as fh:
+            with open(self._cache_path(board_img.size[0], levels, here)) as fh:
                 body = json.load(fh)
             if body["norm"] != NORM or body["fill"] != FILL:
                 return False
@@ -768,23 +853,40 @@ class PieceReader:
         except Exception:
             return False
         self.templates = loaded
+        # The signature that was cached, not the one just measured. They agree
+        # here by construction, since the fingerprint is what found the file,
+        # but the cached one is what those templates were actually drawn from.
+        self.signature = tuple(body["signature"])
         self.source = "learned in an earlier game"
         self.learned_size = board_img.size[0]
         return True
 
     # ---------------------------------------------------------- reading
 
+    def _floor(self, feats, board_img):
+        """MIN_OVERLAP, or the mistrusted floor when these templates were drawn
+        from a different piece set than the one on the board."""
+        here = _signature(feats, board_img.size[0] / 8.0)
+        return MIN_OVERLAP if _trusted(self.signature, here) else MISTRUST_OVERLAP
+
     def classify(self, board_img):
         """Read the whole board. Returns 8 rows of piece letters and dots, plus
-        the weakest match score, which says how much to trust it."""
+        the weakest match score, which says how much to trust it.
+
+        Every square is reduced first and scored after, rather than one at a
+        time, because the trust test needs to have seen the whole board before
+        any square is named and reducing is the expensive half.
+        """
         rows = [["."] * 8 for _ in range(8)]
         weakest = 1.0
         if not self.ready:
             return rows, 0.0
 
         levels = _levels(board_img)
-        for r, c, sq in squares(board_img):
-            symbol, score = _decide(sq, self.templates, levels)
+        feats = _board_features(board_img, levels)
+        floor = self._floor(feats, board_img)
+        for (r, c, _), feat in zip(squares(board_img), feats):
+            symbol, score = _judge(feat, self.templates, floor)
             if symbol == ".":
                 continue
             if symbol is None:
@@ -800,8 +902,9 @@ class PieceReader:
         Returns a piece letter, "." for empty, or None when unsure."""
         if not self.ready:
             return None
-        size = board_img.size[0]
-        step = size / 8.0
-        sq = board_img.crop((int(col * step), int(row * step),
-                             int((col + 1) * step), int((row + 1) * step)))
-        return _decide(sq, self.templates, _levels(board_img))[0]
+        # A whole board pass for one square, because the trust test needs one.
+        # This is called on a promotion and nowhere else, so once a game.
+        levels = _levels(board_img)
+        feats = _board_features(board_img, levels)
+        return _judge(feats[row * 8 + col], self.templates,
+                      self._floor(feats, board_img))[0]

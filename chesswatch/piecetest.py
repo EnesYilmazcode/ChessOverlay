@@ -178,11 +178,16 @@ def main():
 
     got = tally(reader, shrunk(boards))
     r.append(check("nothing wrong down to a 200px window", got[1], 0))
-    # 476, down from the 495 the solid mask named. A square held 25 screen
-    # pixels at 200px against the 40 cell grid its mask is compared on, so the
-    # second layer is mostly upsampled guesswork by then and the margin refuses
-    # more of it. The trade is deliberate: nothing here is wrong, and what this
-    # buys is the two lines below and the whole cross-set section.
+    # 476, down from the 495 the solid mask named. Counted per size, the 45
+    # pieces on the two boards come back named 45, 44, 44, 42, 35 and 25 at
+    # 824, 664, 560, 400, 280 and 200px, and all but two of the refusals are
+    # MIN_OVERLAP rather than the margin, the colour veto or the trust gate,
+    # which fires at none of those sizes. So it is not a gate misfiring, it is
+    # the second layer having nothing to work with: at 200px a square holds 25
+    # screen pixels against the 40 cell grid its mask is compared on, so the
+    # outline is upsampled guesswork and the match genuinely scores below 0.30.
+    # A real cost, paid for the two lines below and the cross-set section, and
+    # not one wrong piece anywhere in it.
     r.append(check("  and 476 of 512 squares still named", got[0] >= 476, True))
 
     got = tally(reader, offset(boards))
@@ -262,15 +267,68 @@ def main():
           % tuple(named(own, boards)[i] for i in (0, 2, 1)))
     r.append(check("chess.com templates refuse 6.png rather than guess it",
                    named(other, six)[1], 0))
-    # The weak direction, and the one the reader cannot currently defend. 6.png
-    # draws its pawn at the same box size as chess.com draws a rook, so once
-    # registration has normalised the box away a pawn template outscores the
-    # rook template on a rook, confidently, by up to 0.17. Four rooks and three
-    # knights over the two boards go that way. Nothing inside one square can
-    # see it; counting the pieces on the board can, and that is where it
-    # belongs rather than here.
-    r.append(check("  and 6.png templates cost 7 wrong pieces the other way",
-                   named(own, boards)[1] <= 7, True))
+    # The direction that needed the trust gate. 6.png draws its pawn at the box
+    # size chess.com draws a rook at, so once registration has normalised the
+    # box away its pawn template outscores its own rook template on a chess.com
+    # rook, and named four rooks and three knights as pawns by up to 0.17 of
+    # margin. Charging for the stretch cannot fix it: those wrong calls fit the
+    # box to within 0.81 to 0.99 while the true pieces fit to 0.48 to 0.55, so
+    # the penalty pushes the wrong way. What does fix it is noticing that the
+    # templates are not this set's at all.
+    r.append(check("  and 6.png templates now name nothing on them either",
+                   named(own, boards)[:2], (0, 0)))
+
+    # -- the trust gate ----------------------------------------------------
+    # A set carries the signature of the board it was learned from: how much of
+    # a piece is outline rather than fill, once for the light pieces and once
+    # for the dark. When the board being read disagrees, the floor a call has
+    # to clear rises from MIN_OVERLAP to MISTRUST_OVERLAP, which is the whole
+    # of what removed those seven.
+    def sig_of(board_img):
+        levels = P._levels(board_img)
+        return P._signature(P._board_features(board_img, levels),
+                            board_img.size[0] / 8.0)
+
+    r.append(check("a learned set knows which board it came from",
+                   (round(own.signature[0], 2), round(own.signature[1], 2),
+                    round(other.signature[0], 2), round(other.signature[1], 2)),
+                   (0.36, 0.15, 0.12, 0.0)))
+    r.append(check("  and trusts its own board and its own set's other capture",
+                   [P._trusted(other.signature, sig_of(b)) for _, b in boards]
+                   + [P._trusted(own.signature, sig_of(six[0][1]))],
+                   [True, True, True]))
+    r.append(check("  and distrusts the other set both ways round",
+                   [P._trusted(own.signature, sig_of(b)) for _, b in boards]
+                   + [P._trusted(other.signature, sig_of(six[0][1]))],
+                   [False, False, False]))
+    # It must not fire on the same set captured badly, which is what every
+    # accuracy row above is made of. Over all 44 of those captures it does not,
+    # which is why none of those rows moved when the gate went in.
+    bad = shrunk(boards) + offset(boards) + distorted(boards)
+    held = sum(1 for _, b in bad if P._trusted(reader.signature, sig_of(b)))
+    print("      trust gate holds on %d of %d same-set captures" % (held, len(bad)))
+    r.append(check("  and never fires on a bad capture of the right set",
+                   held, len(bad)))
+
+    # Where it stops working, measured rather than assumed. At the reference
+    # brightness the two distributions are cleanly apart: over 69 pairs the
+    # same set never sits further than 0.078 from its own templates and a
+    # foreign set never closer than 0.166. Turn the contrast up and they cross
+    # over, because contrast moves what counts as a piece pixel and the outline
+    # share is all this measures. 0.16 is then a choice inside an overlap, not
+    # a separation, and on a distorted capture of a foreign set the gate is no
+    # help at all.
+    def apart(a, b):
+        parts = [abs(x - y) for x, y in zip(a[:2], b[:2])
+                 if x is not None and y is not None]
+        return round(max(parts), 3) if parts else None
+
+    harsh1 = ImageEnhance.Contrast(boards[0][1]).enhance(1.25)
+    harsh5 = ImageEnhance.Contrast(boards[1][1]).enhance(1.25)
+    r.append(check("  but at 1.25 contrast a board outruns its own set's spread",
+                   (apart(other.signature, sig_of(harsh5)),
+                    apart(own.signature, sig_of(harsh1))),
+                   (0.171, 0.149)))
 
     # -- measuring the board instead of assuming it -----------------------
     # Turn the contrast on 1.png up to 1.25 and the board's own two greys move
@@ -455,6 +513,14 @@ def main():
     # tracks this code: with six other processes competing it came out 46%
     # slower, which is enough to hide a real speedup or invent a regression.
     # The best case moves only when the work per board does.
+    #
+    # 16 ms against the 6 the solid mask took, and it is all in reducing the
+    # squares: measured separately, 13.0 ms goes on turning 64 squares into
+    # features, 1.2 ms on scoring them and 0.1 ms on measuring the board's two
+    # greys. A square went from one threshold, one subsample and one packed
+    # mask to two thresholds, four area-downsamples, a coverage-decided
+    # bounding box and five packed masks. Doubling the templates, which is what
+    # learning both square colours does, costs 0.6 ms of the 16.
     reader.classify(boards[0][1])
     runs = []
     for _ in range(20):
