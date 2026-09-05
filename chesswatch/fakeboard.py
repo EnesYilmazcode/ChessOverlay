@@ -53,7 +53,7 @@ def _piece_sources(grid):
 
 
 def _empty_sources(grid):
-    """An empty square of each colour to measure the board colours from.
+    """Every empty square of each colour worth measuring a board colour from.
 
     Interior squares only. A board draws its rank labels down one outer file
     and its file labels along one outer rank, so the four edges of the grid are
@@ -61,22 +61,30 @@ def _empty_sources(grid):
     labelled board are the squares carrying "5" and "6", and every rendered
     board came out stamped with them. testdata/1.png has no in-square labels
     and hid it; testdata/6.png has them.
+
+    All of them rather than the first one found, which is the same argument one
+    step further out. A coordinate label is a minority of one square's pixels
+    and loses to the mode; a last-move highlight is the whole square and wins
+    it outright. Taking the mode across a dozen squares means a highlight has
+    to be on most of the board before it can move the answer, and it never is.
     """
-    found = {}
-    for col in range(1, 7):
-        for row in range(1, 7):
+    found = {"light": [], "dark": []}
+    for row in range(1, 7):
+        for col in range(1, 7):
             if grid[row][col] == ".":
-                found.setdefault("light" if (row + col) % 2 == 0 else "dark",
-                                 (row, col))
+                found["light" if (row + col) % 2 == 0 else "dark"].append((row, col))
     return found
 
 
-def _square_colour(sprite, fallback):
-    """The colour a flat square is mostly made of."""
-    counts = sprite.getcolors(sprite.size[0] * sprite.size[1])
+def _square_colour(sprites, fallback):
+    """The colour these squares are mostly made of, over all of them at once."""
+    counts = {}
+    for sprite in sprites:
+        for n, colour in sprite.getcolors(sprite.size[0] * sprite.size[1]):
+            counts[colour] = counts.get(colour, 0) + n
     if not counts:
         return fallback
-    return max(counts)[1]
+    return max(counts.items(), key=lambda pair: pair[1])[0]
 
 
 def _cutout(sprite, light, dark):
@@ -118,11 +126,8 @@ class Renderer:
             return img.crop((left, top, left + self.step, top + self.step))
 
         empties = _empty_sources(grid)
-        self.light, self.dark = LIGHT, DARK
-        if "light" in empties:
-            self.light = _square_colour(cut(*empties["light"]), LIGHT)
-        if "dark" in empties:
-            self.dark = _square_colour(cut(*empties["dark"]), DARK)
+        self.light = _square_colour([cut(*at) for at in empties["light"]], LIGHT)
+        self.dark = _square_colour([cut(*at) for at in empties["dark"]], DARK)
 
         self.sprites = {key: cut(row, col)
                         for key, (row, col) in _piece_sources(grid).items()}

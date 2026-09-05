@@ -20,6 +20,13 @@ issue #20: the sets separate by two hundredths of an IoU and a retexture eats
 that. Kept apart the outline pattern survives, and the sets separate by an
 order of magnitude more.
 
+It says nothing rather than something doubtful. A square the reader cannot
+settle comes back as "?" and is retried a second later, but a wrongly chosen
+set is doubted by nothing downstream: every square is then read against foreign
+templates and the reader's own gate cannot tell that from a hard board. So the
+winner has to beat the runner up by MIN_CONFIDENCE or select() names no set at
+all.
+
 The bank ships two sets because two sets is what the project legitimately has
 pixels for. Add your own with:
 
@@ -37,9 +44,14 @@ from PIL import Image
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 BANK_DIR = os.path.join(APP_DIR, "piecesets")
 
-ORDER = "KQRBNPkqrbnp"
-SLOT_PX = 96              # size each template is stored at
 NORM = 40                 # size every mask is compared at
+
+# The sheet layout is shared with pieces.py rather than restated, because a
+# bank sheet has to be loadable by both. Restating it let the two disagree:
+# this module used to take the slot size from the sheet's own height while
+# pieces.py reads a fixed 96, so a sheet cut at any other size loaded here and
+# read off the wrong pixels there, silently and only in one of them.
+from pieces import ORDER, TEMPLATE_PX as SLOT_PX
 
 # Fewer pieces than this on the board and the answer is refused. Not an
 # accuracy floor: measured over the corpus banktest.py builds, a board holding
@@ -50,8 +62,30 @@ NORM = 40                 # size every mask is compared at
 # stray bright artefact is worth refusing whatever it scores.
 MIN_PIECES = 2
 
-# Same cutoffs the occupancy reader uses, so every part of the program agrees on
-# what counts as a piece pixel.
+# And the winner has to be this far clear of the runner up, or no set is
+# named. Measured over 2772 boards, the whole corpus banktest.py builds and
+# then the same corpus at ten wrong brightness, contrast and blur settings:
+# 154 boards picked the wrong set and the most confident of them managed
+# 0.0444, while the worst margin on any of the 252 undistorted boards was
+# 0.1212. So 0.05 refuses every wrong pick that was ever made and costs nothing
+# on a board captured as it looks.
+#
+# The band is a factor of 2.7 and not more, and it is a floor on the margin
+# between two sets, not on how well either fits. A set that is not in the bank
+# at all can still clear it. See select().
+MIN_CONFIDENCE = 0.05
+
+# The cutoffs the occupancy reader uses today, not a shared definition of a
+# piece pixel. pieces.py is moving to levels measured off the board in front of
+# it so that a board theme stops mattering, and after that this module is the
+# one still thresholding at a fixed 244 and 70.
+#
+# That is a real cost and it is measured, not waved away: the 154 wrong picks
+# banktest.py finds are all boards captured at a brightness these cutoffs were
+# not set for. MIN_CONFIDENCE refuses every one of them, so the failure is a
+# refusal rather than a wrong sheet, which is why this is worth shipping ahead
+# of the fix. Taking the levels from the board is the fix, and it belongs here
+# too once pieces.py has it to share.
 from watcher import BRIGHT, DARK, MIN_COVERAGE, find_board
 
 # The masking below is deliberately duplicated from pieces.py rather than
@@ -151,17 +185,22 @@ class PieceSet:
 
 
 def read_sheet(path):
-    """Load one set from a twelve slot sheet. Raises if the sheet is short.
+    """Load one set from a twelve slot sheet. Raises if the sheet is not one.
 
-    crop() pads out of bounds with black and black counts as a piece pixel, so
-    a truncated sheet would load as solid masks that match everything rather
-    than fail.
+    The slot size is SLOT_PX and is not taken from the sheet, so a sheet of
+    some other size is refused here rather than being read correctly here and
+    off the wrong pixels by pieces.py, which reads a fixed 96.
+
+    Both checks matter because crop() pads out of bounds with black and black
+    counts as a piece pixel, so a sheet that is short or the wrong height would
+    load as solid masks that match everything rather than fail.
     """
     img = Image.open(path).convert("RGB")
-    slot = img.size[1]
-    if img.size[0] < len(ORDER) * slot:
-        raise ValueError("%s holds fewer than twelve pieces" % path)
-    return {symbol: _layers(img.crop((i * slot, 0, (i + 1) * slot, slot)))
+    if img.size[1] != SLOT_PX or img.size[0] < len(ORDER) * SLOT_PX:
+        raise ValueError("%s is not a %d by %d sheet of twelve pieces"
+                         % (path, len(ORDER) * SLOT_PX, SLOT_PX))
+    return {symbol: _layers(img.crop((i * SLOT_PX, 0,
+                                      (i + 1) * SLOT_PX, SLOT_PX)))
             for i, symbol in enumerate(ORDER)}
 
 
@@ -197,17 +236,29 @@ def rank(board_img, sets=None):
 def select(board_img, sets=None):
     """The piece set this board is drawn in.
 
-    Returns (name, confidence), or (None, 0.0) when the board holds too few
-    pieces to say. Confidence is how far clear of the runner up the winner
-    came, on the same 0 to 1 scale the scores are on, so a bank of one set
-    always reports 0.0: nothing was ruled out, because there was nothing to
-    rule out.
+    Returns (name, confidence). name is None when the answer is refused, and
+    the confidence is returned either way so a caller can see how close it
+    came. Refusing rather than guessing is the same rule pieces.py reads a
+    square by, and for a stronger reason: a square the pixels do not settle
+    comes back as "?" and is retried a second later, but a wrongly chosen set
+    is not doubted by anything downstream. Every square then gets read against
+    foreign templates, and pieces.py's own gate cannot tell that from a hard
+    board, because the shapes it is comparing are the only shapes it has.
+
+    Two ways to be refused. Too few pieces to be a chess position at all, and
+    the two best sets too close together to separate. Confidence is how far
+    clear of the runner up the winner came, so a bank holding one set always
+    reports 0.0 and is always refused: one set was never a choice, and a caller
+    that wants it anyway should ask the bank for it by name.
     """
     ranked = rank(board_img, sets)
     if not ranked:
         return None, 0.0
     runner_up = ranked[1][1] if len(ranked) > 1 else ranked[0][1]
-    return ranked[0][0], ranked[0][1] - runner_up
+    confidence = ranked[0][1] - runner_up
+    if confidence < MIN_CONFIDENCE:
+        return None, confidence
+    return ranked[0][0], confidence
 
 
 def sheet_for(name, sets=None):

@@ -10,15 +10,26 @@ board below is rendered out of them by fakeboard.py at test time. That is a few
 hundred boards without a single PNG in the repository, and it means the sizes
 and positions can be changed by editing a tuple.
 
-One thing the corpus is honest about. The chess.com sheet in the bank was cut
-from 1.png, so boards rendered out of 1.png are the sheet being read back to
-itself. 5.png is a different screenshot of the same set, at a different window
-size, over a wallpaper, and it holds eight of the twelve piece types, so the
-boards rendered out of it are the only genuinely independent trials in here and
-are counted separately. The flat set has no second screenshot at all, so it has
-no independent trials. Said plainly rather than averaged away.
+What the corpus is not is 252 independent trials, and the counts below are
+split so that is visible rather than averaged away.
 
-Run:  python banktest.py
+- The chess.com sheet was cut from 1.png and the flat sheet from 6.png, so 192
+  of the 252 are a sheet being read back to itself.
+- The other 60 come from 5.png, a different screenshot of the chess.com set at
+  a different window size over a wallpaper. Independent of the sheet, but they
+  are 5 positions by 2 orientations by 6 sizes off 8 sprites in one screenshot,
+  and a horizontal flip and a LANCZOS downscale are deterministic transforms,
+  not new evidence.
+- Every one of the 60 asks only whether chesscom beats flat. There is nowhere
+  in this corpus that the flat sheet has to win on pixels it did not come from,
+  because there is no second screenshot of that set to render from.
+
+Two sets is what the project has its own pixels for and no piece art is
+bundled from anywhere else, so this is the ceiling on how honest the number can
+be until someone enrolls a set of their own.
+
+Run:  python banktest.py    (about 45 seconds, most of it the 2520 board sweep
+                             MIN_CONFIDENCE is measured from)
 """
 
 import os
@@ -28,9 +39,10 @@ import tempfile
 import time
 
 import chess
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 
 import piecebank as B
+import pieces as P
 import watcher as W
 from fakeboard import Renderer
 from shots import shot
@@ -58,6 +70,9 @@ SIZES = (824, 664, 560, 400, 280, 200)
 
 SPARSE = 6                 # pieces at or under this and the board is an endgame
 
+# chess.com's last-move highlight, off a real screenshot. Only used to paint one.
+HIGHLIGHT = (247, 247, 105)
+
 
 def check(name, got, want):
     ok = got == want
@@ -70,6 +85,20 @@ def check(name, got, want):
 
 def rect_of(name):
     return W.find_board(Image.open(shot(name)).convert("RGB"))
+
+
+def board_colours(name):
+    """The light and dark square colours of a reference screenshot, counted off
+    the board itself rather than asked of the renderer. Half the squares are one
+    colour and half the other, and no piece covers a whole square, so the two
+    run away with the count whatever position is on the board."""
+    name = name[:-4] if name.endswith(".png") else name
+    x0, y0, size = rect_of(name)
+    board = Image.open(shot(name)).convert("RGB").crop((x0, y0, x0 + size, y0 + size))
+    counts = sorted(board.getcolors(size * size), reverse=True)
+    first, second = counts[0][1], counts[1][1]
+    # Brighter one first, to match light then dark.
+    return (first, second) if sum(first) > sum(second) else (second, first)
 
 
 def renderers():
@@ -103,6 +132,28 @@ def corpus(rends):
                            sparse, base.resize((size, size), Image.LANCZOS))
 
 
+def rescaled(rend, board, scale, size=None):
+    """The same piece art drawn smaller inside the square, which is a set the
+    bank does not hold and cannot have been enrolled from. Not new artwork, a
+    transform of art already here, which is the only third set this repository
+    can honestly produce."""
+    out = Image.new("RGB", (rend.size, rend.size))
+    step = rend.step
+    small = max(8, int(step * scale))
+    off = (step - small) // 2
+    for row, rank in enumerate(range(7, -1, -1)):
+        for col, file in enumerate(range(8)):
+            pos = (col * step, row * step)
+            out.paste(rend.sprites["light" if (row + col) % 2 == 0 else "dark"], pos)
+            piece = board.piece_at(chess.square(file, rank))
+            if piece:
+                key = piece.symbol()
+                out.paste(rend.sprites[key].resize((small, small), Image.LANCZOS),
+                          (pos[0] + off, pos[1] + off),
+                          rend.masks[key].resize((small, small), Image.LANCZOS))
+    return out.resize((size, size), Image.LANCZOS) if size else out
+
+
 def distortions(img):
     """A screen that is not at the reference brightness, and the blur display
     scaling adds. Hard for this module for the same reason it is hard for
@@ -118,6 +169,14 @@ def distortions(img):
 
 def main():
     r = []
+    # 6.png is the whole second piece set, so say so rather than dying in
+    # find_board on a folder that does not have it. CHESSWATCH_TESTDATA points
+    # at your own board theme and predates that file.
+    for name in ("1", "5", "6"):
+        if not os.path.exists(shot(name)):
+            print("FAIL  %s.png is missing from %s" % (name, os.path.dirname(shot(name))))
+            return 1
+
     bank = B.load_bank()
     r.append(check("the bank loads two sets of twelve templates",
                    sorted((s.name, len(s.templates)) for s in bank),
@@ -130,15 +189,24 @@ def main():
 
     rends = renderers()
 
-    # -- the renderer draws boards, not coordinate labels -------------------
+    # -- the renderer draws board colours, not whatever was in the square ---
     # An empty square is drawn up to 64 times a board, so anything cut along
     # with it is repeated 64 times. The sprites used to come from a5 and a6,
     # which on a board with in-square coordinates are the two squares carrying
     # "5" and "6", and every rendered board came out stamped with them. 1.png
     # has no in-square labels and hid it for as long as it was the only
     # reference; 6.png has them.
+    #
+    # Checked against the two colours the reference screenshot is actually made
+    # of, counted over the whole board and not through the renderer. An earlier
+    # version of this compared the rendered square against rend.light, which is
+    # the value render() painted it with, so it held whatever the renderer had
+    # measured, magenta included.
     stamped = []
     for name, src, _, rend in rends:
+        want = board_colours(src)
+        if (rend.light, rend.dark) != want:
+            stamped.append((src, "measured", (rend.light, rend.dark), want))
         position = POSITIONS[3][1]                 # K+R v k, 61 empty squares
         img = rend.render(position)
         step = rend.step
@@ -149,10 +217,31 @@ def main():
                 square = img.crop((col * step, row * step,
                                    (col + 1) * step, (row + 1) * step))
                 colours = square.getcolors(step * step)
-                if len(colours) != 1 or colours[0][1] not in (rend.light, rend.dark):
+                if len(colours) != 1 or colours[0][1] not in want:
                     stamped.append((src, row, col, len(colours)))
-    r.append(check("a rendered empty square is the square colour and nothing else",
+    r.append(check("a rendered empty square is the reference's own square colour",
                    stamped, []))
+
+    # The case the interior-squares rule is not enough for on its own. A
+    # coordinate label is a minority of one square and loses to the mode; a
+    # last-move highlight is the whole square and wins it. Painted onto b5 and
+    # b6, which is where scanning for the first empty interior square lands on
+    # an opening position, it used to become the light and dark colour of every
+    # rendered board.
+    with tempfile.TemporaryDirectory() as tmp:
+        marked = Image.open(shot("1")).convert("RGB")
+        x0, y0, size = rect_of("1")
+        step = size / 8.0
+        draw = ImageDraw.Draw(marked)
+        for row, col in ((3, 1), (2, 1)):
+            draw.rectangle([x0 + col * step, y0 + row * step,
+                            x0 + (col + 1) * step - 1, y0 + (row + 1) * step - 1],
+                           fill=HIGHLIGHT)
+        path = os.path.join(tmp, "highlighted.png")
+        marked.save(path)
+        highlighted = Renderer(path, (x0, y0, size), chess.Board(FEN1))
+        r.append(check("  and a last-move highlight on b5 and b6 does not become it",
+                       (highlighted.light, highlighted.dark), board_colours("1")))
 
     # -- the signature livetest.py and selftest.py pass ---------------------
     plain = Renderer(shot("1"), rect_of("1"))
@@ -231,33 +320,95 @@ def main():
     r.append(check("  but an empty board is refused rather than guessed at",
                    B.select(rends[0][3].render(chess.Board(None)), bank), (None, 0.0)))
 
-    # -- a screen at the wrong brightness ----------------------------------
+    # -- a screen at the wrong brightness, and what MIN_CONFIDENCE is for ---
     # Where this gives out, and it gives out the same way pieces.py does. The
     # cutoffs are absolute, so turning the screen down takes the bright layer
-    # away, and on an endgame there was little else to go on. What holds is
-    # that the confidence goes with it: no wrong pick anywhere in the corpus
-    # came within a quarter of the margin a clean board produces.
-    ok = wrong = refused = 0
-    worst_wrong = 0.0
+    # away, and on an endgame there was little else to go on.
+    #
+    # This is the measurement MIN_CONFIDENCE comes from, so it is the whole
+    # corpus at every size and both orientations rather than a slice of it.
+    # Scored before the gate, because the question is what the gate has to
+    # catch. It is most of this file's running time and it is worth it: the
+    # alternative is a threshold nobody measured.
+    ungated = wrong = refused_early = 0
+    wrong_margins = []
     for name, src, _, label, sparse, img in corpus(rends):
-        if "560" not in label or "flipped" in label:
-            continue
         for variant in distortions(img):
-            got, conf = B.select(variant, bank)
-            if got is None:
-                refused += 1
-            elif got == name:
-                ok += 1
+            ranked = B.rank(variant, bank)
+            if not ranked:
+                refused_early += 1
+                continue
+            margin = ranked[0][1] - ranked[1][1]
+            if ranked[0][0] == name:
+                ungated += 1
             else:
                 wrong += 1
-                worst_wrong = max(worst_wrong, conf)
-    print("\n      wrong brightness or blur: %d right, %d wrong, %d refused"
-          % (ok, wrong, refused))
-    r.append(check("distortion costs at most 12 wrong picks of 210",
-                   (ok >= 177, wrong <= 12, ok + wrong + refused), (True, True, 210)))
-    print("      the most confident wrong pick in the whole corpus: %.3f" % worst_wrong)
-    r.append(check("  and every one of them comes in under a 0.05 margin",
-                   worst_wrong < 0.05, True))
+                wrong_margins.append((margin, label))
+    trials = ungated + wrong + refused_early
+    print("\n      wrong brightness or blur, before the gate: %d right, %d wrong,"
+          " %d with too few pieces, of %d" % (ungated, wrong, refused_early, trials))
+    r.append(check("distortion costs 154 wrong picks of 2520",
+                   (ungated, wrong, refused_early), (2028, 154, 338)))
+
+    wrong_margins.sort(reverse=True)
+    print("      the most confident wrong pick anywhere: %.4f (%s)"
+          % (wrong_margins[0][0], wrong_margins[0][1]))
+    print("      the least confident right pick on a clean board: %.4f"
+          % confidence[0][0])
+    r.append(check("  no wrong pick in 2772 boards reaches MIN_CONFIDENCE",
+                   (round(wrong_margins[0][0], 4),
+                    sum(1 for m, _ in wrong_margins if m >= B.MIN_CONFIDENCE)),
+                   (0.0444, 0)))
+    r.append(check("  and no right pick on a clean board falls below it",
+                   sum(1 for m in confidence if m[0] < B.MIN_CONFIDENCE), 0))
+
+    # The band is real but it is narrow, 0.0444 to 0.1212, so the gate is set
+    # once from a measurement rather than nudged.
+    r.append(check("  which leaves a band of 2.7, not an order of magnitude",
+                   round(confidence[0][0] / wrong_margins[0][0], 1), 2.7))
+
+    # And the gate is what select() actually does, not advice in a docstring.
+    # A wrong sheet is not a "?" downstream, it is confidently wrong pieces, so
+    # the refusal has to happen where the answer is handed out.
+    duped = next(v for v in distortions(rends[2][3].render(POSITIONS[4][1], size=200))
+                 if B.rank(v, bank)[0][0] != "flat")
+    r.append(check("  select refuses a board that would have picked the wrong set",
+                   (B.rank(duped, bank)[0][0], B.select(duped, bank)[0],
+                    B.sheet_for(B.select(duped, bank)[0], bank)),
+                   ("chesscom", None, None)))
+    r.append(check("  and a bank of one set is a refusal, not a free win",
+                   B.select(rends[0][3].render(chess.Board()), bank[:1]), (None, 0.0)))
+
+    # -- what the gate does not do -----------------------------------------
+    # It is a margin between two sets in the bank. It says nothing about
+    # whether the set on screen is one of them, and the two claims are not the
+    # same claim. Drawn at 0.80 scale the flat set is a set nobody enrolled,
+    # and the bank names flat for all 48 boards with a mean margin of 0.163,
+    # clear of both MIN_CONFIDENCE and the 0.121 worst case on a real board.
+    # Pinned here so nobody reads the gate as proof of membership. The same
+    # transform on chesscom clears the gate zero times, so how far an absent
+    # set gets depends entirely on which bank entry it happens to resemble.
+    print()
+    absent = {}
+    for _, src, _, rend in (rends[2], rends[0]):
+        picks = {}
+        margins = []
+        for label, position in POSITIONS:
+            if not rend.can_render(position):
+                continue
+            for size in SIZES:
+                ranked = B.rank(rescaled(rend, position, 0.80, size), bank)
+                picks[ranked[0][0]] = picks.get(ranked[0][0], 0) + 1
+                margins.append(ranked[0][1] - ranked[1][1])
+        over = sum(1 for m in margins if m >= B.MIN_CONFIDENCE)
+        absent[src] = (picks, over, len(margins))
+        print("      %s redrawn at 0.80 scale, a set nobody enrolled: %s,"
+              " mean margin %.3f, %d of %d clear the gate"
+              % (src, picks, sum(margins) / len(margins), over, len(margins)))
+    r.append(check("an absent set that resembles a bank entry clears the gate every time",
+                   absent["6.png"], ({"flat": 48}, 48, 48)))
+    r.append(check("  and one that resembles neither clears it none of 48",
+                   absent["1.png"][1:], (0, 48)))
 
     # -- picking right is worth doing --------------------------------------
     # Top-1 before any confidence gate, which is the honest number issue #20
@@ -279,17 +430,17 @@ def main():
                            for symbol, t in pieces.templates.items())
                 n += 1
                 ok += best[1] == want.symbol()
-            scored[(src, pieces.name)] = ok / n
+            scored[(src, pieces.name)] = (ok, n)
             print("        %-7s board, %-9s templates: %d of %d" %
                   (src, pieces.name, ok, n))
     r.append(check("  the set the bank picks reads every piece on its own board",
-                   [v for k, v in scored.items()
-                    if k in (("1.png", "chesscom"), ("5.png", "chesscom"),
-                             ("6.png", "flat"))], [1.0, 1.0, 1.0]))
-    r.append(check("  and the other set misreads a fifth to a third of them",
-                   max(v for k, v in scored.items()
-                       if k in (("1.png", "flat"), ("5.png", "flat"),
-                                ("6.png", "chesscom"))) < 0.82, True))
+                   [scored[k] for k in (("1.png", "chesscom"), ("5.png", "chesscom"),
+                                        ("6.png", "flat"))],
+                   [(32, 32), (9, 9), (32, 32)]))
+    r.append(check("  and the other set misreads 6 of 32, 3 of 9 and 10 of 32",
+                   [scored[k] for k in (("6.png", "chesscom"), ("5.png", "flat"),
+                                        ("1.png", "flat"))],
+                   [(26, 32), (6, 9), (22, 32)]))
 
     # -- enrolling a set of your own ---------------------------------------
     with tempfile.TemporaryDirectory() as tmp:
@@ -313,12 +464,25 @@ def main():
         # pixel, so a short sheet would load as solid masks matching anything.
         short = os.path.join(tmp, "short.png")
         Image.open(mine).crop((0, 0, 5 * B.SLOT_PX, B.SLOT_PX)).save(short)
-        failed = False
-        try:
-            B.read_sheet(short)
-        except ValueError:
-            failed = True
-        r.append(check("  a sheet with pieces missing will not load", failed, True))
+
+        # And a sheet at some other slot size is refused too. It would load
+        # here, since this used to take the slot size off the sheet's height,
+        # and pieces.py would then read it off the wrong pixels without a word,
+        # because pieces.py reads a fixed 96. Both take the size from one
+        # constant now, and a sheet that disagrees stops here.
+        tall = os.path.join(tmp, "tall.png")
+        Image.open(mine).resize((B.SLOT_PX * 12 * 2, B.SLOT_PX * 2)).save(tall)
+
+        refused = []
+        for path in (short, tall):
+            try:
+                B.read_sheet(path)
+            except ValueError:
+                refused.append(os.path.basename(path))
+        r.append(check("  a sheet that is short or the wrong slot size will not load",
+                       refused, ["short.png", "tall.png"]))
+        r.append(check("  and both readers take the slot size from one constant",
+                       (B.SLOT_PX, B.ORDER), (P.TEMPLATE_PX, P.ORDER)))
 
         # One unreadable file a user dropped in should not take the bank down.
         with open(os.path.join(tmp, "junk.png"), "w") as f:

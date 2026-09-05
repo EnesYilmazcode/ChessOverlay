@@ -295,8 +295,10 @@ single extra file in the repository.
 The screenshots the tests read live in `testdata\`. They are real chess.com
 windows with everything outside the board blacked out, so they carry no account
 name. To run the same checks against your own board theme, point
-`CHESSWATCH_TESTDATA` at a folder holding your own `1.png`, `2.png`, `4.png`
-and `5.png`, or pass paths to `selftest.py` on the command line.
+`CHESSWATCH_TESTDATA` at a folder holding your own `1.png`, `2.png`, `4.png`,
+`5.png` and `6.png`, or pass paths to `selftest.py` on the command line. The
+first four are board themes; `6.png` is a board in a second piece set, and
+`banktest.py` is the only thing that reads it.
 
 ## A piece set that is not chess.com's
 
