@@ -76,15 +76,22 @@ occupied square read empty. That position matches no legal move, so the frame
 is ignored and the recorder waits, exactly as it does for a piece in mid
 animation. It cannot write down a move that did not happen.
 
-`overlaytest.py` measures this rather than asserting it. It covers the desktop,
-paints a real board, puts the real overlay over it, captures the screen through
-mss and reads it back. Sixteen arrows across the crowded ranks, arrows landing
-on pieces, at 664px and again at 240px: every one of them is confirmed to be on
-screen, and not one of them changed a single square. Then it plays a whole game
-with an arrow up for every frame and checks the moves came out right.
+`overlaytest.py` measures this rather than asserting it. Sixteen arrows across
+the crowded ranks, arrows landing on pieces, at 664px and again at 240px: every
+one of them is confirmed to be on the board, not one of them changed a single
+square, and every pixel any of them touched is confirmed to have landed between
+the two cutoffs. Then it plays a whole game with an arrow up for every frame and
+checks the moves came out right.
 
-The check that the arrow is really visible is the important one. Without it an
+The check that the arrow is really there is the important one. Without it an
 overlay that drew nothing at all would pass every other check in the file.
+
+By default the arrow is modelled in PIL: the same path from `overlay.py`, the
+same colour, the same width, composited the way a layered window at `ALPHA`
+composites. That settles the colour and the geometry and costs no screen space.
+`--on-screen` puts the real overlay window over a real board and captures it
+through mss, which is the only run that touches the transparency key, the
+stacking order and click-through.
 
 ## How it works
 
@@ -266,18 +273,31 @@ rectangle is in use.
 
     python selftest.py      78 checks, including real screenshots
     python coachtest.py     18 checks on the engine wrapper and its label
-    python overlaytest.py   16 checks that the arrow cannot corrupt a reading
+    python overlaytest.py   17 checks that the arrow cannot corrupt a reading
     python settletest.py    move animation, with the screen on a clock
-    python livetest.py      full loop against the real screen
+    python livetest.py      full loop through the real capture worker
 
-`livetest.py` cuts real chess.com piece sprites out of a screenshot, paints
-whole games onto your actual desktop, and runs the real capture worker against
-them. It plays an 18 move game with castling on both sides, a knight sacrifice
-and a queen trade, then a second game from black's side ending in checkmate, and
-checks every move, both colours, the result, and the files on disk. The
-second game is deliberately a small board on the second monitor, and a third
-run skips three moves with no frames in between to make the checker recover
-them.
+None of these put anything on screen or screenshot your desktop. `livetest.py`
+and `overlaytest.py` render the board into a desktop sized image and point the
+worker's capture at that; `coachtest.py` builds a real Tk app, since the label
+it checks lives in one, but keeps its window withdrawn and its capture pointed
+at a blank image. `--on-screen` paints on the real desktop instead, in a window
+the size of the board plus a margin rather than the whole desktop, and every run
+says which mode it was and what that mode cannot prove.
+
+Redirecting the capture means the real `grab()` stops being exercised, so both
+files check separately that it still decodes mss's BGRA bytes in the right
+order, against a stubbed mss and no screen.
+
+`livetest.py` cuts real chess.com piece sprites out of a screenshot, plays whole
+games across them, and runs the real capture worker against the result: it hunts
+for the board itself, grabs it, classifies the squares, infers the moves and
+writes the files. It plays an 18 move game with castling on both sides, a knight
+sacrifice and a queen trade, then a second game from black's side ending in
+checkmate, and checks every move, both colours, the result, and the files on
+disk. The second game is deliberately a small board on the second monitor, and a
+third run skips three moves with no frames in between and checks they come back
+in the only legal order.
 
 `settletest.py` replaces the screen with a clock-driven script, so the
 animation has a real duration rather than a frame count. It covers pawn pushes,

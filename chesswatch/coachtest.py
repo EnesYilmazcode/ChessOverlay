@@ -122,6 +122,7 @@ def label_checks(path):
     import tempfile
     import tkinter as tk
     import chesswatch as C
+    import testscreen as TS
 
     # The app starts watching the screen the moment it is built. Point it at a
     # scratch folder so a stray frame cannot land in your real games, and at a
@@ -129,10 +130,20 @@ def label_checks(path):
     C.W.GAMES_DIR = tempfile.mkdtemp(prefix="chesswatch-test-")
     C.CONFIG_PATH = os.path.join(C.W.GAMES_DIR, "config.json")
 
+    # App.__init__ ends by starting a worker, and a worker with no region hunts
+    # the whole desktop, which means a test that calls itself headless would
+    # screenshot everything you have open. Point the capture at a blank image
+    # for as long as that worker is alive: it finds no board and gives up.
+    screen = TS.PaperScreen(320, 200)
+
     root = tk.Tk()
     root.withdraw()
     app = C.App(root)
-    app._stop()                       # do not watch the screen during a test
+    watching = app.worker              # _stop() forgets it, and it is a thread
+    app._stop()                        # do not watch the screen during a test
+    if watching:
+        watching.join(timeout=2)       # before the real capture is put back
+    screen.close()
     frame = {"region": None, "locked": True, "rows": [], "count": 0,
              "color": "white", "result": "*", "termination": "", "outcome": None,
              "path": None, "saved": 0, "joined": False, "board": "",
@@ -170,6 +181,12 @@ def label_checks(path):
 
 
 def main():
+    print("mode: headless. The label checks build the real Tk app with its"
+          " window withdrawn")
+    print("      and its capture pointed at a blank image, so nothing is drawn"
+          " and your")
+    print("      desktop is never screenshotted. They need Stockfish to run at"
+          " all.\n")
     wording()
     path = CO.find_engine()
     print("\n      engine:", path or "not found")
