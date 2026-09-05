@@ -59,7 +59,11 @@ def worker_for(render, setup, tmp):
 
 
 def main():
-    render = Renderer(REF, (225, 63, 824))
+    print("mode: headless, no window. The screen here is a script on a clock,"
+          " so nothing")
+    print("      this proves says anything about mss, DPI, or a window sitting"
+          " over the board.\n")
+    render = Renderer(REF, (226, 63, 824))   # where selftest finds it in 1.png
     ok = True
     real_grab = C.grab
 

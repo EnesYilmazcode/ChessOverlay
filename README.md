@@ -106,13 +106,18 @@ position matches no legal move, so the frame is ignored and the recorder waits,
 which is what it already does for a piece in mid animation. It cannot write down
 a move that did not happen.
 
-`overlaytest.py` measures that rather than claiming it. It covers the desktop,
-paints a real board, puts the real overlay over it, captures the screen through
-mss and reads it back: sixteen arrows across the crowded ranks and onto pieces,
-at 664px and again at 240px, every one confirmed to be on screen, none of them
-changing a single square. Then it plays a whole game with an arrow up for every
-frame. The check that the arrow is genuinely visible is the load-bearing one,
-because without it an overlay that drew nothing would pass everything else.
+`overlaytest.py` measures that rather than claiming it: sixteen arrows across
+the crowded ranks and onto pieces, at 664px and again at 240px, every one
+confirmed to be on the board, none of them changing a single square, and every
+pixel any of them touched confirmed to have landed between the two cutoffs.
+Then it plays a whole game with an arrow up for every frame. The check that the
+arrow is really there is the load-bearing one, because without it an overlay
+that drew nothing would pass everything else.
+
+By default the arrow is modelled in PIL, which settles the colour and the
+geometry and costs no screen space. `--on-screen` puts the real overlay window
+over a real board and captures it through mss, which is the only run that
+touches the transparency key, the stacking order and click-through.
 
 ## Run the engine half
 
@@ -179,17 +184,21 @@ happens to allow.
 cd chesswatch
 python selftest.py      78 headless checks, including real screenshots
 python coachtest.py     18 checks on the engine wrapper and its label
-python overlaytest.py   16 checks that the arrow cannot corrupt a reading
+python overlaytest.py   17 checks that the arrow cannot corrupt a reading
 python settletest.py    move animation, driven off a real clock
-python livetest.py      paints whole games on your desktop and records them
+python livetest.py      plays whole games past the real capture worker
 
 cd holochess
 python smoke_test.py    engine, moves, hints, undo, flip
 python shot.py          proves the arrow cannot escape the window
 ```
 
-`livetest.py`, `overlaytest.py` and `shot.py` take over the screen while they
-run.
+None of the chesswatch tests open a window. They render the board into memory
+and point the capture at that, so the whole suite costs no screen space. Add
+`--on-screen` to `livetest.py` or `overlaytest.py` to run it against the real
+desktop instead, in a window the size of the board plus a margin, which is the
+only way to exercise mss, DPI scaling, coordinates on a second monitor and
+click-through. `shot.py` still takes over the screen.
 
 The screenshots the tests read are in `chesswatch/testdata/`. They are real
 chess.com windows with everything outside the board blacked out, so no account

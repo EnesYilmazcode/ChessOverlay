@@ -170,6 +170,9 @@ def label_checks(path):
 
 
 def main():
+    print("mode: headless. The label checks build the real Tk app but leave its"
+          " window")
+    print("      withdrawn, so nothing is drawn and no screen space is used.")
     wording()
     path = CO.find_engine()
     print("\n      engine:", path or "not found")
