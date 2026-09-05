@@ -16,8 +16,11 @@ top 23 times.
 
 Board colours, the last-move highlight, the check marker and the coordinate
 labels all sit between the two cutoffs, so the layers are the piece and nothing
-else. The cutoffs are measured off the board rather than fixed, so a board theme
-that is not chess.com's green moves them instead of being cut into.
+else. Both ends of both cutoffs are measured off the board, its two square
+colours and the darkest and brightest its ink reaches, so a board theme that is
+not chess.com's green moves them instead of being cut into, and so does a
+screen turned up or down: brightness and contrast are affine on pixel values,
+which moves all four measurements together and leaves the mask where it was.
 
 Masks are compared twice, once where they sit in the square and once registered
 onto their own bounding box, and six descriptors that survive a retexture are
@@ -74,6 +77,11 @@ MIN_MARGIN = 0.05
 #
 # 0.16 is the tightest tolerance that costs no correct answer on any capture of
 # the right set. See _trusted for what it does and does not separate.
+#
+# 0.40 is also the lowest floor that leaves the mistrusted reference row with
+# no wrong piece at all: 0.37 leaves three and 0.34 leaves five. Higher costs
+# right answers without buying much, 0.45 giving up 9 of the 13 that row names
+# and one wrong piece over the wider set of captures.
 TRUST_TOL = 0.16
 MISTRUST_OVERLAP = 0.40
 
@@ -92,16 +100,52 @@ MIN_LEARN_PX = NORM * 8
 # counts as a piece pixel is measured off the board here rather than fixed.
 from watcher import MIN_COVERAGE, grid_of
 
-# chess.com's green board converted to grey, and what _levels falls back to.
-# Only a bootstrap: every read measures the board in front of it.
-DEFAULT_LEVELS = (131, 233)
+# chess.com's green board converted to grey, its two square colours and the
+# levels its pieces reach. Only a bootstrap: every read measures the board in
+# front of it.
+DEFAULT_LEVELS = (131, 233, 32, 254)
 
-# A piece pixel is more than half way from the board colour to black or to
-# white. Half is the midpoint and not a tuned number. On chess.com's board it
-# puts the cutoffs at 65 and 244, within a few units of the fixed 70 and 244
-# the occupancy reader uses, so this is the same rule with the board measured
-# instead of assumed.
-PIECE_F = 0.5
+# A piece pixel is this far from the board colour towards the darkest or the
+# brightest the ink on this board actually gets.
+#
+# Anchoring on the ink rather than on 0 and 255 is what makes the mask survive
+# a change of screen brightness or contrast. Both are affine on pixel values,
+# so the two board colours and the two ink extremes move together, the cutoffs
+# move with them and the mask lands on the same cells. Anchored on 0 and 255 it
+# did not: 1.png at 0.80 contrast has ink reaching only 238 while the fixed
+# rule put the bright cutoff at 238, so the bright layer emptied and every
+# white piece on the board read as a dark one.
+#
+# 0.54 rather than the midpoint, and this one is tuned. Below it the mask keeps
+# more of the antialiasing between fill and outline: at 0.50 the distorted set
+# costs 69 wrong pieces against 55 here, and small windows name 480 squares
+# against 487. Above it the bundled sheet stops reading the flat set on 6.png
+# at all, 8 pieces named at 0.54 and none at 0.55.
+PIECE_F = 0.544
+
+# There is only ink on a side of the board colour if it reaches this much of
+# the way from one square colour to the other. Without it a board with nothing
+# on it, whose ink extremes are its own square colours, would put both cutoffs
+# on the board colour and read every pixel as a piece. Relative to the board's
+# contrast rather than in grey levels, so that it survives the same affine
+# change the cutoffs do.
+#
+# It cannot separate cleanly, and the measurement says so: a downsampled empty
+# board reaches 0.108 on seam ringing alone while a starting position at 1.25
+# contrast reaches only 0.063 on its white pieces, because the fill clips at
+# 255 and leaves eight levels of headroom. What settles it is that 0.13 to 0.15
+# all behave identically, and over 66 captures of six sparse positions that
+# band invents nothing at all where 0.12 invents 26 squares and 0.06 invents
+# 427. Below the band the distorted set gets better and the sparse boards get
+# much worse; 0.16 doubles the distorted set's wrong pieces.
+INK_F = 0.14
+
+# The board's own levels are measured this far in from its edge. A crop that
+# find_board got wrong by two pixels drags a black column in from outside the
+# picture, and black past the ink extreme moves every cutoff on the board: it
+# cost 21 named squares over the misaligned crops. Nothing of a piece lives in
+# the outer fiftieth of a board, since pieces sit centred in their squares.
+LEVEL_INSET = 0.02
 
 # A cell of the NORM grid counts as piece when this much of the native pixels
 # under it were. Thresholding happens at native resolution and the binary mask
@@ -175,12 +219,15 @@ _TABLE_CACHE = {}
 
 
 def _tables(levels):
-    """Bright and dark threshold tables for a board drawn in these two greys."""
+    """Bright and dark threshold tables for a board with these greys and ink."""
     got = _TABLE_CACHE.get(levels)
     if got is None:
-        lo, hi = levels
-        dark = lo - lo * PIECE_F
-        bright = hi + (255 - hi) * PIECE_F
+        lo, hi, floor, ceil = levels
+        bar = (hi - lo) * INK_F
+        # 255 and 0 select nothing, which is the right answer for a board with
+        # no light pieces or no dark ones left on it.
+        bright = (hi + (ceil - hi) * PIECE_F) if ceil - hi >= bar else 255
+        dark = (lo - (lo - floor) * PIECE_F) if lo - floor >= bar else 0
         got = (bytes(255 if v > bright else 0 for v in range(256)),
                bytes(255 if v < dark else 0 for v in range(256)))
         if len(_TABLE_CACHE) > 32:
@@ -205,8 +252,10 @@ def _pack(grid, table):
     return _cut(grid, table).convert("1", dither=Image.Dither.NONE).tobytes()
 
 
-def _levels(board_img, floor=0.04, apart=24):
-    """The two greys a board's squares are drawn in, darker one first.
+def _levels(board_img, floor=0.04, apart=24, ink=0.001):
+    """The board's two square colours and the levels its ink reaches.
+
+    Returns (darker square, lighter square, darkest ink, brightest ink).
 
     A board is mostly board even with every piece on it, so the square colours
     are the two commonest grey levels that are far enough apart to be two
@@ -219,9 +268,32 @@ def _levels(board_img, floor=0.04, apart=24):
     square's commonest level is as often the piece as the board under it: the
     white king's square on 1.png peaks at 249, which is its own fill, and
     treating that as board colour would threshold the king away.
+
+    The ink extremes are a thousandth of the board in from each end rather than
+    the outright darkest and brightest pixel, so that one stray pixel from a
+    window edge or an overlay cannot set them. A single king still covers three
+    thousandths of a board, so nothing real is trimmed away.
     """
-    hist = board_img.resize((128, 128), Image.NEAREST).convert("L").histogram()
+    wide, high = board_img.size
+    inset = board_img.crop((int(wide * LEVEL_INSET), int(high * LEVEL_INSET),
+                            int(wide * (1 - LEVEL_INSET)),
+                            int(high * (1 - LEVEL_INSET))))
+    hist = inset.resize((128, 128), Image.NEAREST).convert("L").histogram()
     total = sum(hist)
+    edge = max(1, int(total * ink))
+    dark_ink = bright_ink = 0
+    run = 0
+    for v in range(256):
+        run += hist[v]
+        if run >= edge:
+            dark_ink = v
+            break
+    run = 0
+    for v in range(255, -1, -1):
+        run += hist[v]
+        if run >= edge:
+            bright_ink = v
+            break
     found = []
     for level in sorted(range(256), key=lambda v: -hist[v]):
         if hist[level] < total * floor:
@@ -233,8 +305,8 @@ def _levels(board_img, floor=0.04, apart=24):
     if not found:
         return DEFAULT_LEVELS
     if len(found) == 1:
-        return found[0], found[0]
-    return min(found), max(found)
+        found.append(found[0])
+    return min(found), max(found), dark_ink, bright_ink
 
 
 def _euler(mask):
@@ -518,8 +590,8 @@ def _board_features(board_img, levels):
     return [_features(sq, levels) for _, _, sq in squares(board_img)]
 
 
-def _signature(feats, square_px):
-    """How the pieces on this board are drawn, as two numbers and a scale.
+def _signature(feats, levels, square_px):
+    """How the pieces on this board are drawn, and how well it was captured.
 
     How much of a piece is outline rather than fill, averaged over the light
     pieces and again over the dark ones. That is a property of the set and not
@@ -527,6 +599,17 @@ def _signature(feats, square_px):
     chess.com's own reads 0.12 and 0.00 on the opening of 1.png, on the mating
     position of 5.png and on a rendered endgame with three pieces left, while
     the flat set on 6.png reads 0.36 and 0.15 whatever is standing on it.
+
+    Then how far the ink reaches either side of the board colour, as a
+    fraction of the gap between the two square colours. Both of those are
+    unchanged by a brightness or a contrast knob, which scales every level
+    together, and both collapse under blur, which does not: 1.png reaches 0.97
+    below its dark squares sharp and 0.63 blurred by two and a half pixels.
+    A foreign set and a smeared capture both mean the templates describe
+    something this board is not, and both want the same answer.
+    That is the difference between a board drawn with thin outlines and one
+    photographed badly, and the reader has to treat them the same way, because
+    in both cases the templates in hand describe something the board is not.
 
     The scale comes along because the measurement needs it. A capture whose
     squares are much smaller has resampled the outline away, and then reads as
@@ -545,35 +628,43 @@ def _signature(feats, square_px):
             light.append(feat.dark / total)
         else:
             dark.append(feat.bright / total)
+    lo, hi, floor, ceil = levels
+    span = max(1, hi - lo)
     return (sum(light) / len(light) if light else None,
             sum(dark) / len(dark) if dark else None,
-            square_px)
+            (lo - floor) / span, (ceil - hi) / span, square_px)
 
 
 def _trusted(templates_sig, board_sig):
     """Whether these templates were drawn from the set now on the board.
 
     Measured over 149 template-and-board pairs, every capture piecetest builds
-    of both fixtures, and it separates cleanly only while the capture is at the
-    reference brightness. There, over 69 pairs, the same set never sits further
-    than 0.078 and a foreign set never closer than 0.166.
+    of both fixtures, split by what was done to the capture:
 
-    Add brightness, contrast or blur and the two distributions overlap: the
-    same set reaches 0.171 at 1.25 contrast, a foreign one falls to 0.149 at
-    0.85 brightness, and no threshold separates them at all. Distortion moves
-    what counts as a piece pixel, which moves the outline share, which is the
-    whole measurement. So this catches a foreign set on a clean capture and
-    misses one on a badly distorted capture, and there is no tuning that fixes
-    the second case.
+        geometric, crops and resizes    same <= 0.083   foreign >= 0.320
+        brightness and contrast         same <= 0.186   foreign >= 0.212
+        blur                            same <= 0.431   foreign >= 0.526
+
+    Each band separates. Across bands they do not, and it is blur that spoils
+    it: a board blurred by 2.5 pixels sits 0.510 from its own templates, which
+    is further than a foreign set ever sits under contrast. That is not a false
+    alarm though. A capture whose outlines have been smeared away is one the
+    templates in hand do not describe either, and the higher floor is the right
+    answer for it: it is part of why the distorted set costs 55 wrong pieces
+    here against 91 before any of this.
+
+    Before the cutoffs were anchored on the board's ink the middle band was the
+    broken one, at 0.171 for the same set against 0.149 for a foreign one, and
+    a screen turned up read as somebody else's pieces.
 
     It rests on two piece sets, which is not many.
     """
     if templates_sig is None or board_sig is None:
         return True
-    a, b = templates_sig[2], board_sig[2]
+    a, b = templates_sig[4], board_sig[4]
     if a and b and max(a, b) > TRUST_SCALE * min(a, b):
         return True
-    apart = [abs(x - y) for x, y in zip(templates_sig[:2], board_sig[:2])
+    apart = [abs(x - y) for x, y in zip(templates_sig[:4], board_sig[:4])
              if x is not None and y is not None]
     return not apart or max(apart) <= TRUST_TOL
 
@@ -628,7 +719,7 @@ class PieceReader:
                 raise ValueError("template sheet holds a blank slot")
             out[symbol] = [_Template(feat)]
             feats.append(feat)
-        return out, _signature(feats, TEMPLATE_PX)
+        return out, _signature(feats, levels, TEMPLATE_PX)
 
     def use_bundled(self):
         """Go back to the templates that ship with the program. Loading is all
@@ -681,7 +772,7 @@ class PieceReader:
         self.templates = dict(self.templates)
         self.templates.update(found)
         self.learned_size = board_img.size[0]
-        self.signature = _signature(feats, board_img.size[0] / 8.0)
+        self.signature = _signature(feats, levels, board_img.size[0] / 8.0)
         if len(found) == 12:
             self.source = "learned from your screen"
             self._cache_write(levels)
@@ -729,7 +820,7 @@ class PieceReader:
             folded += 1
         if folded:
             self.learned_size = board_img.size[0]
-            self.signature = _signature(feats, board_img.size[0] / 8.0)
+            self.signature = _signature(feats, levels, board_img.size[0] / 8.0)
             if self.source == "bundled":
                 self.source = "learned in part from your screen"
             self._folds += folded
@@ -831,7 +922,7 @@ class PieceReader:
         place.
         """
         levels = _levels(board_img)
-        here = _signature(_board_features(board_img, levels),
+        here = _signature(_board_features(board_img, levels), levels,
                           board_img.size[0] / 8.0)
         try:
             with open(self._cache_path(board_img.size[0], levels, here)) as fh:
@@ -863,10 +954,10 @@ class PieceReader:
 
     # ---------------------------------------------------------- reading
 
-    def _floor(self, feats, board_img):
-        """MIN_OVERLAP, or the mistrusted floor when these templates were drawn
-        from a different piece set than the one on the board."""
-        here = _signature(feats, board_img.size[0] / 8.0)
+    def _floor(self, feats, levels, square_px):
+        """MIN_OVERLAP, or the mistrusted floor when these templates describe
+        something this board is not."""
+        here = _signature(feats, levels, square_px)
         return MIN_OVERLAP if _trusted(self.signature, here) else MISTRUST_OVERLAP
 
     def classify(self, board_img):
@@ -884,7 +975,7 @@ class PieceReader:
 
         levels = _levels(board_img)
         feats = _board_features(board_img, levels)
-        floor = self._floor(feats, board_img)
+        floor = self._floor(feats, levels, board_img.size[0] / 8.0)
         for (r, c, _), feat in zip(squares(board_img), feats):
             symbol, score = _judge(feat, self.templates, floor)
             if symbol == ".":
@@ -907,4 +998,4 @@ class PieceReader:
         levels = _levels(board_img)
         feats = _board_features(board_img, levels)
         return _judge(feats[row * 8 + col], self.templates,
-                      self._floor(feats, board_img))[0]
+                      self._floor(feats, levels, board_img.size[0] / 8.0))[0]

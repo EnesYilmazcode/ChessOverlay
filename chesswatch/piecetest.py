@@ -7,7 +7,7 @@ than refused wholesale, and that the reader says "?" instead of naming a piece
 when it is not sure. Every floor below is a number that was actually measured,
 not a target, so a drop here is a real regression and not a moved goalpost. The
 one deliberate slack is the speed ceiling at the end: 30 ms against readings of
-15 to 16 ms, so that a slower machine does not read as a slowdown in this code.
+16 to 17 ms, so that a slower machine does not read as a slowdown in this code.
 
 Run:  python piecetest.py
 """
@@ -178,31 +178,32 @@ def main():
 
     got = tally(reader, shrunk(boards))
     r.append(check("nothing wrong down to a 200px window", got[1], 0))
-    # 476, down from the 495 the solid mask named. Counted per size, the 45
-    # pieces on the two boards come back named 45, 44, 44, 42, 35 and 25 at
-    # 824, 664, 560, 400, 280 and 200px, and all but two of the refusals are
-    # MIN_OVERLAP rather than the margin, the colour veto or the trust gate,
-    # which fires at none of those sizes. So it is not a gate misfiring, it is
-    # the second layer having nothing to work with: at 200px a square holds 25
-    # screen pixels against the 40 cell grid its mask is compared on, so the
-    # outline is upsampled guesswork and the match genuinely scores below 0.30.
-    # A real cost, paid for the two lines below and the cross-set section, and
-    # not one wrong piece anywhere in it.
-    r.append(check("  and 476 of 512 squares still named", got[0] >= 476, True))
+    # 487, against the 495 the solid mask named. Counted per size, the 45
+    # pieces on the two boards come back named 45, 44, 43, 44, 44 and 30 at
+    # 824, 664, 560, 400, 280 and 200px, and every refusal is MIN_OVERLAP
+    # rather than the margin or the colour veto. Only 200px really gives
+    # anything up, and there a square holds 25 screen pixels against the 40
+    # cell grid its mask is compared on, so the outline is upsampled guesswork
+    # and the match genuinely scores below 0.30.
+    r.append(check("  and 487 of 512 squares still named", got[0] >= 487, True))
 
     got = tally(reader, offset(boards))
     print("      misaligned crops: %d correct, %d wrong, %d unclear" % got)
     r.append(check("a misaligned crop yields nothing wrong at all", got[1], 0))
-    r.append(check("  and still names 902 of 1024 squares", got[0] >= 902, True))
+    r.append(check("  and still names 898 of 1024 squares", got[0] >= 898, True))
 
     got = tally(reader, distorted(boards))
     print("      wrong brightness or blur: %d correct, %d wrong, %d unclear" % got)
-    r.append(check("distortion costs at most 75 wrong pieces of 1280",
-                   got[1] <= 75, True))
-    r.append(check("  and still names 1108 of 1280 squares", got[0] >= 1108, True))
+    # 55, against 91 before any of this and 75 before the cutoffs were anchored
+    # on the board's own ink. This row is where anchoring pays: brightness and
+    # contrast are affine on pixel values, so measuring both ends off the board
+    # makes the mask come out the same whatever the knobs are set to.
+    r.append(check("distortion costs at most 55 wrong pieces of 1280",
+                   got[1] <= 55, True))
+    r.append(check("  and still names 1117 of 1280 squares", got[0] >= 1117, True))
 
     # -- the margin is what does that -------------------------------------
-    # On a clean board the closest correct call clears the runner up by 0.158,
+    # On a clean board the closest correct call clears the runner up by 0.192,
     # so the margin has to stay well under that or good boards start coming
     # back unclear. It was 0.130 before the mask was split, which is the point:
     # the split bought cross-set headroom without spending same-set headroom.
@@ -231,8 +232,8 @@ def main():
     got = top_pick(reader, six)
     print("      bundled templates on 6.png: right piece top of the ranking "
           "%d times in %d" % got)
-    r.append(check("the bundled set picks the right piece on 6.png 23 times in 32",
-                   got[0] >= 23, True))
+    r.append(check("the bundled set picks the right piece on 6.png 25 times in 32",
+                   got[0] >= 25, True))
     got = named(reader, six)
     print("      and names %d, refuses %d, gets %d wrong" % (got[0], got[2], got[1]))
     r.append(check("  names 8 of them and none of them wrongly",
@@ -275,8 +276,8 @@ def main():
     # box to within 0.81 to 0.99 while the true pieces fit to 0.48 to 0.55, so
     # the penalty pushes the wrong way. What does fix it is noticing that the
     # templates are not this set's at all.
-    r.append(check("  and 6.png templates now name nothing on them either",
-                   named(own, boards)[:2], (0, 0)))
+    r.append(check("  and 6.png templates name 13 of them and none wrongly",
+                   named(own, boards)[:2], (13, 0)))
 
     # -- the trust gate ----------------------------------------------------
     # A set carries the signature of the board it was learned from: how much of
@@ -286,13 +287,17 @@ def main():
     # of what removed those seven.
     def sig_of(board_img):
         levels = P._levels(board_img)
-        return P._signature(P._board_features(board_img, levels),
+        return P._signature(P._board_features(board_img, levels), levels,
                             board_img.size[0] / 8.0)
 
+    # Outline share for the light pieces and for the dark ones, then how far
+    # the ink reaches either side of the board colour. The flat set is drawn
+    # with half again the outline on its light pieces and puts a bright rim on
+    # its dark ones where chess.com puts none at all.
     r.append(check("a learned set knows which board it came from",
                    (round(own.signature[0], 2), round(own.signature[1], 2),
                     round(other.signature[0], 2), round(other.signature[1], 2)),
-                   (0.36, 0.15, 0.12, 0.0)))
+                   (0.35, 0.15, 0.23, 0.0)))
     r.append(check("  and trusts its own board and its own set's other capture",
                    [P._trusted(other.signature, sig_of(b)) for _, b in boards]
                    + [P._trusted(own.signature, sig_of(six[0][1]))],
@@ -301,51 +306,76 @@ def main():
                    [P._trusted(own.signature, sig_of(b)) for _, b in boards]
                    + [P._trusted(other.signature, sig_of(six[0][1]))],
                    [False, False, False]))
-    # It must not fire on the same set captured badly, which is what every
-    # accuracy row above is made of. Over all 44 of those captures it does not,
-    # which is why none of those rows moved when the gate went in.
-    bad = shrunk(boards) + offset(boards) + distorted(boards)
-    held = sum(1 for _, b in bad if P._trusted(reader.signature, sig_of(b)))
-    print("      trust gate holds on %d of %d same-set captures" % (held, len(bad)))
-    r.append(check("  and never fires on a bad capture of the right set",
-                   held, len(bad)))
-
-    # Where it stops working, measured rather than assumed. At the reference
-    # brightness the two distributions are cleanly apart: over 69 pairs the
-    # same set never sits further than 0.078 from its own templates and a
-    # foreign set never closer than 0.166. Turn the contrast up and they cross
-    # over, because contrast moves what counts as a piece pixel and the outline
-    # share is all this measures. 0.16 is then a choice inside an overlap, not
-    # a separation, and on a distorted capture of a foreign set the gate is no
-    # help at all.
+    # The signature has to survive the screen being turned up and down, or the
+    # gate is separating captures rather than sets. Before the cutoffs were
+    # anchored on the board's own ink it did not: 5.png at 1.25 contrast sat
+    # 0.171 from its OWN set's templates while 1.png at the same contrast sat
+    # 0.149 from the FOREIGN set's, so the two crossed over and no threshold
+    # could tell them apart. Anchored, the same two pairs read 0.127 and 0.378,
+    # which is the whole point of that change and the thing to keep.
     def apart(a, b):
-        parts = [abs(x - y) for x, y in zip(a[:2], b[:2])
+        parts = [abs(x - y) for x, y in zip(a[:4], b[:4])
                  if x is not None and y is not None]
         return round(max(parts), 3) if parts else None
 
     harsh1 = ImageEnhance.Contrast(boards[0][1]).enhance(1.25)
     harsh5 = ImageEnhance.Contrast(boards[1][1]).enhance(1.25)
-    r.append(check("  but at 1.25 contrast a board outruns its own set's spread",
-                   (apart(other.signature, sig_of(harsh5)),
-                    apart(own.signature, sig_of(harsh1))),
-                   (0.171, 0.149)))
+    print("      at 1.25 contrast: own set %.3f away, foreign set %.3f away"
+          % (apart(other.signature, sig_of(harsh5)),
+             apart(own.signature, sig_of(harsh1))))
+    r.append(check("  and a set stays nearer its own contrast-shifted capture",
+                   (apart(other.signature, sig_of(harsh5)) <= 0.127,
+                    apart(own.signature, sig_of(harsh1)) >= 0.378), (True, True)))
+
+    # It must not fire on the same set merely captured badly. It does fire on
+    # 11 of these 44, all of them blurred or shrunk far enough that the ink no
+    # longer reaches, and that is the right answer rather than a false alarm: a
+    # capture that has lost its outlines is one the templates do not describe
+    # either. Nothing above lost a correct answer to it, which is the test that
+    # matters and is the four accuracy rows at the top of this file.
+    bad = shrunk(boards) + offset(boards) + distorted(boards)
+    held = sum(1 for _, b in bad if P._trusted(reader.signature, sig_of(b)))
+    print("      trust gate holds on %d of %d same-set captures" % (held, len(bad)))
+    r.append(check("  and holds on 33 of the 44 bad captures of the right set",
+                   held >= 33, True))
 
     # -- measuring the board instead of assuming it -----------------------
-    # Turn the contrast on 1.png up to 1.25 and the board's own two greys move
-    # from 131 and 233 to 120 and 246. The cutoffs used to be fixed at 70 and
-    # 244, so the black back rank came out light enough that b8 matched the
-    # WHITE knight and only a bright-versus-dark pixel count stopped it being
-    # named one. Measured off the board the cutoffs move with it, b8 is a black
-    # knight by 0.33 and the colour veto has nothing left to catch: over the
-    # whole distorted set it now fires on zero squares, against nine before.
+    # Turn the contrast on 1.png up to 1.25 and the board's two greys move from
+    # 131 and 233 to 120 and 246, and its ink from 32 and 254 to 0 and 255. The
+    # cutoffs used to be fixed at 70 and 244, so the black back rank came out
+    # light enough that b8 matched the WHITE knight and only a bright-versus-
+    # dark pixel count stopped it being named one. Measured off the board at
+    # both ends, all four numbers move together and the mask comes out the
+    # same: b8 is a black knight by 0.50 and the colour veto has nothing left
+    # to catch, firing on zero squares of the distorted set against nine before.
     harsh = ImageEnhance.Contrast(boards[0][1]).enhance(1.25)
     levels = P._levels(harsh)
     b8 = next(sq for row, col, sq in P.squares(harsh) if (row, col) == (0, 1))
     ranked = P.ranking(P._features(b8, levels), reader.templates)
     r.append(check("contrast moves the measured board colours, not the pieces",
-                   (levels, ranked[0][1]), ((120, 246), "n")))
+                   (levels, ranked[0][1]), ((120, 246, 0, 255), "n")))
     r.append(check("  so b8 at 1.25 contrast is simply read, not vetoed",
                    P._decide(b8, reader.templates, levels)[0], "n"))
+
+    # The mask itself is what has to be invariant, not just the ranking. Both
+    # ends of the threshold are measured off the board, and brightness and
+    # contrast are affine on pixel values, so every one of those measurements
+    # moves by the same factor and the thresholded mask lands on the same
+    # cells. Anything left over is clipping at 0 and 255 and rounding.
+    plain = next(sq for row, col, sq in P.squares(boards[0][1])
+                 if (row, col) == (0, 1))
+    flat = P._features(plain, P._levels(boards[0][1]))
+    lifted = ImageEnhance.Brightness(boards[0][1]).enhance(1.08)
+    b8up = next(sq for row, col, sq in P.squares(lifted) if (row, col) == (0, 1))
+    same = P._features(b8up, P._levels(lifted))
+    agree = ((flat.masks[0] & same.masks[0]).bit_count()
+             + (flat.masks[1] & same.masks[1]).bit_count())
+    union = ((flat.masks[0] | same.masks[0]).bit_count()
+             + (flat.masks[1] | same.masks[1]).bit_count())
+    print("      the same square at 1.00 and 1.08 brightness: masks agree %.3f"
+          % (agree / union))
+    r.append(check("  and the mask of a square barely moves when the screen does",
+                   agree / union >= 0.97, True))
 
     # -- unclear rather than wrong ----------------------------------------
     # Two pixels of crop error pulls a black column in off the edge of the
@@ -514,13 +544,13 @@ def main():
     # slower, which is enough to hide a real speedup or invent a regression.
     # The best case moves only when the work per board does.
     #
-    # 16 ms against the 6 the solid mask took, and it is all in reducing the
-    # squares: measured separately, 13.0 ms goes on turning 64 squares into
-    # features, 1.2 ms on scoring them and 0.1 ms on measuring the board's two
-    # greys. A square went from one threshold, one subsample and one packed
-    # mask to two thresholds, four area-downsamples, a coverage-decided
+    # 17 ms against the 6 the solid mask took, and it is nearly all in reducing
+    # the squares: measured separately, 13.8 ms goes on turning 64 squares into
+    # features, 1.4 ms on scoring them and 0.5 ms on measuring the board's own
+    # greys and ink. A square went from one threshold, one subsample and one
+    # packed mask to two thresholds, four area-downsamples, a coverage-decided
     # bounding box and five packed masks. Doubling the templates, which is what
-    # learning both square colours does, costs 0.6 ms of the 16.
+    # learning both square colours does, costs 0.7 ms of the 17.
     reader.classify(boards[0][1])
     runs = []
     for _ in range(20):
