@@ -7,9 +7,13 @@ this says whether the board is read correctly given whatever the templates
 came back with.
 
 Every number below was measured on the ten positions in BANK and then written
-down, not picked as a target first. The one deliberate slack is the speed
+down, not picked as a target first. Two of them are rates rather than zeroes,
+because zero is not what was measured. The one deliberate slack is the speed
 ceiling at the end: 40 ms against readings of 9 to 11 ms, so that a slower
 machine does not read as a slowdown in this code.
+
+Takes about fifteen seconds, most of it re-solving the board once per square
+to check the confidences against something other than themselves.
 
 Run:  python positiontest.py
 """
@@ -62,6 +66,13 @@ MID = ["r...k..r", "pp.n.ppp", "..p.pn..", "...p....",
 ONE_BISHOP = ["....k...", "pppppppp", "........", "........",
               "........", "........", "PPPPPPPP", "....KB.."]
 
+# Four white queens against eight white pawns: eleven units of a budget of
+# eight, so three of the queens have nowhere to come from. Legal one square at
+# a time, illegal as a board, and self consistent, which is the shape that
+# ceilings taken off a previous position cannot catch by themselves.
+IMPOSSIBLE = ["Q.Q.Qk..", "........", "........", "........",
+              "........", "........", "PPPPPPPP", "...QK..."]
+
 
 def check(name, got, want):
     ok = got == want
@@ -106,6 +117,19 @@ def smeared(rows, pull, noise, rnd):
     return out
 
 
+def at(reading, floor):
+    """The same reading at a different floor.
+
+    Nothing in the solve depends on the floor except the last step, where a
+    square that did not clear it is blanked, so one solve answers for every
+    floor. That is what makes a thirty draw sweep across four floors cost
+    thirty solves rather than a hundred and twenty.
+    """
+    return [[symbol if score >= floor else P.UNKNOWN
+             for symbol, score in zip(row, scores)]
+            for row, scores in zip(reading.rows, reading.confidence)]
+
+
 def alone(scores, floor):
     """The same scores read square by square, which is what pieces.py does."""
     return P._ungoverned(P._candidates(scores), floor, "square by square")
@@ -125,20 +149,40 @@ def tally(rows, truth):
     return named, wrong
 
 
-def sweep(pull, noise, floor, draws):
-    """Every board in BANK smeared `draws` times over, read both ways.
-    Returns (named, wrong) solved as a board and (named, wrong) square by
-    square, over the same scores."""
-    solved = flat = (0, 0)
+def read_both(pull, noise, draws, base=100):
+    """Every board in BANK smeared `draws` times over, solved once and read
+    square by square once. Floors are applied afterwards by at()."""
+    out = []
     for seed in range(draws):
-        rnd = random.Random(100 + seed)
+        rnd = random.Random(base + seed)
         for truth in BANK:
             scores = smeared(truth, pull, noise, rnd)
-            a = tally(P.solve(scores, floor=floor).rows, truth)
-            b = tally(alone(scores, floor).rows, truth)
-            solved = (solved[0] + a[0], solved[1] + a[1])
-            flat = (flat[0] + b[0], flat[1] + b[1])
+            out.append((truth, P.solve(scores, floor=0.0), alone(scores, 0.0)))
+    return out
+
+
+def counted(cases, floor):
+    """(named, wrong) solved and (named, wrong) square by square."""
+    solved = flat = (0, 0)
+    for truth, got, raw in cases:
+        a = tally(at(got, floor), truth)
+        b = tally(at(raw, floor), truth)
+        solved = (solved[0] + a[0], solved[1] + a[1])
+        flat = (flat[0] + b[0], flat[1] + b[1])
     return solved, flat
+
+
+def without(scores, row, col, symbol):
+    """The best board that does not put `symbol` on that square.
+
+    Scored hopelessly rather than deleted, because a name left out of the
+    table is offered at zero rather than refused, and zero is not out of
+    reach. The solver picks the best remaining name itself, so this is one
+    solve where forcing each rival in turn would be twelve.
+    """
+    cut = {square: dict(names) for square, names in scores.items()}
+    cut[(row, col)][symbol] = -100.0
+    return P.solve(cut, floor=0.0)
 
 
 def forced(scores, row, col, symbol):
@@ -149,6 +193,31 @@ def forced(scores, row, col, symbol):
     prior[row][col] = symbol
     moved = [(r, c) for r in range(8) for c in range(8) if (r, c) != (row, col)]
     return P.solve(scores, prior=prior, moved=moved, floor=0.0)
+
+
+def hard_boards():
+    """Nine boards where the counting rules actually bind, for checking the
+    confidences on. Four are smeared, so the margins are small and every
+    capacity is under pressure; the rest are the boards the checks below turn
+    on. A clean board is no test of a confidence: nothing binds, every square
+    comes back at exactly 0.600, and the local gap between the top two
+    templates would give the same answer."""
+    rnd = random.Random(7)
+    out = [("smeared %d" % i, smeared(truth, 0.10, 0.010, rnd))
+           for i, truth in enumerate(BANK[:4])]
+    scores = matrix(MID)
+    scores[(4, 5)]["Q"] = 0.92
+    scores[(4, 5)]["B"] = 0.90
+    out.append(("phantom queen", scores))
+    scores = matrix(MID)
+    scores[(3, 3)]["K"] = 0.97
+    out.append(("phantom king", scores))
+    scores = matrix(BANK[1])
+    scores[(5, 0)]["P"] = 0.97
+    out.append(("ninth pawn", scores))
+    out.append(("three queens", matrix(BANK[8])))
+    out.append(("two dark bishops", matrix(BANK[9])))
+    return out
 
 
 def main():
@@ -171,15 +240,46 @@ def main():
                    weakest > P.MIN_PIN * 4, True))
 
     # -- the confidence is the real cost of being wrong --------------------
-    # Not an estimate of it. Every other name a square could have been given
-    # is forced onto it in turn and the whole board re-solved; the best of
-    # those boards is exactly how much worse the board gets if this square is
-    # called something else, and that is the number the solver reports.
-    scores = matrix(BANK[0])
-    got = P.solve(scores, floor=0.0)
+    # Not an estimate of it, and not the gap between the top two templates
+    # either, which is the thing it has to be checked against: on a clean
+    # board the two agree everywhere, so a clean board proves nothing here.
+    # Every square of the nine boards above is re-solved with the name it was
+    # given put out of reach, and how much worse that board is has to be the
+    # number the solver reported.
     worst = 0.0
-    sampled = [(i // 8, i % 8) for i in range(0, 64, 5)]
-    for row, col in sampled:
+    differs = checked = 0
+    for label, scores in hard_boards():
+        got = P.solve(scores, floor=0.0)
+        for row in range(8):
+            for col in range(8):
+                ranked = sorted((score for _, score
+                                 in P._candidates(scores)[(row, col)]),
+                                reverse=True)
+                local = min(1.0, max(0.0, ranked[0] - ranked[1]))
+                said = got.confidence[row][col]
+                differs += abs(local - said) > 1e-6
+                checked += 1
+                other = without(scores, row, col, got.rows[row][col])
+                worst = max(worst, abs(min(1.0, got.total - other.total) - said))
+    print("      %d squares re-solved, %d of them where the confidence is not"
+          " the local gap" % (checked, differs))
+    # Not zero: costs are integers a millionth of a score point apart, so a
+    # confidence can be a rounding step away from the board it describes.
+    r.append(check("  the confidence is the re-solved cost, to a millionth",
+                   worst < 2e-6, True))
+    r.append(check("  and it is telling those two apart on a third of them",
+                   differs > checked // 3, True))
+
+    # The same claim through a second, slower route: force every rival name on
+    # in turn and take the best board that comes back. A rival that could not
+    # be placed at all would return a fallback and its total would be the
+    # unpinned one, which would agree with anything, so that is checked rather
+    # than assumed.
+    scores = hard_boards()[4][1]
+    got = P.solve(scores, floor=0.0)
+    agree = 0.0
+    fell_back = 0
+    for row, col in ((4, 5), (7, 3), (0, 4), (3, 3)):
         rival = None
         for symbol in NAMES:
             if symbol == got.rows[row][col]:
@@ -187,13 +287,15 @@ def main():
             if symbol in "Pp" and row in (0, 7):
                 continue
             other = forced(scores, row, col, symbol)
+            if other.fallback is not None:
+                fell_back += 1
+                continue
             if rival is None or other.total > rival:
                 rival = other.total
-        worst = max(worst, abs(min(1.0, got.total - rival)
+        agree = max(agree, abs(min(1.0, got.total - rival)
                                - got.confidence[row][col]))
-    print("      %d squares re-solved against every rival name" % len(sampled))
-    r.append(check("  the reported confidence is the re-solved cost, exactly",
-                   worst < 1e-9, True))
+    r.append(check("  and forcing every rival name on instead agrees with it",
+                   (agree < 2e-6, fell_back), (True, 0)))
 
     # -- a wrong top pick that the counting rules put right ----------------
     # f4 holds a white bishop and the templates put a queen a couple of
@@ -312,20 +414,42 @@ def main():
     r.append(check("a man appearing out of nowhere is refused, cold it is not",
                    (cold.rows[3][4], warm.rows[3][4]), ("b", P.EMPTY)))
 
-    # A previous position that cannot be true is dropped rather than forced
-    # onto the pixels, and dropped whole: its material ceilings came off the
-    # same misreading its squares did. Nine white pawns is not a position, and
-    # neither is a pawn on the top row, so carrying either forward is not one.
+    # -- a previous position that is not a position ------------------------
+    # This is the one the module cannot catch on its own once it has adopted
+    # the counts, because a previous position never contradicts ceilings taken
+    # from itself. IMPOSSIBLE is the shape that matters: every square of it is
+    # a legal thing to see, the board as a whole is not, and it agrees with
+    # its own counts perfectly. Read cold the four queens are refused; handed
+    # in as a prior it has to come out the same way, whatever `moved` says.
+    cold = P.solve(matrix(IMPOSSIBLE))
+    warm = [P.solve(matrix(IMPOSSIBLE), prior=IMPOSSIBLE, moved=moved)
+            for moved in (None, (), [(0, 0)])]
+    r.append(check("a self consistent but illegal prior is refused, not adopted",
+                   [(sum(row.count("Q") for row in got.rows), got.fallback)
+                    for got in warm],
+                   [(0, "the previous position is not a position, read cold")]
+                   * 3))
+    r.append(check("  and it reads exactly as it does with no prior at all",
+                   [got.rows == cold.rows for got in warm], [True] * 3))
+
+    # The two easier shapes, and two that are not grids at all. A prior is
+    # dropped whole, its ceilings with its squares, so all four come back as
+    # the cold reading rather than as a partly trusted one.
+    bad = []
     for square, symbol in (((5, 0), "P"), ((0, 0), "p")):
         broken = [list(row) for row in BANK[1]]
         broken[square[0]][square[1]] = symbol
-        got = P.solve(matrix(BANK[1]), prior=broken, moved=())
-        r.append(check("a previous position that cannot fit is dropped whole,"
-                       " not forced",
-                       (["".join(row) for row in got.rows] == BANK[1],
-                        got.fallback),
-                       (True, "the previous position does not fit these"
-                              " scores, read cold")))
+        bad.append(broken)
+    bad.append([["X"] * 8] * 8)              # not a letter this module knows
+    bad.append([[None] * 8] * 8)             # not a letter at all
+    bad.append([["."] * 8] * 3)              # not eight rows
+    bad.append("nonsense")                   # not a grid
+    got = [P.solve(matrix(BANK[1]), prior=prior, moved=()) for prior in bad]
+    r.append(check("a prior that is not a position at all is dropped whole",
+                   [(["".join(row) for row in one.rows] == BANK[1],
+                     one.fallback) for one in got],
+                   [(True, "the previous position is not a position,"
+                           " read cold")] * len(bad)))
 
     # -- reading it as a board against reading it square by square ---------
     # All ten positions, three noise draws each, at the two things that go
@@ -337,9 +461,9 @@ def main():
     seen = {}
     for pull, noise in ((1.00, 0.000), (0.10, 0.010),
                         (0.10, 0.020), (0.10, 0.030)):
+        cases = read_both(pull, noise, 1 if noise == 0 else 3)
         for floor in (0.03, P.MIN_PIN, 0.07):
-            seen[(noise, floor)] = sweep(pull, noise, floor,
-                                         1 if noise == 0 else 3)
+            seen[(noise, floor)] = counted(cases, floor)
             solved, flat_read = seen[(noise, floor)]
             print("      %.2f %.3f  %.2f    %4d / %-4d       %4d / %-4d"
                   % (pull, noise, floor, solved[0], solved[1],
@@ -363,37 +487,73 @@ def main():
                        (solved[0] > flat_read[0], solved[1] <= flat_read[1]),
                        (True, True)))
 
-    # And where that stops. At noise 0.030 the top pick is wrong often enough
-    # that no floor in the band comes back clean, so the counting rules are
-    # improving a reading that is bad either way rather than rescuing it.
-    r.append(check("  but past that it is still wrong, only less often",
-                   seen[(0.030, P.MIN_PIN)][0][1] > 0, True))
+    # Which direction that gain comes from, because the percentage hides it.
+    # The counting rules almost never turn a wrong answer into a right one.
+    # What they do is name squares nobody could read, and refuse squares that
+    # would have been read wrong. Once the reading is bad enough, the second
+    # of those starts running backwards as well.
+    print()
+    for noise in (0.020, 0.030):
+        rescued = refused = lost = 0
+        for truth, got, raw in read_both(0.10, noise, 15, base=0):
+            solved, flat_read = at(got, P.MIN_PIN), at(raw, P.MIN_PIN)
+            for row in range(8):
+                for col in range(8):
+                    want, mine, theirs = (truth[row][col], solved[row][col],
+                                          flat_read[row][col])
+                    if theirs not in (P.UNKNOWN, want):
+                        rescued += mine == want
+                        refused += mine == P.UNKNOWN
+                    elif theirs == P.UNKNOWN and mine not in (P.UNKNOWN, want):
+                        lost += 1
+        print("      noise %.3f: %d wrong answers turned right, %d refused,"
+              " %d squares went from unknown to wrong"
+              % (noise, rescued, refused, lost))
+        if noise == 0.020:
+            r.append(check("  at the measured settings nothing is made worse",
+                           (rescued, refused, lost), (0, 0, 0)))
+        else:
+            r.append(check("  and past them the gain is refusal, not rescue",
+                           (rescued, refused > lost), (0, True)))
 
     # -- what the floor is, and why it is that number ----------------------
-    # Ten draws rather than three, because the whole question is where the
-    # last wrong piece stops and three draws do not put enough squares under
-    # it to see. Noise 0.020 is the setting that decides it: below that
-    # nothing is read wrong at any floor here, above it nothing is clean at
-    # any of them.
+    # Thirty draws rather than three, because this is a rate and three draws
+    # do not put enough squares under it to measure one. Noise 0.020 is the
+    # setting that decides it: below that nothing is read wrong at any floor
+    # here, above it the reading is bad either way.
     print()
-    raw = (0, 0)
-    for seed in range(10):
-        rnd = random.Random(100 + seed)
-        for truth in BANK:
-            got = tally(alone(smeared(truth, 0.10, 0.020, rnd), 0.0).rows, truth)
-            raw = (raw[0] + got[0], raw[1] + got[1])
-    print("      scores where the best template is the wrong one on 1 square"
-          " in %d" % (raw[0] // raw[1]))
+    cases = read_both(0.10, 0.020, 30, base=0)
     band = {}
-    for floor in (0.04, P.MIN_PIN):
-        band[floor] = sweep(0.10, 0.020, floor, 10)
-        print("      floor %.2f over %d squares: %d named, %d wrong"
-              % (floor, raw[0], band[floor][0][0], band[floor][0][1]))
-    r.append(check("0.05 is the lowest round floor that reads nothing wrong",
-                   (band[0.04][0][1] > 0, band[P.MIN_PIN][0][1]), (True, 0)))
+    for floor in (0.04, P.MIN_PIN, 0.06):
+        band[floor] = counted(cases, floor)
+        named, wrong = band[floor][0]
+        print("      floor %.2f  %5d named, %d wrong, 1 in %s"
+              % (floor, named, wrong, named // wrong if wrong else "none"))
+
+    # No floor in the band reads nothing wrong, so the floor is a rate and
+    # not a promise. What picks 0.05 is that the rate stops improving there:
+    # 0.04 is three and a half times worse, and 0.06 gives up 2217 more named
+    # squares for the same two errors. Both errors at 0.05 are a pawn read as
+    # empty, which is a square dropped rather than a piece invented, and the
+    # tracker retries a dropped square a second later.
+    r.append(check("the floor cuts the error rate, and stops paying past 0.05",
+                   (band[0.04][0][1] > band[P.MIN_PIN][0][1],
+                    band[0.06][0][1] >= band[P.MIN_PIN][0][1],
+                    band[0.06][0][0] < band[P.MIN_PIN][0][0]),
+                   (True, True, True)))
     r.append(check("  and MIN_PIN is that number", P.MIN_PIN, 0.05))
-    print("      which costs %d of the %d squares 0.04 named"
-          % (band[0.04][0][0] - band[P.MIN_PIN][0][0], band[0.04][0][0]))
+    kinds = {}
+    for truth, got, _ in cases:
+        solved = at(got, P.MIN_PIN)
+        for row in range(8):
+            for col in range(8):
+                if solved[row][col] not in (P.UNKNOWN, truth[row][col]):
+                    kinds[truth[row][col] + " read as " + solved[row][col]] = (
+                        kinds.get(truth[row][col] + " read as "
+                                  + solved[row][col], 0) + 1)
+    print("      every error at the floor: %s" % kinds)
+    r.append(check("  and what gets through is squares dropped, not invented",
+                   sorted(kinds), ["P read as .", "p read as ."]))
 
     # -- speed --------------------------------------------------------------
     # The best of twenty warmed passes, for the reason piecetest.py gives: a

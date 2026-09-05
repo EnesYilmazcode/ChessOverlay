@@ -33,9 +33,14 @@ A caller that knows the position before the move and which squares the move
 touched gets two more things. The squares the move did not touch are carried
 across instead of read again, so a piece the mouse pointer or the last move
 highlight sat on top of costs nothing. And no side may end up holding more
-men, or more of any one kind, than it held a move ago. A previous position
-that cannot be squared with the counting rules is dropped whole rather than
-forced onto the pixels, because the same misreading produced all of it.
+men, or more of any one kind, than it held a move ago.
+
+That second one is only safe because the previous position is put through the
+same counting rules first. Its counts become ceilings, and a board can never
+contradict ceilings taken from itself, so a misread previous position would
+otherwise hand itself back confidently while the same board read cold was
+refused. One that fails is dropped whole, its ceilings with its squares,
+because the same misreading produced both.
 
 Rows are in screen order, row 0 at the top, the same way pieces.py hands them
 over. Which way the board faces never comes into it. Turning a board half way
@@ -53,6 +58,7 @@ import heapq
 ORDER = "KQRBNPkqrbnp"
 EMPTY = "."
 UNKNOWN = "?"
+_KNOWN = frozenset(ORDER + EMPTY + UNKNOWN)
 
 # Scores arrive as floats around 0 to 1 and shortest paths want integers, so
 # every score is multiplied out. A millionth of a score point is far below the
@@ -70,12 +76,16 @@ KING_PUSH = 100 * SCALE
 # Same units and the same job as MIN_MARGIN in pieces.py, and it lands on the
 # same number, which is less of a coincidence than it looks: where no counting
 # rule binds, this margin is the gap between the top two templates and nothing
-# more. Measured in positiontest.py over 6400 squares of the ten positions in
+# more.
+#
+# It is a rate, not a promise. No floor in the usable band reads nothing
+# wrong. Measured in positiontest.py over thirty draws on the ten positions in
 # its bank, scored badly enough that the best template is the wrong one on a
-# square in eleven: 0.04 lets three wrong pieces through and 0.05 lets none,
-# at the cost of 984 of the 2731 squares 0.04 named. Score them worse than
-# that and no floor in this band comes back clean, so a higher one buys
-# silence rather than accuracy.
+# square in eleven, the error rate goes 1 in 1162 at 0.04, 1 in 2630 at 0.05,
+# and then stops improving: 0.06 gives up 2217 more named squares for the same
+# two errors. 0.05 is where the trade stops paying. Both errors it does let
+# through are a pawn read as empty, which is a square dropped rather than a
+# piece invented, and a dropped square is read again a second later.
 MIN_PIN = 0.05
 
 
@@ -227,34 +237,80 @@ def _candidates(scores):
     return out
 
 
+def _count(prior):
+    """Per side, how many of each kind a grid holds, and how many squares of
+    it went unread. A symbol outside the twelve letters, "." and "?" makes it
+    not a grid at all, which is None rather than a crash."""
+    if len(prior) != 8 or any(len(row) != 8 for row in prior):
+        return None
+    counts = [{kind: 0 for kind in _KINDS}, {kind: 0 for kind in _KINDS}]
+    unread = 0
+    for row in range(8):
+        for col in range(8):
+            symbol = prior[row][col]
+            # A set rather than "in ORDER", which would take the empty string,
+            # and rather than a length check, which would not take None. This
+            # runs on whatever the caller passed and must not raise on it.
+            if symbol not in _KNOWN:
+                return None
+            if symbol == UNKNOWN:
+                unread += 1
+            elif symbol != EMPTY:
+                counts[0 if symbol.isupper() else 1][_kind_of(symbol, row,
+                                                              col)] += 1
+    return counts, unread
+
+
+def _is_position(prior):
+    """Whether a previous position is a position at all.
+
+    This has to be asked before its counts are used as ceilings, and it is the
+    one check the rest of the module cannot make for itself: a previous
+    position can never contradict ceilings taken from its own counts, so
+    without this a board holding four queens and eight pawns is handed back
+    unchanged and confident, while the same board read cold is refused. One
+    misreading would confirm itself.
+
+    The rules are the cold ones, run over the squares that were read. An
+    unread square could hold anything, so the men that are there have to fit
+    on their own, and nothing has to be complete: only a fully read prior is
+    made to show both kings.
+    """
+    counted = _count(prior)
+    if counted is None:
+        return False
+    counts, unread = counted
+    for row in (0, 7):
+        if any(symbol in "Pp" for symbol in prior[row]):
+            return False
+    for side in counts:
+        if side["K"] > 1 or (unread == 0 and side["K"] != 1):
+            return False
+        promoted = sum(max(0, side[kind] - _ARMY[kind])
+                       for kind in ("Q", "R", "N", "B0", "B1"))
+        if side["P"] + promoted > _ARMY["P"] or sum(side.values()) > 16:
+            return False
+    return True
+
+
 def _caps(prior):
     """Per side, how many of each kind the position is allowed to hold.
 
     Cold that is the opening army. With a previous position it is what that
     position held, because no move has ever put a man on the board that was
     not already on it. A promotion is not an exception: it turns a pawn into a
-    queen and spends the pawn, so it goes through the pawn budget below
-    instead of adding to any count.
+    queen and spends the pawn, so it goes through the pawn budget instead of
+    adding to any count.
 
     A prior with a "?" in it is counted cold. Its totals would be short by
     however many squares went unread, and a total that is too small silently
-    forbids pieces that are really there.
+    forbids pieces that are really there. Callers hand this only priors that
+    have already passed _is_position, which is what makes the counts safe to
+    copy rather than something to clamp afterwards.
     """
     if prior is None or any(UNKNOWN in row for row in prior):
         return [dict(_ARMY), dict(_ARMY)]
-    caps = [{kind: 0 for kind in _KINDS}, {kind: 0 for kind in _KINDS}]
-    for row in range(8):
-        for col in range(8):
-            symbol = prior[row][col]
-            if symbol != EMPTY:
-                caps[0 if symbol.isupper() else 1][_kind_of(symbol, row, col)] += 1
-    for cap in caps:
-        # A count taken off a previous position is a ceiling, not a licence. A
-        # prior that holds two kings or nine pawns is a prior that was misread,
-        # and copying its counts forward would let the misreading through.
-        cap["K"] = 1
-        cap["P"] = min(cap["P"], _ARMY["P"])
-    return caps
+    return _count(prior)[0]
 
 
 def _pinned(prior, moved):
@@ -310,17 +366,22 @@ def solve(scores, prior=None, moved=None, floor=MIN_PIN):
     more of any one kind, than it held before.
     """
     names = _candidates(scores)
+    note = None
+    if prior is not None and not _is_position(prior):
+        # It goes whole, its ceilings with its squares, because the same
+        # misreading produced both. Keeping the ceilings would be worse than
+        # useless: they are the only thing that could have caught the squares.
+        note = "the previous position is not a position, read cold"
+        prior = None
+
     caps = _caps(prior)
     pins = _pinned(prior, moved)
-    note = None
-
     got = _assign(names, caps, pins, floor)
     if got is None and prior is not None:
-        # The previous position and the counting rules contradict each other,
-        # so the previous position is not a position. All of it goes, its
-        # material ceilings included, because the same misreading produced
-        # both. Reading cold is worse than reading with a good prior and
-        # better than forcing a bad one onto the pixels.
+        # Unreachable while _is_position holds, since a prior that fits the
+        # cold rules always fits ceilings taken from itself. Kept as the net
+        # under that argument, because reading cold beats the last resort
+        # below, which throws the counting rules away entirely.
         note = "the previous position does not fit these scores, read cold"
         got = _assign(names, _caps(None), {}, floor)
     if got is None:
