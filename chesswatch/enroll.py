@@ -26,6 +26,12 @@ has moved, and the board is laid out the way the opening lays one out.
 Every square clicked is kept and averaged into its slot rather than replacing
 what was there, so a fourth pawn is a fourth sample and not a lost click.
 
+Not every piece has to be there. A game joined after a queen was traded has no
+queen to point at, and that used to refuse the whole save, which left the one
+case this tool exists for as the one case it could not finish. The pieces that
+were taught are cut from the board in front of you and the rest keep the
+templates already in use, so saving costs nothing that was working before.
+
 Saving writes the same twelve slot PNG make_templates.py writes, because that
 is the only format the reader loads. Nothing here changes pieces.png.
 """
@@ -39,7 +45,7 @@ from PIL import Image, ImageTk
 
 import watcher as W
 import pieces
-from pieces import ORDER, TEMPLATE_PX, PAIRED_SLOTS
+from pieces import ORDER, TEMPLATE_PX, PLAIN_SLOTS, PAIRED_SLOTS
 
 # chesswatch is imported for the screen grab and the colours, and it is safe
 # from here because chesswatch only imports this file inside the button that
@@ -409,14 +415,23 @@ class Labels:
             how = "" if score is None else " at %.02f" % score
             return "that square reads %s%s. Say what it really is." % (symbol,
                                                                        how)
+        if self.slots and self.missing():
+            # Said here rather than only after saving, because it is what
+            # decides whether to keep clicking. A piece left behind is only
+            # safe while nothing on the board is standing on its square.
+            return ("Teach every piece you can see before saving. The rest "
+                    "keep the templates in use now, and are learned off the "
+                    "screen when they turn up.")
         return ("Click a square, then say what is on it. Green squares are the "
                 "ones the sheet will be cut from.")
 
     def status(self):
         missing = self.missing()
+        if missing and not self.slots:
+            return "0 of 12 taught   click a square, then say what is on it"
         if missing:
-            return "%d of 12 taught   still missing: %s" % (
-                12 - len(missing), " ".join(missing))
+            return "%d of 12 taught from %d squares   %s stay as they are" % (
+                12 - len(missing), self.samples(), " ".join(missing))
         # The pair count is shown rather than demanded. Twelve saves, and a
         # piece on both colours reads better than the same piece on one. The
         # square count is there so that a click that landed on a piece already
@@ -443,14 +458,76 @@ def _average(crops):
     return out
 
 
-def write_sheet(board_img, slots, path=TAUGHT_SHEET):
+def held_sheet(path):
+    """The sheet the pieces nobody taught are left on, as an image, or None
+    when there is not one.
+
+    A sheet only counts if the reader would load it, because a slot copied out
+    of one it refuses is a slot of something other than a piece. The sheet in
+    use is tried first and the bundled one second, which is where the reader
+    falls back to anyway.
+
+    Trying the sheet in use first is also what lets teaching accumulate. Once
+    the app is reading with a taught sheet that is the sheet handed here, so a
+    sitting that can only reach eleven pieces leaves the twelfth on yesterday's
+    teaching rather than back on the bundled set.
+    """
+    for candidate in (path, pieces.TEMPLATE_SHEET):
+        if not candidate:
+            continue
+        try:
+            if not pieces.PieceReader(candidate).ready:
+                continue
+            img = Image.open(candidate).convert("RGB")
+        except Exception:
+            continue
+        # ready says the sheet is wide enough. crop() pads out of bounds with
+        # black and black counts as a piece pixel, so a short one would come
+        # back as slots half made of ink rather than fail.
+        if img.size[1] >= TEMPLATE_PX:
+            return img
+    return None
+
+
+def _held_slot(sheet_img, symbol, light):
+    """One piece cut back out of a sheet already in hand.
+
+    A plain twelve slot sheet says nothing about which square colour anything
+    stood on, so its one crop goes into both halves. That is where the reader
+    was reading that piece from already.
+    """
+    at = ORDER.index(symbol)
+    if sheet_img.size[0] // TEMPLATE_PX >= PAIRED_SLOTS and not light:
+        at += PLAIN_SLOTS
+    return sheet_img.crop((at * TEMPLATE_PX, 0,
+                           (at + 1) * TEMPLATE_PX, TEMPLATE_PX))
+
+
+def write_sheet(board_img, slots, path=TAUGHT_SHEET, held=None):
     """Write the paired sheet: the twelve pieces as they look on a light
     square, then the same twelve on a dark one.
 
     slots maps a piece symbol to {light: [(row, col), ...]}, squares on this
-    board holding that piece, row 0 being the top of the screen. All twelve
-    symbols are required, one colour each at the least. Several squares of one
-    colour are averaged into the one slot the sheet has for them.
+    board holding that piece, row 0 being the top of the screen. Several
+    squares of one colour are averaged into the one slot the sheet has for
+    them.
+
+    A piece nobody taught keeps the slot it has on held, the sheet the reader
+    is reading with, or on the bundled sheet when that will not load. A game
+    joined after a queen was traded has no queen to cut one from, and refusing
+    the whole save over it left the case this tool is for as the case it could
+    not finish. Copying the slot that was going to be used anyway costs nothing
+    that was working before: no slot is blank, and no piece is taught from a
+    crop nobody pointed at.
+
+    What it does cost is that the pieces on the sheet no longer all come from
+    one set. A piece taught off this board can then win a square holding a
+    piece that was left on the old sheet, which reads as the wrong piece where
+    it used to read as none. Measured on the set of 6.png, in a position with
+    eight of the twelve types standing on it: teaching all eight reads all 64
+    squares with nothing wrong, teaching two of them reads 56 with 3 wrong,
+    against 50 with 14 unread for teaching nothing at all. Teach every piece
+    on the board, not some of them.
 
     The square colour is why this is 24 slots rather than make_templates.py's
     12. One crop per piece meant a rook taught from a light square was the only
@@ -467,37 +544,47 @@ def write_sheet(board_img, slots, path=TAUGHT_SHEET):
     than written and discovered later.
     """
     # A colour taught no squares at all is that colour untaught, and saying so
-    # here is what keeps the two checks below reading what is really there.
+    # here is what keeps the checks below reading what is really there.
     slots = {symbol: {light: squares for light, squares in here.items()
                       if squares}
-             for symbol, here in slots.items()}
+             for symbol, here in slots.items() if any(here.values())}
     missing = [s for s in ORDER if not slots.get(s)]
-    if missing:
-        raise ValueError("nothing taught for " + " ".join(missing))
+    if len(missing) == len(ORDER):
+        raise ValueError("nothing taught yet")
+    fill = held_sheet(held) if missing else None
+    if missing and fill is None:
+        raise ValueError("nothing taught for " + " ".join(missing)
+                         + ", and no sheet to leave them on")
     # The reader measures the two board colours off the sheet itself, so a
     # sheet cut entirely from one colour holds only one and every slot reduces
     # to nothing. Unreachable from a real position, where the two kings alone
     # stand on opposite colours, but the error it would otherwise give is a
-    # blank slot a long way from the cause.
-    if len({light for here in slots.values() for light in here}) < 2:
+    # blank slot a long way from the cause. Only asked of a sheet cut entirely
+    # from this board: a filled slot brings the squares of the sheet it came
+    # from, which loaded and so has both.
+    if not missing and len({light for here in slots.values()
+                            for light in here}) < 2:
         raise ValueError("every square taught is the same colour")
     step = board_img.size[0] / 8.0
     sheet = Image.new("RGB", (TEMPLATE_PX * PAIRED_SLOTS, TEMPLATE_PX))
     for half, light in enumerate((True, False)):
         for i, symbol in enumerate(ORDER):
-            here = slots[symbol]
-            crops = []
-            for r, c in here.get(light) or next(iter(here.values())):
-                crop = board_img.crop((int(c * step), int(r * step),
-                                       int((c + 1) * step),
-                                       int((r + 1) * step)))
-                # Resized before the average rather than after, because a board
-                # whose size does not divide by eight gives crops a pixel apart
-                # in size and those cannot be blended at all.
-                crops.append(crop.resize((TEMPLATE_PX, TEMPLATE_PX),
-                                         Image.LANCZOS))
-            sheet.paste(_average(crops),
-                        ((half * len(ORDER) + i) * TEMPLATE_PX, 0))
+            here = slots.get(symbol)
+            if here is None:
+                slot = _held_slot(fill, symbol, light)
+            else:
+                crops = []
+                for r, c in here.get(light) or next(iter(here.values())):
+                    crop = board_img.crop((int(c * step), int(r * step),
+                                           int((c + 1) * step),
+                                           int((r + 1) * step)))
+                    # Resized before the average rather than after, because a
+                    # board whose size does not divide by eight gives crops a
+                    # pixel apart in size and those cannot be blended at all.
+                    crops.append(crop.resize((TEMPLATE_PX, TEMPLATE_PX),
+                                             Image.LANCZOS))
+                slot = _average(crops)
+            sheet.paste(slot, ((half * len(ORDER) + i) * TEMPLATE_PX, 0))
     # Written beside then moved into place, so an interrupted save leaves the
     # sheet that was already working rather than half of a new one.
     tmp = path + ".tmp"
@@ -529,6 +616,10 @@ class Enroller:
         self.board = board_img
         self.on_saved = on_saved
         self.path = path
+        # The sheet this reader is reading with, which is where a piece nobody
+        # teaches is left. Read now rather than at save time: the reader is
+        # shared with the worker and relearns while this window is open.
+        self.held = reader.sheet
         self.scored = beliefs(reader, board_img)
         self.labels = Labels(self.scored)
 
@@ -685,13 +776,23 @@ class Enroller:
         self._redraw()
 
     def _save(self):
+        """Write the sheet and say which pieces it really came from.
+
+        A save that left four pieces on the old sheet and a save that taught
+        all twelve both used to say the same word, and the difference between
+        them is the whole of what the sheet now promises.
+        """
+        missing = self.labels.missing()
         try:
-            write_sheet(self.board, self.labels.slots, self.path)
+            write_sheet(self.board, self.labels.slots, self.path, self.held)
         except ValueError as exc:
             self.lbl_status.configure(text=str(exc), fg=C.WARN)
             return None
-        self.lbl_status.configure(text="wrote " + os.path.basename(self.path),
-                                  fg=C.ACCENT)
+        wrote = "wrote " + os.path.basename(self.path)
+        if missing:
+            wrote += "   %d taught off this board, %s left as they were" % (
+                len(ORDER) - len(missing), " ".join(missing))
+        self.lbl_status.configure(text=wrote, fg=C.ACCENT)
         if self.on_saved:
             self.on_saved(self.path)
         self.win.after(600, self.win.destroy)
