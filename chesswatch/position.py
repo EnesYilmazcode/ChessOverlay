@@ -42,6 +42,25 @@ otherwise hand itself back confidently while the same board read cold was
 refused. One that fails is dropped whole, its ceilings with its squares,
 because the same misreading produced both.
 
+What comes back is a second opinion and never a reading. A square is named
+only where the caller had already read it as that same name, or where it was
+carried over from the caller's own previous position; everything else comes
+back "?". So this can take a name away and cannot add one, which is why the
+caller's own reading is an argument here rather than an option.
+
+That is a contract and not a convention, because the rest of the program is
+built on "?" meaning no evidence: a frame with a blank on it is dropped whole
+and read again a moment later, a grid with a blank in it is not turned into a
+position at all, and the highlight reader will not say whose man moved onto
+one. A module that turned "?" into a letter would switch all of that off
+without saying so, and the letters it puts there are mostly wrong. Over 768
+rendered boards, five in six of them with a pointer, a popup or a covered
+block drawn over them, naming the squares the reader refused is wrong 29% of
+the time when the board is allowed to answer whatever it likes, and still 72%
+wrong at a floor of 0.50. No floor makes it safe, because the counting rules
+have to put sixty four names somewhere whether the pixels said anything or
+not. Refusing to answer is the fix and the floor is not.
+
 Rows are in screen order, row 0 at the top, the same way pieces.py hands them
 over. Which way the board faces never comes into it. Turning a board half way
 round maps row 0 to row 7 and leaves every square's colour alone, so "no pawn
@@ -72,21 +91,30 @@ SCALE = 1000000
 # it cancels out of every reduced cost and never reaches a confidence.
 KING_PUSH = 100 * SCALE
 
-# How far clear the board has to prefer a name before the square is named.
-# Same units and the same job as MIN_MARGIN in pieces.py, and it lands on the
-# same number, which is less of a coincidence than it looks: where no counting
-# rule binds, this margin is the gap between the top two templates and nothing
-# more.
+# How far clear the board has to prefer a name before that name is allowed to
+# confirm the square the caller read.
 #
-# It is a rate, not a promise. No floor in the usable band reads nothing
-# wrong. Measured in positiontest.py over thirty draws on the ten positions in
-# its bank, scored badly enough that the best template is the wrong one on a
-# square in eleven, the error rate goes 1 in 1162 at 0.04, 1 in 2630 at 0.05,
-# and then stops improving: 0.06 gives up 2217 more named squares for the same
-# two errors. 0.05 is where the trade stops paying. Both errors it does let
-# through are a pawn read as empty, which is a square dropped rather than a
-# piece invented, and a dropped square is read again a second later.
-MIN_PIN = 0.05
+# It used to be 0.05, measured against score noise generated inside
+# positiontest.py. Measured instead on real pixels, over 768 boards rendered
+# from both fixture piece sets in both orientations at two sizes and four
+# capture variants, five in six of them with something drawn over the board.
+# No random numbers anywhere in that: the corpus is the fixtures, and it is
+# the same corpus every run.
+#
+# Pinned from above rather than chosen. The weakest confidence on a correctly
+# read square of a board with nothing drawn over it is 0.1262, so 0.12 is the
+# last floor that leaves an unobstructed board whole and 0.14 already refuses
+# squares that were right. Taking the last free step is worth it because the
+# squares below it are not worth keeping: the agreements this floor gives up
+# are wrong 19% of the time against 0.5% for the ones it keeps, so it costs 69
+# right squares of the 44612 it would otherwise confirm and catches 16 wrong
+# ones.
+#
+# Still a rate and not a promise, and the residue is not the floor's to fix.
+# The wrong answers left above it are squares the reader read wrong and the
+# counting rules agreed with, most of them at a confidence of 1. What this
+# module promises is that it never adds one of its own.
+MIN_PIN = 0.12
 
 
 # ------------------------------------------------------------------ network
@@ -335,9 +363,16 @@ def _pinned(prior, moved):
 class Reading:
     """What the solver made of a board.
 
-    rows        8 lists of 8, each a piece letter, "." for empty, or "?"
+    rows        8 lists of 8, each a piece letter, "." for empty, or "?".
+                Only ever a square the caller already read the same way, or
+                one carried over from the caller's previous position, so a
+                letter here is a confirmation and never a fresh answer
     confidence  8 lists of 8 floats, how far clear the board preferred the
-                name it gave over the next one, capped at 1
+                name it gave over the next one, capped at 1. Measured on
+                every square, the ones `rows` refuses included, since it
+                describes the board rather than the answer. The name it
+                belongs to is deliberately not handed back beside it: that
+                name is the filler this module exists to withhold
     total       the summed score of the names chosen, for comparing one whole
                 board against another
     fallback    None when the counting rules were applied, otherwise why they
@@ -351,8 +386,8 @@ class Reading:
         self.fallback = fallback
 
 
-def solve(scores, prior=None, moved=None, floor=MIN_PIN):
-    """The most plausible legal position these scores allow.
+def solve(scores, read, prior=None, moved=None, floor=MIN_PIN):
+    """Which of the squares the caller read the whole board agrees with.
 
     `scores` maps (row, col) to {piece letter or ".": score}, row 0 at the top
     of the screen. A name a square does not mention scores zero rather than
@@ -360,53 +395,108 @@ def solve(scores, prior=None, moved=None, floor=MIN_PIN):
     king; a square left out entirely scores every name zero and comes back
     unknown.
 
+    `read` is the caller's own reading of the same board, 8 rows of 8, in the
+    same screen order and the same alphabet, "?" where it could not say. It is
+    required, and requiring it is what stops this being used as a filler: a
+    square is named back only where `read` named it and the whole board came
+    to the same name, so the answer is always a subset of what the caller
+    already had. A `read` that is not a grid confirms nothing rather than
+    raising, and says so in `fallback`, which is the fail safe direction and
+    what a `prior` that is not a position gets too.
+
     `prior` and `moved` are the position before the move and the squares the
     move touched, both optional. Given them, the squares the move did not
     touch are carried over instead of read, and no side may hold more men, or
-    more of any one kind, than it held before.
+    more of any one kind, than it held before. A carried square is named even
+    where `read` said "?", and it is the one place that happens: what carries
+    it is the caller's own accepted position from a move ago rather than an
+    inference drawn from these scores. So it is exactly as good as `moved` is
+    complete, four squares for a castle and three for an en passant capture.
     """
     names = _candidates(scores)
     note = None
+    if _count(read) is None:
+        # Checked the way a previous position is, and for the same reason: it
+        # arrives from the same reader and must not raise here either. Nothing
+        # to compare against means nothing confirmed rather than everything.
+        note = "the reading handed in is not a grid, nothing is confirmed"
+        read = [[UNKNOWN] * 8 for _ in range(8)]
     if prior is not None and not _is_position(prior):
         # It goes whole, its ceilings with its squares, because the same
         # misreading produced both. Keeping the ceilings would be worse than
         # useless: they are the only thing that could have caught the squares.
-        note = "the previous position is not a position, read cold"
+        note = note or "the previous position is not a position, read cold"
         prior = None
 
     caps = _caps(prior)
     pins = _pinned(prior, moved)
-    got = _assign(names, caps, pins, floor)
+    got = _assign(names, caps, pins)
     if got is None and prior is not None:
         # Unreachable while _is_position holds, since a prior that fits the
         # cold rules always fits ceilings taken from itself. Kept as the net
         # under that argument, because reading cold beats the last resort
         # below, which throws the counting rules away entirely.
-        note = "the previous position does not fit these scores, read cold"
-        got = _assign(names, _caps(None), {}, floor)
+        note = note or ("the previous position does not fit these scores,"
+                        " read cold")
+        pins = {}
+        got = _assign(names, _caps(None), pins)
     if got is None:
         # Reachable only if the caller pinned nothing and the scores still
         # leave no way to fill 64 squares, which the always available empty
         # name should prevent. Say what pieces.py would have said rather than
-        # return nothing.
-        return _ungoverned(names, floor,
-                           "no assignment satisfies the counting rules")
+        # return nothing, and put that through the same agreement: a fallback
+        # is the last place to start handing out names of its own.
+        why = "no assignment satisfies the counting rules"
+        lone = _ungoverned(names, floor, why)
+        return Reading(_agreed(lone.rows, lone.confidence, read, {}, floor),
+                       lone.confidence, lone.total, why)
 
-    rows, confidence, total, raw = got
-    # Against the assignment rather than against `rows`, because a board that
-    # is all "?" is a board nobody was sure of, not a board with no king on
-    # it. This only fires when no square was allowed to be a king at all,
+    raw, confidence, total = got
+    # Against the assignment rather than against the answer, because a board
+    # that is all "?" is a board nobody was sure of, not a board with no king
+    # on it. This only fires when no square was allowed to be a king at all,
     # which takes a caller that pinned every square through `prior`.
     for letter, who in (("K", "white king"), ("k", "black king")):
         if not any(letter in row for row in raw):
             note = note or "no square could be called a %s" % who
-    return Reading(rows, confidence, total, note)
+    return Reading(_agreed(raw, confidence, read, pins, floor),
+                   confidence, total, note)
 
 
-def _assign(names, caps, pins, floor):
-    """One solve. Returns (rows, confidence, total, assignment), or None when
-    64 squares cannot all be filled under these capacities. `rows` is the
-    assignment with the squares that missed the floor blanked out to "?"."""
+def _agreed(raw, confidence, read, pins, floor):
+    """The names this module is allowed to hand back.
+
+    A square is named where the caller read it as that name and the board is
+    at least `floor` sure of it, or where it was carried over from the
+    previous position. Everything else is "?", a square the flow was certain
+    of and the caller could not read at all included: certainty there is the
+    counting rules having nowhere else to put a name, which is not evidence
+    about what is on the screen.
+
+    Disagreement comes back "?" rather than as the caller's own letter. Two
+    readings of one square that do not match is a reason to look again, and
+    handing the letter back would leave this module with no way to say so.
+    """
+    rows = [[UNKNOWN] * 8 for _ in range(8)]
+    for row in range(8):
+        for col in range(8):
+            name = raw[row][col]
+            if name == UNKNOWN:
+                continue
+            if (row, col) in pins or (read[row][col] == name
+                                      and confidence[row][col] >= floor):
+                rows[row][col] = name
+    return rows
+
+
+def _assign(names, caps, pins):
+    """One solve. Returns (assignment, confidence, total), or None when 64
+    squares cannot all be filled under these capacities.
+
+    The assignment names every square, because the flow has to put sixty four
+    names somewhere. It is what the caller's own reading is checked against
+    and is never handed back on its own: see _agreed.
+    """
     net = _Flow(_NODES)
     top = max(1.0, max(score for options in names.values()
                        for _, score in options))
@@ -453,7 +543,6 @@ def _assign(names, caps, pins, floor):
         return None
 
     back = _reach(net, pot)
-    rows = [[UNKNOWN] * 8 for _ in range(8)]
     raw = [[UNKNOWN] * 8 for _ in range(8)]
     confidence = [[0.0] * 8 for _ in range(8)]
     total = 0.0
@@ -492,8 +581,7 @@ def _assign(names, caps, pins, floor):
         gap = 1.0 if margin is None else max(0.0, margin / SCALE)
         confidence[row][col] = min(1.0, gap)
         raw[row][col] = chosen
-        rows[row][col] = chosen if gap >= floor else UNKNOWN
-    return rows, confidence, total, raw
+    return raw, confidence, total
 
 
 def _reach(net, pot):
