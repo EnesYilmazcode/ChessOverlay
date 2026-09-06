@@ -13,6 +13,8 @@ sibling holochess/engine/stockfish folder, in chesswatch/engine, or on PATH.
 import os
 import queue
 import shutil
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -20,6 +22,13 @@ import chess
 import chess.engine
 
 APP_DIR = Path(__file__).resolve().parent
+
+# Stockfish is a console program, and Windows gives one started from a process
+# with no console of its own a fresh console window. popen_uci passes these
+# through to Popen. CREATE_NO_WINDOW exists only on Windows.
+POPEN_FLAGS = {}
+if sys.platform == "win32":
+    POPEN_FLAGS["creationflags"] = subprocess.CREATE_NO_WINDOW
 
 
 def find_engine():
@@ -100,7 +109,7 @@ class Coach(threading.Thread):
 
     def run(self):
         try:
-            engine = chess.engine.SimpleEngine.popen_uci(self.path)
+            engine = chess.engine.SimpleEngine.popen_uci(self.path, **POPEN_FLAGS)
         except Exception as exc:
             self.out.put(("engine", "Stockfish would not start: %s" % exc))
             return

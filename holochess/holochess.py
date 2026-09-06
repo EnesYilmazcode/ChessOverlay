@@ -11,6 +11,7 @@ import math
 import os
 import random
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -28,6 +29,13 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QMessageBox, QFrame)
 
 APP_DIR = Path(__file__).resolve().parent
+
+# Stockfish is a console program, and Windows gives one started from a process
+# with no console of its own a fresh console window. popen_uci passes these
+# through to Popen. CREATE_NO_WINDOW exists only on Windows.
+POPEN_FLAGS = {}
+if sys.platform == "win32":
+    POPEN_FLAGS["creationflags"] = subprocess.CREATE_NO_WINDOW
 
 
 def _find_engine():
@@ -136,7 +144,8 @@ class EngineWorker(QObject):
     @pyqtSlot()
     def start(self):
         try:
-            self._engine = chess.engine.SimpleEngine.popen_uci(self._path)
+            self._engine = chess.engine.SimpleEngine.popen_uci(self._path,
+                                                               **POPEN_FLAGS)
             threads = max(1, (os.cpu_count() or 4) - 4)
             self._engine.configure({"Threads": threads, "Hash": 2048})
             self.ready.emit(self._engine.id.get("name", "Stockfish"))
