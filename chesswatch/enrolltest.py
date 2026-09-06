@@ -5,12 +5,16 @@ Run:  python enrolltest.py
 
 Nothing here opens a window. That is deliberate rather than a limitation: this
 app puts an always on top, click through overlay on the real desktop, so a test
-that draws one cannot be run on a machine somebody is using. Both features were
+that draws one cannot be run on a machine somebody is using. Everything below
+runs with Tk's two window classes replaced by a refusal, so that is enforced
+rather than promised. Both features were
 written with the decision separated from the widget so that this file can check
 the decision.
 
   overlay.wanted()   the whole arrow staleness rule, no window in it
   enroll.Labels      which square each piece is taken from, no window in it
+  enroll.opening_view whether a board really is the starting position, and
+                     which way round, off the pixels
   enroll.write_sheet the sheet itself, which is only pixels
   Worker._tick       driven for real, with a rendered desktop standing in for
                      the screen, because "the board went away" is worker
@@ -31,6 +35,7 @@ two are already what overlaytest.py measures.
 import ast
 import os
 import sys
+import tkinter
 import time
 import queue
 import inspect
@@ -40,7 +45,7 @@ import textwrap
 import tempfile
 
 import chess
-from PIL import Image
+from PIL import Image, ImageChops, ImageFilter
 
 import watcher as W
 import pieces as P
@@ -66,6 +71,19 @@ R1 = (100, 100, 400, 400)
 R2 = (640, 220, 512, 512)
 
 R = []
+
+
+def no_windows():
+    """Replace Tk's two window classes with a refusal.
+
+    Called before any check runs. Without it the claim at the top of this file
+    is only a claim, and the cost of it being wrong is a window drawn on the
+    desktop of whoever ran the tests.
+    """
+    def refuse(*args, **kwargs):
+        raise AssertionError("the tests must not open a window")
+
+    tkinter.Tk = tkinter.Toplevel = refuse
 
 
 def check(name, got, want):
@@ -114,8 +132,21 @@ def slots_from(truth, paired=True):
                 continue
             here = out.setdefault(symbol, {})
             if paired or not here:
-                here.setdefault(E.light_square(r, c), (r, c))
+                here.setdefault(E.light_square(r, c), [(r, c)])
     return out
+
+
+def renderer(name):
+    """The set from a fixture, ready to draw any position in it."""
+    img = Image.open(shot(name)).convert("RGB")
+    return Renderer(shot(name), W.find_board(img))
+
+
+def slot(sheet_img, symbol, light):
+    """One slot cut back out of a written sheet."""
+    at = (0 if light else P.PLAIN_SLOTS) + P.ORDER.index(symbol)
+    return sheet_img.crop((at * P.TEMPLATE_PX, 0,
+                           (at + 1) * P.TEMPLATE_PX, P.TEMPLATE_PX))
 
 
 def h8_ranking(reader, board_img):
@@ -150,7 +181,7 @@ def sheet():
               tally(taught, b1, TRUTH_1), (64, 0, 0))
 
         # The case the whole thing is for. On this set the bundled sheet names
-        # one piece in thirty-two, which is issue #20. Teaching from the board
+        # one piece in thirty two, which is issue #20. Teaching from the board
         # itself is the only route open to a game already in progress.
         bundled = P.PieceReader()
         base = tally(bundled, b6, TRUTH_6)
@@ -250,7 +281,7 @@ def sheet():
         # where the reason can still be said plainly.
         one_colour = {s: {True: rc[True]} for s, rc in slots_from(TRUTH_1).items()
                       if True in rc}
-        one_colour.update({s: {True: (0, 0)} for s in P.ORDER
+        one_colour.update({s: {True: [(0, 0)]} for s in P.ORDER
                            if s not in one_colour})
         failed = ""
         try:
@@ -261,6 +292,323 @@ def sheet():
               failed, "every square taught is the same colour")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ------------------------------------------------- more than two a piece
+
+def averaging():
+    print("\n-- every click kept, not just the first two ---------------")
+    b6 = board_of("6")
+    tmp = tempfile.mkdtemp()
+    try:
+        # The same board taught both ways. slots_from is the person who clicks
+        # each piece on each square colour and stops, which is all the old
+        # ceiling allowed; opening_slots is the new button taking all thirty
+        # two squares of the position.
+        hand = E.write_sheet(b6, slots_from(TRUTH_6),
+                             os.path.join(tmp, "hand.png"))
+        whole = E.write_sheet(
+            b6, E.opening_slots(b6, E.beliefs(P.PieceReader(), b6)),
+            os.path.join(tmp, "whole.png"))
+        check("both ways write the same twenty four slot sheet",
+              (Image.open(hand).size, Image.open(whole).size),
+              ((P.TEMPLATE_PX * P.PAIRED_SLOTS, P.TEMPLATE_PX),) * 2)
+        check("  and both load as two templates a piece",
+              [sorted({len(v) for v in P.PieceReader(s).templates.values()})
+               for s in (hand, whole)], [[2], [2]])
+
+        size = b6.size[0]
+        cases = [("as taught", b6),
+                 ("in a 400px window", b6.resize((400, 400), Image.LANCZOS)),
+                 ("in a 200px window", b6.resize((200, 200), Image.LANCZOS)),
+                 ("cropped 3px out", b6.crop((3, 3, 3 + size, 3 + size))),
+                 ("blurred by 1.0", b6.filter(ImageFilter.GaussianBlur(1.0))),
+                 ("blurred by 1.5", b6.filter(ImageFilter.GaussianBlur(1.5)))]
+        readers = [P.PieceReader(hand), P.PieceReader(whole)]
+        worse = []
+        print("      6.png read back, correct/wrong/unknown of 64 squares:")
+        for name, img in cases:
+            got = [tally(reader, img, TRUTH_6) for reader in readers]
+            print("        %-18s 20 squares %2d/%d/%2d   32 squares %2d/%d/%2d"
+                  % ((name,) + got[0] + got[1]))
+            if got[1][0] < got[0][0] or got[1][1] > got[0][1]:
+                worse.append(name)
+        check("thirty two squares read no worse than twenty, anywhere",
+              worse, [])
+
+        # And the extra squares are really in the sheet rather than counted and
+        # dropped. Four white pawns stand on light squares in the opening; the
+        # white king stands on one square in the whole position.
+        hand_img, whole_img = Image.open(hand), Image.open(whole)
+        check("a slot with four samples is not just the first of them",
+              ImageChops.difference(slot(whole_img, "P", True),
+                                    slot(hand_img, "P", True)).getbbox()
+              is not None, True)
+        check("  while a slot with one sample is exactly that one square",
+              ImageChops.difference(slot(whole_img, "K", True),
+                                    slot(hand_img, "K", True)).getbbox(), None)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ------------------------------------------------ the starting position
+
+NOT_OPENING = "this board is not in the starting position"
+NOT_STANDARD = ("the ends of the back rank do not match, so this is not the "
+                "standard opening")
+NO_SIDE = "which way round this board is drawn cannot be told from its two halves"
+
+
+def refused(call, *args):
+    """The reason a call gave for refusing, or None when it did not refuse.
+
+    enroll refuses the way write_sheet has always refused, with the reason in
+    the exception, so that the window has a sentence to show and this file has
+    something to tell the three refusals apart by.
+    """
+    try:
+        call(*args)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+def opening():
+    print("\n-- taking a whole starting position -----------------------")
+    b1, b6 = board_of("1"), board_of("6")
+    bundled = P.PieceReader()
+    start = chess.Board()
+
+    check("6.png is read as the opening, white at the bottom",
+          E.opening_view(b6), False)
+    check("1.png, two moves in, is not the opening and is refused",
+          refused(E.opening_view, b1), NOT_OPENING)
+
+    # The same set drawn from black's side. fakeboard redraws the position
+    # rather than turning the picture upside down, which is what chess.com does
+    # when you play black.
+    six = renderer("6")
+    check("the same set seen from black's side is read as flipped",
+          E.opening_view(six.render(start, flipped=True)), True)
+    check("  and from white's side as not",
+          E.opening_view(six.render(start)), False)
+    check("  at sizes it was not captured at either",
+          [E.opening_view(six.render(start, flipped=f, size=s))
+           for s in (560, 400, 280, 200) for f in (False, True)],
+          [False, True] * 4)
+    check("  as is the board of 6.png itself, at every size and blurred",
+          [E.opening_view(img) for img in
+           [b6.resize((s, s), Image.LANCZOS) for s in (560, 400, 280, 200)]
+           + [b6.filter(ImageFilter.GaussianBlur(r)) for r in (1.0, 1.5)]],
+          [False] * 6)
+
+    slots = E.opening_slots(b6, E.beliefs(bundled, b6))
+    check("it takes all twelve pieces", sorted(slots), sorted(P.ORDER))
+    check("  from all thirty two squares",
+          sum(len(sq) for here in slots.values() for sq in here.values()), 32)
+    check("  and every square it takes really holds that piece",
+          [rc for s, here in slots.items() for sq in here.values() for rc in sq
+           if TRUTH_6[rc[0]][rc[1]] != s], [])
+    # Eight of the twelve stand on both square colours in the opening. Each
+    # king and each queen has one square in the whole position, so four of the
+    # twelve can only ever be single sample from it.
+    check("  eight on both colours, four with one square to stand on",
+          sorted(len(here) for here in slots.values()), [1] * 4 + [2] * 8)
+    check("  and four pawns of each colour on each square colour",
+          [sorted(len(sq) for sq in slots[s].values()) for s in "Pp"],
+          [[4, 4], [4, 4]])
+
+    # A set the reader can already read is taken as well, its own answer
+    # agreeing with the opening on every square it names.
+    one = renderer("1").render(start)
+    named = sum(1 for row in bundled.classify(one)[0] for s in row
+                if s not in (".", "?"))
+    print("      on chess.com's own set the reader names %d of the 32 itself"
+          % named)
+    check("the set it can read is taken too",
+          sorted(E.opening_slots(one, E.beliefs(bundled, one))), sorted(P.ORDER))
+
+
+# --------------------------------------------- what a shuffled board does
+
+def shuffled():
+    print("\n-- boards that look like the opening and are not -----------")
+    b6 = board_of("6")
+    bundled = P.PieceReader()
+    six, one = renderer("6"), renderer("1")
+    tmp = tempfile.mkdtemp()
+    try:
+        # Chess960 keeps all thirty two pieces on the outer two ranks, so its
+        # occupancy grid and its two ink halves are the opening's exactly. What
+        # it moves is the back rank, and mapping a standard board onto it cuts
+        # most of the sheet from the wrong piece. chess.com offers 960, and the
+        # person pressing the button is telling the truth about the position.
+        board = chess.Board.from_chess960_pos(300)
+        shuffle = six.render(board)
+        check("a chess960 board holds the same squares as the opening",
+              [[cell != "." for cell in row] for row in W.read_occupancy(shuffle)],
+              E.OPENING_OCCUPANCY)
+        check("  so occupancy alone would have taken it",
+              board.board_fen().split("/")[0], "qbnrkrbn")
+        check("  and the ends of its back rank are what refuse it",
+              refused(E.opening_view, shuffle), NOT_STANDARD)
+
+        # What it would have cost. Twenty of the twenty four slots come off
+        # the back rank on a 960 board, most of them the wrong piece.
+        wrong = {s: {light: [rc for rc in sq] for light, sq in here.items()}
+                 for s, here in E.opening_slots(b6, E.beliefs(bundled, b6)).items()}
+        grid = W.grid_of(board, False)
+        truth = ["".join(row) for row in grid]
+        off = sum(1 for s, here in wrong.items() for sq in here.values()
+                  for r, c in sq if truth[r][c] != s)
+        print("      mapping the opening onto #300 would take %d of its 32 "
+              "squares from the wrong piece" % off)
+
+        taken = []
+        for n in (0, 100, 300, 700, 959):
+            for label, rend in (("6", six), ("1", one)):
+                for size in (None, 400):
+                    img = rend.render(chess.Board.from_chess960_pos(n), size=size)
+                    if refused(E.opening_view, img) is None:
+                        taken.append((n, label, size))
+        check("none of ten chess960 positions is taken, in either set, at "
+              "either size", taken, [])
+
+        # And the standard position among them is still taken, drawn by the
+        # same renderer, so what refuses the other ten is the back rank and not
+        # something about rendering.
+        check("  while #518, which is the standard opening, still is",
+              [E.opening_view(rend.render(chess.Board.from_chess960_pos(518)))
+               for rend in (six, one)], [False, False])
+
+        # The gap, checked rather than claimed. A back rank that mirrors the
+        # opening's outside the king and queen is invisible to a test that only
+        # compares one end against the other, and so is a legal standard game
+        # that swapped the knights for each other's colour. Both are taken.
+        # This is here so that the day one of them is closed, this says so.
+        mirrored = [n for n in range(960)
+                    if (lambda r: r[0] == r[7] and r[1] == r[6] and r[2] == r[5])(
+                        chess.Board.from_chess960_pos(n).board_fen().split("/")[0])]
+        check("twelve of the 960 mirror the opening outside the king and queen",
+              len(mirrored), 12)
+        check("  and one of those, taken, is a real hole",
+              E.opening_view(six.render(chess.Board.from_chess960_pos(326))),
+              False)
+        knights = chess.Board("rNbqkbNr/pppppppp/8/8/8/8/PPPPPPPP/RnBQKBnR w - - 0 1")
+        check("  as is a standard game that swapped the knights over",
+              E.opening_view(six.render(knights)), False)
+
+        # A panel drawn over the corner of the board. Its squares still carry
+        # ink, so occupancy passes, but a8 stops looking like h8.
+        panel = b6.copy()
+        step = b6.size[0] // 8
+        panel.paste(Image.new("RGB", (2 * step, step), (32, 32, 40)), (0, 0))
+        for x in range(6, 2 * step - 6, 12):
+            panel.paste(Image.new("RGB", (5, step // 3), (210, 210, 214)),
+                        (x, step // 3))
+        check("a panel over the corner of the board is refused",
+              refused(E.opening_view, panel), NOT_STANDARD)
+        check("  and it is not refused for having emptied those squares",
+              [[cell != "." for cell in row] for row in W.read_occupancy(panel)],
+              E.OPENING_OCCUPANCY)
+
+        # Both halves inked the same way, which is what a set whose two
+        # colours do not separate looks like. Nothing here can say which way
+        # round that board is, and half a chance is not enough to teach twelve
+        # templates on. Drawn as white pieces at both ends rather than by
+        # copying pixels about, so that the back rank it refuses on is a real
+        # one and the refusal is the ink.
+        alike = chess.Board(None)
+        for square in chess.SQUARES:
+            rank, file = chess.square_rank(square), chess.square_file(square)
+            if rank in (0, 1):
+                piece = chess.Board().piece_at(square)
+            elif rank in (6, 7):
+                piece = chess.Board().piece_at(chess.square(file, 7 - rank))
+            else:
+                piece = None
+            if piece:
+                alike.set_piece_at(square, piece)
+        drawn = six.render(alike)
+        check("a board whose two halves are inked alike is refused",
+              refused(E.opening_view, drawn), NO_SIDE)
+        check("  and not because anything looks like it moved",
+              [[cell != "." for cell in row] for row in W.read_occupancy(drawn)],
+              E.OPENING_OCCUPANCY)
+
+        # The reader is asked as a bonus rather than as a guard, and it is
+        # worth saying which. On 6.png it has no opinion about the back rank at
+        # all, which is where a shuffled board differs, so the check above is
+        # what covers that and this covers nothing.
+        rows = bundled.classify(b6)[0]
+        back = {rows[r][c] for r in (0, 7) for c in range(8)}
+        print("      on 6.png the reader names %d of the 64 squares and reads "
+              "%s on the back rank"
+              % (sum(1 for row in rows for s in row if s not in (".", "?")),
+                 " ".join(sorted(back))))
+        check("the reader has no opinion about 6.png's back rank", back, {"?"})
+        lying = [[(".", None)] * 8 for _ in range(8)]
+        lying[0][0] = ("R", 0.9)          # a white rook where a8 holds a black one
+        check("  but where it does disagree it stops the press, and says so",
+              refused(E.opening_slots, b6, lying),
+              "the reader reads R where the opening puts r")
+        unsure = [[("?", None)] * 8 for _ in range(8)]
+        check("  and a reader that will not name anything cannot veto",
+              refused(E.opening_slots, b6, unsure), None)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ------------------------------------------------- the button, driven
+
+def button():
+    print("\n-- the button itself, without a window --------------------")
+    b1, b6 = board_of("1"), board_of("6")
+    bundled = P.PieceReader()
+
+    # _opening touches the board, the bookkeeping and the redraw and nothing
+    # else, so stand-ins are enough to run the real method without a window.
+    scored = E.beliefs(bundled, b6)
+    lab = E.Labels(scored)
+    lab.slots.clear()
+    drawn = []
+    win = types.SimpleNamespace(board=b6, scored=scored, labels=lab,
+                                _redraw=lambda: drawn.append(True))
+    E.Enroller._opening(win)
+    check("the button fills all twelve in and redraws",
+          (sorted(lab.slots), lab.samples(), drawn),
+          (sorted(P.ORDER), 32, [True]))
+    check("  and says what it did and did not check",
+          lab.hint(), "took all 32 squares. What was checked is that nothing "
+                      "has moved, not which piece is which.")
+
+    # Work done by hand is not thrown away silently. The seed is not work, it
+    # is the reader's own proposal, so it is not counted.
+    lab = win.labels = E.Labels(scored)
+    seeded = lab.samples()
+    lab.square(0, 0)
+    lab.symbol("r")
+    lab.square(7, 4)
+    lab.symbol("K")
+    check("clicking is counted apart from what the reader proposed",
+          (len(lab.by_hand), seeded), (2, 2))
+    E.Enroller._opening(win)
+    check("  and the opening says how much of it it replaced",
+          lab.hint(), "took all 32 squares, over the 2 you had clicked. "
+                      "Which piece is which was not checked.")
+    check("  after which there is nothing clicked left to replace",
+          (lab.by_hand, lab.samples()), (set(), 32))
+
+    win.board, win.scored = b1, E.beliefs(bundled, b1)
+    win.labels = lab = E.Labels(win.scored)
+    held = {s: {light: list(sq) for light, sq in here.items()}
+            for s, here in lab.slots.items()}
+    E.Enroller._opening(win)
+    check("on a board that is not the opening it takes nothing",
+          (lab.slots, lab.hint()), (held, NOT_OPENING))
+    check("  and the next click clears the message",
+          (lab.square(1, 1), lab.hint().startswith("that square reads"))[1],
+          True)
 
 
 # ------------------------------------------------------- what it already knows
@@ -284,7 +632,8 @@ def knows():
         named = {(r, c) for r in range(8) for c in range(8)
                  if rows[r][c] not in (".", "?")}
         seeded = E.seed_slots(scored)
-        picked = [(s, rc) for s, here in seeded.items() for rc in here.values()]
+        picked = [(s, rc) for s, here in seeded.items()
+                  for squares in here.values() for rc in squares]
         check("  and no square classify() refused is seeded",
               [rc for _, rc in picked if rc not in named], [])
         right = sum(1 for s, (r, c) in picked if truths[name][r][c] == s)
@@ -351,19 +700,39 @@ def labels():
           ((0, 0), None))
     lab.symbol("r")
     check("  and the piece named next is taken from it",
-          lab.slots["r"], {True: (0, 0)})
+          lab.slots["r"], {True: [(0, 0)]})
     check("  with nothing left waiting", (lab.sel, lab.pending), (None, None))
 
     lab.symbol("r")
     lab.square(0, 7)
     check("the other colour is kept alongside, not instead",
-          lab.slots["r"], {True: (0, 0), False: (0, 7)})
+          lab.slots["r"], {True: [(0, 0)], False: [(0, 7)]})
     check("  which is what makes it a pair", lab.paired(), ["r"])
+
+    # e8 is light, like a8. This is the click issue #31 is about: it used to
+    # replace a8 and leave two squares taught however many were clicked.
     lab.symbol("r")
     lab.square(0, 4)
-    check("but a second square of a colour it has replaces that one",
-          lab.slots["r"], {True: (0, 4), False: (0, 7)})
-    lab.slots["r"] = {True: (0, 0), False: (0, 7)}
+    check("a second square of a colour it already has is kept as well",
+          lab.slots["r"], {True: [(0, 0), (0, 4)], False: [(0, 7)]})
+    check("  so every click shows up in the count", lab.samples(), 3)
+    lab.symbol("r")
+    lab.square(0, 4)
+    check("  and clicking a taught square again takes it back",
+          lab.slots["r"], {True: [(0, 0)], False: [(0, 7)]})
+
+    # A square holds one piece. Teaching it to a second one has to take it off
+    # the first, or one crop is written into two slots and one of them is a
+    # wrong template.
+    lab.symbol("n")
+    lab.square(0, 7)
+    check("a square taught to another piece is taken off the first",
+          (lab.slots["r"], lab.slots["n"]),
+          ({True: [(0, 0)]}, {False: [(0, 7)]}))
+    check("  so nothing is ever cut for two pieces at once",
+          len(lab.chosen()), lab.samples())
+    del lab.slots["n"]
+    lab.slots["r"] = {True: [(0, 0)], False: [(0, 7)]}
 
     lab.symbol("k")
     check("a piece clicked first waits for a square", lab.pending, "k")
@@ -372,7 +741,7 @@ def labels():
     lab.symbol("k")
     lab.square(0, 4)
     check("  and the next square clicked answers it",
-          lab.slots["k"], {True: (0, 4)})
+          lab.slots["k"], {True: [(0, 4)]})
     lab.symbol("k")
     check("the hint asks for the colour that would help, and calls it optional",
           lab.hint(), "now a dark square holding the black king, if there is one")
@@ -390,8 +759,10 @@ def labels():
     check("all twelve taught leaves nothing missing", lab.missing(), [])
     check("  and says it is ready", lab.status().endswith("ready to save"), True)
     check("  and says how many are on both colours",
-          lab.status().startswith("12 of 12 taught, %d on both colours"
-                                  % len(lab.paired())), True)
+          lab.status().startswith("12 of 12 taught from 20 squares, "
+                                  "%d on both colours" % len(lab.paired())),
+          True)
+    check("  off the squares it is really cutting from", lab.samples(), 20)
     check("the starting position pairs everything but the kings and queens",
           "".join(s for s in P.ORDER if s not in lab.paired()), "KQkq")
     check("every square it will cut from is a different one",
@@ -419,6 +790,22 @@ def labels():
     check("  with no invented number when there is none to give",
           lab.hint(), "that square reads %s. Say what it really is."
           % lab.scored[0][0][0])
+
+    # The whole opening at once, and the refusal that goes with it. Which
+    # sentence each refusal carries is pinned in shuffled(), against the check
+    # that produces it.
+    lab = E.Labels(scored)
+    lab.slots = {"r": {True: [(0, 0)]}}
+    check("a refusal changes nothing and puts its reason in the hint",
+          (lab.refuse("no it is not"), lab.slots, lab.hint()),
+          (False, {"r": {True: [(0, 0)]}}, "no it is not"))
+    lab.square(1, 1)
+    check("  until the next click, which clears it",
+          lab.hint().startswith("that square reads"), True)
+    check("taking the opening takes every square of it",
+          (lab.opening(E.opening_slots(b6, scored)), lab.samples()), (True, 32))
+    check("  which is twelve taught and nothing waiting",
+          (lab.missing(), lab.sel, lab.pending), ([], None, None))
 
 
 # ---------------------------------------------------------------- the arrow
@@ -818,6 +1205,22 @@ def layout():
     check("nothing was added to the row that was already full",
           row_px(ROWS["tools"], PX["100%"])[1] <= AVAILABLE, True)
 
+    # The teach window is its own window, and the width of its panel is set by
+    # the two columns of piece buttons. Tk sizes a button given width=7 to
+    # seven of the font's average characters, which is what "0" measures, so
+    # the new button has to fit inside two of those to leave the panel alone.
+    button = [("btn", "it is the opening")]
+    columns = [("btn", "0" * 7), ("btn", "0" * 7)]
+    for name, px in PX.items():
+        print("      the opening button at %s: %d to %d px, in the %d to %d "
+              "the piece buttons already ask for"
+              % ((name,) + row_px(button, px) + row_px(columns, px)))
+    # Both are buttons, so whatever chrome Tk draws round this one it draws
+    # round each of the two above it, and the comparison comes down to the text.
+    check("the opening button fits inside the two columns it spans",
+          [row_px(button, px)[1] <= row_px(columns, px)[1]
+           for px in PX.values()], [True, True])
+
 
 # ---------------------------------------------------------------- the wiring
 
@@ -890,7 +1293,12 @@ def wiring():
 
 
 def main():
+    no_windows()
     sheet()
+    averaging()
+    opening()
+    shuffled()
+    button()
     knows()
     labels()
     arrow()

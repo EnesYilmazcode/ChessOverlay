@@ -15,6 +15,17 @@ read at all it is twelve. The letters come from classify(), the same call the
 recorder trusts, so a square shown with a piece on it is one the recorder would
 also name, and a square it refuses is never offered as a template.
 
+A board sitting in the opening needs no clicks at all: "it is the opening"
+takes all thirty two pieces at once. Three things about the picture are checked
+before it is acted on, because a board that is not the opening would teach
+twelve wrong templates and the reader names squares confidently off whatever it
+was taught. What none of them check is which piece is which, which is the whole
+reason this tool exists, so the guarantee is narrower than the button: nothing
+has moved, and the board is laid out the way the opening lays one out.
+
+Every square clicked is kept and averaged into its slot rather than replacing
+what was there, so a fourth pawn is a fourth sample and not a lost click.
+
 Saving writes the same twelve slot PNG make_templates.py writes, because that
 is the only format the reader loads. Nothing here changes pieces.png.
 """
@@ -23,6 +34,7 @@ import os
 import sys
 import tkinter as tk
 
+import chess
 from PIL import Image, ImageTk
 
 import watcher as W
@@ -39,6 +51,20 @@ TAUGHT_SHEET = os.path.join(APP_DIR, "taught.png")
 
 NAMES = {"K": "king", "Q": "queen", "R": "rook",
          "B": "bishop", "N": "knight", "P": "pawn"}
+
+# How much brighter the ink on one half of a board has to be than the ink on
+# the other before "starting position" will say which way round it is drawn.
+# Measured on the two sets there are fixtures for, at every window size and
+# either way up: chess.com's own separates by 0.77 and the flat set of 6.png,
+# which is the harder one, by 0.50. A set whose two colours do not separate by
+# this much is refused rather than guessed at.
+OPENING_INK_GAP = 0.25
+
+# Which squares the opening covers, as True and False rather than letters. The
+# same both ways up, which is why one of the two is enough: turning the board
+# round changes which pieces are at the top, not which squares are covered.
+OPENING_OCCUPANCY = [[cell != "." for cell in row]
+                     for row in W.occupancy_of(chess.Board())]
 
 
 # ------------------------------------------------------------------ pure part
@@ -122,19 +148,137 @@ def seed_slots(scored):
             light = light_square(r, c)
             if light not in here or rank > here[light][0]:
                 here[light] = (rank, (r, c))
-    return {symbol: {light: rc for light, (_, rc) in here.items()}
+    # One square per colour, in the list of squares per colour the window
+    # keeps, because a seed is a proposal and every click after it is another
+    # sample of the same piece.
+    return {symbol: {light: [rc] for light, (_, rc) in here.items()}
             for symbol, here in best.items()}
 
 
+def opening_view(board_img):
+    """Which way round this board is drawn, if it is the starting position at
+    all. False means white is at the bottom of the screen and True means black
+    is, which is what grid_of calls flipped. A board that will not be taken as
+    the opening raises ValueError saying which of the three checks stopped it,
+    the way write_sheet refuses a sheet it will not write.
+
+    All three are answered off the pixels rather than off the reader, because
+    the set this is for is one the reader cannot read.
+
+    Which squares are covered says nothing has moved. Every square of the outer
+    two ranks holds something and the middle four hold nothing. On a board
+    carrying all thirty two pieces that proves no pawn has moved, since a pawn
+    leaves its rank only onto an empty middle one or by capturing and a capture
+    leaves thirty one pieces. It proves nothing about the pieces behind the
+    pawns, which can be shuffled or swapped and still stand on those squares.
+
+    Whether the ends of each back rank match is what rules out a shuffled one.
+    The opening puts the same piece at each end: rooks on a and h, knights on b
+    and g, bishops on c and f. So of the three squares at one end, each has to
+    be a better match for the square it mirrors than for either of the others,
+    and the same the other way round, which is a comparison of one square on
+    this board against another and so needs no template and no threshold.
+    Chess960 is why this is here. It keeps all thirty two pieces on the outer
+    ranks, so its occupancy and its ink are the opening's exactly, and mapping
+    a standard board onto position #300 takes fourteen of its thirty two
+    squares from the wrong piece.
+
+    Which half is inked brighter says which way up it is. That is the same
+    bright against dark test _judge already applies to a square, taken sixteen
+    squares at a time because one square does not settle it: on the flat set of
+    6.png four of the white pieces on the back rank read darker than they are
+    bright, the a1 rook at 281 bright against 323 dark, while its half of the
+    board reads 0.57 bright against the other half's 0.07.
+
+    What none of this checks is which piece is which. Drawn in both fixture
+    sets, at capture size and at 400 pixels, 948 of the 959 non-standard
+    chess960 positions are refused in three of those four and 942 in the
+    fourth. What is taken in all four is the 11 whose back rank mirrors the
+    opening's outside the king and queen, which no comparison of one end
+    against the other can tell from the opening. So are a king and queen
+    swapped, and the knights swapped for each other's colour, which is
+    reachable in a legal standard game. A set that draws its black pieces
+    brighter than its white ones is taken upside down. None of those is caught
+    here, and the only thing standing in their way is the person seeing where
+    the twelve letters landed before pressing save.
+    """
+    feats = pieces._board_features(board_img, pieces._levels(board_img))
+    holds = [[f is not None and f.coverage >= W.MIN_COVERAGE
+              for f in feats[row * 8:row * 8 + 8]] for row in range(8)]
+    if holds != OPENING_OCCUPANCY:
+        raise ValueError("this board is not in the starting position")
+    for row in (0, 7):
+        left = [feats[row * 8 + col] for col in (0, 1, 2)]
+        right = [feats[row * 8 + 7 - col] for col in (0, 1, 2)]
+        table = [[pieces._score(a, b) for b in right] for a in left]
+        # Strictly better, not merely as good. A pairing that is only joint
+        # best is a pairing the pixels did not settle, and it is no evidence
+        # that the board is laid out this way.
+        for i in range(3):
+            if any(table[i][j] >= table[i][i] or table[j][i] >= table[i][i]
+                   for j in range(3) if j != i):
+                raise ValueError("the ends of the back rank do not match, so "
+                                 "this is not the standard opening")
+    shares = []
+    for rows in ((0, 1), (6, 7)):
+        here = [feats[r * 8 + c] for r in rows for c in range(8)]
+        # Every one of these squares passed MIN_COVERAGE, which counts bright
+        # and dark together, so there is always ink here to take a share of.
+        bright = sum(f.bright for f in here)
+        shares.append(bright / (bright + sum(f.dark for f in here)))
+    top, bottom = shares
+    if abs(top - bottom) < OPENING_INK_GAP:
+        raise ValueError("which way round this board is drawn cannot be told "
+                         "from its two halves")
+    return top > bottom
+
+
+def opening_slots(board_img, scored):
+    """Every piece of a starting position at once, keyed the way Labels keeps
+    them. A board that will not be taken raises ValueError saying why.
+
+    This is the common case the twelve clicks were being spent on: a board
+    sitting in the opening on a set the reader cannot read. The position is
+    known, so nothing new is read off the picture and this is a mapping.
+
+    scored is the reader's own answer and it is used only to refuse. Where the
+    reader named a piece and the opening disagrees, one of the two is wrong and
+    neither is worth a template. It is a bonus rather than a guard: on a set it
+    cannot read it names nothing and so says nothing, and that is the case this
+    control exists for. On 6.png it names 8 of the 64 squares, all of them
+    pawns, and has no opinion at all about the back rank where a shuffled
+    position differs. opening_view is what covers that.
+    """
+    flipped = opening_view(board_img)
+    grid = W.grid_of(chess.Board(), flipped)
+    out = {}
+    for row in range(8):
+        for col in range(8):
+            symbol = grid[row][col]
+            seen = scored[row][col][0]
+            if seen not in (".", "?") and seen != symbol:
+                raise ValueError("the reader reads %s where the opening puts %s"
+                                 % (seen, symbol))
+            if symbol != ".":
+                out.setdefault(symbol, {}).setdefault(
+                    light_square(row, col), []).append((row, col))
+    return out
+
+
 class Labels:
-    """Which squares each of the twelve pieces will be cut from, and the two
+    """Which squares each of the twelve pieces will be cut from, and the three
     ways a person arrives at that.
 
-    Up to one square of each colour per piece, because that is what the sheet
-    can carry and what the reader wants. Twelve is still the whole job: a piece
-    taught on one colour is written into both halves and is no worse off than
-    it was when the sheet held one slot each. A thirteenth click, on the same
-    piece standing on the other colour, is what buys the better read.
+    Every square clicked is kept. Several squares of one piece on one square
+    colour are averaged into that piece's slot, which is what the reader does
+    with the frames the recorder folds in anyway, so a third and a fourth pawn
+    are a third and a fourth sample. One square of each colour used to be the
+    ceiling and a third click silently replaced one of the first two.
+
+    Clicking a taught square again takes it back. That is the only way to undo
+    a mis-click now that a second click no longer overwrites the first, and a
+    mis-click is a wrong sample averaged into a template, which is the failure
+    this whole tool is built to avoid.
 
     Kept apart from the window on purpose. This is all the bookkeeping there
     is, so it can be checked without opening anything, and the window is left
@@ -146,17 +290,73 @@ class Labels:
         self.slots = seed_slots(scored)
         self.sel = None          # a square waiting to be told what it holds
         self.pending = None      # a piece waiting to be shown where it is
+        self.note = None         # what the last press did, when it needs saying
+        # Squares clicked rather than seeded, which is the work the opening
+        # replaces. The seed is the reader's own proposal and is no loss.
+        self.by_hand = set()
+
+    def _forget(self, row, col):
+        """Take a square away from whatever piece was being cut from it. A
+        square holds one piece, and the same crop written into two slots is a
+        wrong template in one of them."""
+        for symbol, here in list(self.slots.items()):
+            for light, squares in list(here.items()):
+                if (row, col) in squares:
+                    squares.remove((row, col))
+                    if not squares:
+                        del here[light]
+            if not here:
+                del self.slots[symbol]
 
     def _teach(self, symbol, row, col):
-        """A second square of the same colour replaces the first, since it is a
-        correction. A second of the other colour is kept alongside, since it is
-        the extra the pair is made of."""
-        self.slots.setdefault(symbol, {})[light_square(row, col)] = (row, col)
+        """One more square this piece is cut from, or one fewer when it is
+        already one of them."""
+        held = (row, col) in self.slots.get(symbol, {}).get(
+            light_square(row, col), ())
+        self._forget(row, col)
+        if held:
+            self.by_hand.discard((row, col))
+            return
+        self.slots.setdefault(symbol, {}).setdefault(
+            light_square(row, col), []).append((row, col))
+        self.by_hand.add((row, col))
+
+    def opening(self, slots):
+        """Take a whole starting position at once, replacing everything.
+
+        Replacing rather than adding, because the opening is an answer for all
+        thirty two squares and a click that disagrees with it is a mis-click.
+        Squares clicked by hand are said out loud on the way out, since a press
+        that silently threw away someone's work would be the same fault as the
+        click that used to be silently discarded.
+
+        What is said either way is what was checked. Nothing here knows which
+        piece is which, and a button that reads like it does would be a promise
+        the code does not keep.
+        """
+        dropped = len(self.by_hand)
+        self.slots = slots
+        self.sel = self.pending = None
+        self.by_hand = set()
+        if dropped:
+            self.note = ("took all 32 squares, over the %d you had clicked. "
+                         "Which piece is which was not checked." % dropped)
+        else:
+            self.note = ("took all 32 squares. What was checked is that "
+                         "nothing has moved, not which piece is which.")
+        return True
+
+    def refuse(self, why):
+        """Say why a press did nothing. Nothing is changed, which leaves
+        anything already taught exactly where it was."""
+        self.note = why
+        return False
 
     def square(self, row, col):
         """A square either answers the piece that is waiting for one, or
         becomes the square waiting for a piece. Both orders work because there
         is no telling which way round someone will click."""
+        self.note = None
         if self.pending:
             self._teach(self.pending, row, col)
             self.pending = self.sel = None
@@ -166,6 +366,7 @@ class Labels:
     def symbol(self, symbol):
         """A piece either lands on the square already picked, or waits for one.
         Clicking the waiting piece again puts it back down."""
+        self.note = None
         if self.sel:
             self._teach(symbol, *self.sel)
             self.sel = self.pending = None
@@ -179,13 +380,22 @@ class Labels:
         """The pieces taught on both square colours."""
         return [s for s in ORDER if len(self.slots.get(s, ())) == 2]
 
+    def samples(self):
+        """How many squares are being cut from, over all twelve pieces."""
+        return sum(len(squares) for here in self.slots.values()
+                   for squares in here.values())
+
     def chosen(self):
         """The square each piece is coming from, keyed the way the board is
         drawn rather than the way the sheet is written."""
-        return {rc: s for s, here in self.slots.items() for rc in here.values()}
+        return {rc: s for s, here in self.slots.items()
+                for squares in here.values() for rc in squares}
 
     def hint(self):
-        """One line saying what a click will do next."""
+        """One line saying what a click will do next, or why the last press
+        did nothing."""
+        if self.note:
+            return self.note
         if self.pending:
             name = ("white " if self.pending.isupper() else "black ") \
                    + NAMES[self.pending.upper()]
@@ -208,18 +418,39 @@ class Labels:
             return "%d of 12 taught   still missing: %s" % (
                 12 - len(missing), " ".join(missing))
         # The pair count is shown rather than demanded. Twelve saves, and a
-        # piece on both colours reads better than the same piece on one.
-        return "12 of 12 taught, %d on both colours   ready to save" % len(
-            self.paired())
+        # piece on both colours reads better than the same piece on one. The
+        # square count is there so that a click that landed on a piece already
+        # taught is visibly a click that landed.
+        return ("12 of 12 taught from %d squares, %d on both colours"
+                "   ready to save" % (self.samples(), len(self.paired())))
+
+
+def _average(crops):
+    """Several crops of one piece as the one picture a slot holds.
+
+    A running mean, which is the average _Template keeps over the frames the
+    recorder folds in. What it keeps is the part of the piece that was there in
+    every sample and what it fades is the part that was not, which on a set
+    taught by hand is antialiasing phase and the odd pixel of a neighbour.
+
+    The average has to happen here rather than in the reader because the sheet
+    is a picture: twenty four slots, one image each, which is the only format
+    pieces.py loads.
+    """
+    out = crops[0]
+    for n, crop in enumerate(crops[1:], start=2):
+        out = Image.blend(out, crop, 1.0 / n)
+    return out
 
 
 def write_sheet(board_img, slots, path=TAUGHT_SHEET):
     """Write the paired sheet: the twelve pieces as they look on a light
     square, then the same twelve on a dark one.
 
-    slots maps a piece symbol to {light: (row, col)}, squares on this board
-    holding that piece, row 0 being the top of the screen. All twelve symbols
-    are required, one colour each at the least.
+    slots maps a piece symbol to {light: [(row, col), ...]}, squares on this
+    board holding that piece, row 0 being the top of the screen. All twelve
+    symbols are required, one colour each at the least. Several squares of one
+    colour are averaged into the one slot the sheet has for them.
 
     The square colour is why this is 24 slots rather than make_templates.py's
     12. One crop per piece meant a rook taught from a light square was the only
@@ -235,6 +466,11 @@ def write_sheet(board_img, slots, path=TAUGHT_SHEET):
     template matching every square, so a missing piece is refused here rather
     than written and discovered later.
     """
+    # A colour taught no squares at all is that colour untaught, and saying so
+    # here is what keeps the two checks below reading what is really there.
+    slots = {symbol: {light: squares for light, squares in here.items()
+                      if squares}
+             for symbol, here in slots.items()}
     missing = [s for s in ORDER if not slots.get(s)]
     if missing:
         raise ValueError("nothing taught for " + " ".join(missing))
@@ -250,10 +486,17 @@ def write_sheet(board_img, slots, path=TAUGHT_SHEET):
     for half, light in enumerate((True, False)):
         for i, symbol in enumerate(ORDER):
             here = slots[symbol]
-            r, c = here.get(light) or next(iter(here.values()))
-            crop = board_img.crop((int(c * step), int(r * step),
-                                   int((c + 1) * step), int((r + 1) * step)))
-            sheet.paste(crop.resize((TEMPLATE_PX, TEMPLATE_PX), Image.LANCZOS),
+            crops = []
+            for r, c in here.get(light) or next(iter(here.values())):
+                crop = board_img.crop((int(c * step), int(r * step),
+                                       int((c + 1) * step),
+                                       int((r + 1) * step)))
+                # Resized before the average rather than after, because a board
+                # whose size does not divide by eight gives crops a pixel apart
+                # in size and those cannot be blended at all.
+                crops.append(crop.resize((TEMPLATE_PX, TEMPLATE_PX),
+                                         Image.LANCZOS))
+            sheet.paste(_average(crops),
                         ((half * len(ORDER) + i) * TEMPLATE_PX, 0))
     # Written beside then moved into place, so an interrupted save leaves the
     # sheet that was already working rather than half of a new one.
@@ -325,6 +568,21 @@ class Enroller:
                                 command=lambda s=symbol: self._pick_symbol(s))
                 btn.grid(row=row + 1, column=col, padx=1, pady=1)
                 self.buttons[symbol] = btn
+
+        # Across both columns rather than beside them, and measured rather
+        # than eyeballed: at Segoe UI 8 the label spans 89 to 103 pixels
+        # against the two columns' 104 to 132, and at 150% scaling 126 to 146
+        # against 155 to 196, so the panel is still as wide as the buttons
+        # above make it. See layout() in enrolltest.py.
+        #
+        # It says what the person is claiming rather than what the program
+        # verified, because opening_view cannot check which piece is which.
+        self.btn_opening = tk.Button(panel, text="it is the opening",
+                                     command=self._opening, relief="flat",
+                                     bg=C.PANEL, fg=C.MUTED, cursor="hand2",
+                                     font=("Segoe UI", 8))
+        self.btn_opening.grid(row=7, column=0, columnspan=2, sticky="we",
+                              pady=(6, 0))
 
         self.lbl_hint = tk.Label(panel, text="", bg=C.BG, fg=C.MUTED,
                                  font=("Segoe UI", 8), wraplength=150,
@@ -408,6 +666,22 @@ class Enroller:
 
     def _pick_symbol(self, symbol):
         self.labels.symbol(symbol)
+        self._redraw()
+
+    def _opening(self):
+        """Take the board as the starting position, if it is one.
+
+        The refusal is the point of the button as much as the thirty two
+        squares are. Nothing is taken on a maybe, and which check refused lands
+        in the hint line where the next click will clear it, the same way
+        write_sheet's reason for refusing a sheet lands in the status line.
+        """
+        try:
+            slots = opening_slots(self.board, self.scored)
+        except ValueError as exc:
+            self.labels.refuse(str(exc))
+        else:
+            self.labels.opening(slots)
         self._redraw()
 
     def _save(self):
