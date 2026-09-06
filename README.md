@@ -28,7 +28,9 @@ Nothing signs in, nothing touches an account, and nothing leaves the machine.
           a click-through arrow      drawn on the board itself
 ```
 
-![the arrow over a board](docs/arrow.png)
+![the arrow over a middlegame board](docs/arrow.png)
+
+That is a real position twenty-two plies in, not an opening: the arrow is worth looking at when the board is busy enough that the move is not obvious. Regenerate it with `python mkshot.py` from `chesswatch/`.
 
 It works off pixels alone, so it does not care which site, app or board theme is
 showing the game. If the board is not chess.com green, drag a box around it once
