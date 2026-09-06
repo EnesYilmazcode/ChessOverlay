@@ -256,6 +256,49 @@ screen equally well both ways up. A pawn move does not, because pawns only move
 one way, so the first pawn move settles it, usually within seconds. If you would
 rather not wait, set **I play** to white or black and any move will do.
 
+## The last-move highlight
+
+chess.com paints the two squares of the move just played. The side that did NOT
+just move is the side to move, so those two squares are the one thing on screen
+that says whose turn it is without going back through the move history the
+tracker has already believed. That makes it the only second opinion there is.
+
+Of the two lit squares exactly one holds a piece, and its colour is the side
+that just moved. That survives castling, which moves two pieces but both of
+them the mover's, and en passant and promotion, which change nothing about the
+two lit squares. Anything else is refused rather than guessed at: there are no
+lit squares at all at the start of a game or in Game Review, there may well be
+three while a piece is picked up, and a castle drawn from the king square to the
+rook square lights two empty ones.
+
+One case is open. chess.com paints the two squares of a queued premove, and if
+that is the same wash with no last-move highlight beside it, the square it came
+from still holds your own piece and this would read you as having just moved.
+None of the fixtures has a premove in it, so that colour is unknown here rather
+than ruled out, and a caller has to settle it before trusting this on a board
+that takes premoves.
+
+**Nothing in the app asks it yet.** It was written to say that the tracker was
+out of step, and it does say that, but the piece check that would have been
+brought forward compares placement and not the turn, so on a turn that is wrong
+on its own it answers "position confirmed" and the disagreement stands. A signal
+that fires forever and fixes nothing is worse than the four second timer it was
+meant to beat: measured, it takes the checker from 5 checks in 200 frames to
+100. So the reading landed and the trigger did not. A caller has to be able to
+act on the answer, and this one could not.
+
+What it is good for, when something can act: over 400 games and 76,142 frames it
+named a mover 76,092 times and named the right one every time. The 50 frames it
+had no answer for were games it had already closed. `highlightrun.py` is that
+run, and it exits non-zero if the reader ever names the wrong colour.
+
+The colour is the square colour washed at half opacity with `#FFFF33`, so both
+shades come straight out of `LIGHT_SQUARE` and `DARK_SQUARE` rather than being
+constants of their own. The first move on each shade then samples the real
+colour off your own board, in case your theme paints it differently, and a
+sample is only kept if reading the board back with it lights exactly the two
+squares that move touched.
+
 ## Things it copes with
 
 **A small browser window.** The move list is never read, so it does not matter
@@ -300,7 +343,7 @@ rectangle is in use.
 
 ## Checking it still works
 
-    python selftest.py      87 checks, including real screenshots
+    python selftest.py     104 checks, including real screenshots
     python piecetest.py     49 checks on the piece reader under a bad capture
     python positiontest.py  29 checks on the whole board solver, no pixels
     python enrolltest.py   119 checks on teaching the pieces and on the arrow
@@ -309,6 +352,12 @@ rectangle is in use.
     python settletest.py    move animation, with the screen on a clock
     python banktest.py      33 checks on choosing a piece set
     python livetest.py      full loop through the real capture worker
+    python highlightrun.py  the last-move highlight over 400 whole games
+
+`highlightrun.py` is a measurement rather than a suite and is not in CI: 400
+games took 300 seconds here, which is longer than everything above put together,
+and what it measures does not change move to move. Run it when the
+highlight reader changes. `--games` makes it shorter.
 
 None of these put anything on screen or screenshot your desktop. `livetest.py`
 and `overlaytest.py` render the board into a desktop sized image and point the

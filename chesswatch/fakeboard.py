@@ -151,17 +151,32 @@ class Renderer:
     def can_render(self, board):
         return {p.symbol() for p in board.piece_map().values()} <= self.pieces
 
-    def render(self, board, flipped=False, size=None):
+    def render(self, board, flipped=False, size=None, lit=(), highlight=None):
         """Draw a position. size resizes the finished board, which is the same
-        resampling a smaller browser window puts the reader through."""
+        resampling a smaller browser window puts the reader through.
+
+        lit names board squares to paint with the last-move highlight, in the
+        (light, dark) pair of colours given. Those are filled flat, for the same
+        reason the empty squares are: the reference screenshot has no
+        highlighted square to cut from, and chess.com draws a flat wash anyway.
+        """
+        # A single colour instead of a pair paints one shade over both and
+        # still renders, which would be a fixture quietly disagreeing with the
+        # board it claims to be. Cheaper to stop here than to find it later.
+        if lit and (highlight is None or len(highlight) != 2):
+            raise ValueError("lit squares need a (light, dark) pair of colours")
         out = Image.new("RGB", (self.size, self.size))
         ranks = range(8) if flipped else range(7, -1, -1)
         for row, rank in enumerate(ranks):
             files = range(7, -1, -1) if flipped else range(8)
             for col, file in enumerate(files):
                 pos = (col * self.step, row * self.step)
-                out.paste(self.sprites["light" if (row + col) % 2 == 0 else "dark"],
-                          pos)
+                shade = (row + col) % 2
+                if chess.square(file, rank) in lit:
+                    out.paste(Image.new("RGB", (self.step, self.step),
+                                        highlight[shade]), pos)
+                else:
+                    out.paste(self.sprites["light" if shade == 0 else "dark"], pos)
                 piece = board.piece_at(chess.square(file, rank))
                 if piece:
                     key = piece.symbol()
