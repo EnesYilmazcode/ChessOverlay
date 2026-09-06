@@ -6,8 +6,9 @@ imperfect, that a piece set the templates were not drawn from is read rather
 than refused wholesale, and that the reader says "?" instead of naming a piece
 when it is not sure. Every floor below is a number that was actually measured,
 not a target, so a drop here is a real regression and not a moved goalpost. The
-one deliberate slack is the speed ceiling at the end: 30 ms against readings of
-16 to 17 ms, so that a slower machine does not read as a slowdown in this code.
+one deliberate slack is the two speed ceilings at the end, 30 and 60 ms against
+readings of 20 and 38, so that a slower machine does not read as a slowdown in
+this code.
 
 Run:  python piecetest.py
 """
@@ -166,6 +167,40 @@ def offset(boards):
     return out
 
 
+def smeared(boards):
+    """The same boards captured badly enough that a white piece stops reaching
+    either cutoff: a small window and display scaling together.
+
+    This is the case pieces.py's damage handling exists for. Without it the
+    reader answers "." at a score of 1.0 on 60 of the 154 pieces these six
+    captures hold, before a single template is scored, and every one of them is
+    white.
+    """
+    out = []
+    for name, b in boards:
+        for size, radius in ((280, 1.5), (400, 2.0)):
+            out.append((name, b.resize((size, size), Image.LANCZOS)
+                        .filter(ImageFilter.GaussianBlur(radius))))
+    return out
+
+
+def vanished(reader, cases):
+    """How many squares that hold a piece the reader calls empty.
+
+    Counted apart from `wrong` because it is a different failure with a
+    different cause: not the shape matcher choosing badly but the two ink
+    layers going quiet and _judge answering before it ever runs.
+    """
+    out = 0
+    for name, board_img in cases:
+        rows, _ = reader.classify(board_img)
+        for r in range(8):
+            for c in range(8):
+                if TRUTH[name][r][c] != "." and rows[r][c] == ".":
+                    out += 1
+    return out
+
+
 def distorted(boards):
     """A screen that is not at the reference brightness, and the blur display
     scaling adds. This used to be the genuinely hard one, because the bright and
@@ -205,19 +240,21 @@ def main():
 
     got = tally(reader, shrunk(boards))
     r.append(check("nothing wrong down to a 200px window", got[1], 0))
-    # 487, against the 495 the solid mask named. Counted per size, the 45
-    # pieces on the two boards come back named 45, 44, 43, 44, 44 and 30 at
-    # 824, 664, 560, 400, 280 and 200px, and every refusal is MIN_OVERLAP
-    # rather than the margin or the colour veto. Only 200px really gives
-    # anything up, and there a square holds 25 screen pixels against the 40
-    # cell grid its mask is compared on, so the outline is upsampled guesswork
-    # and the match genuinely scores below 0.30.
-    r.append(check("  and 487 of 512 squares still named", got[0] >= 487, True))
+    # 485, against the 487 before the reader started doubting a soft capture
+    # and the 495 the solid mask named. Both of the two are at 400px, which is
+    # the one size in this list that a 703px screenshot lands on measurably
+    # soft, 0.665 against 0.42 at full size, so the margin a call has to clear
+    # rises from 0.05 to 0.12 and two calls no longer clear it. That is the
+    # priced half of pieces.py's CAREFUL_AT and it is what buys the smeared
+    # rows further down.
+    r.append(check("  and 485 of 512 squares still named", got[0] >= 485, True))
 
     got = tally(reader, offset(boards))
     print("      misaligned crops: %d correct, %d wrong, %d unclear" % got)
     r.append(check("a misaligned crop yields nothing wrong at all", got[1], 0))
-    r.append(check("  and still names 898 of 1024 squares", got[0] >= 898, True))
+    # 897, one fewer than before the same margin, and on the same crop of the
+    # same board: a crop pulled two pixels out is very slightly soft as well.
+    r.append(check("  and still names 897 of 1024 squares", got[0] >= 897, True))
 
     got = tally(reader, distorted(boards))
     print("      wrong brightness or blur: %d correct, %d wrong, %d unclear" % got)
@@ -225,9 +262,18 @@ def main():
     # on the board's own ink. This row is where anchoring pays: brightness and
     # contrast are affine on pixel values, so measuring both ends off the board
     # makes the mask come out the same whatever the knobs are set to.
+    #
+    # All 55 are on the brightness and contrast rows, 28 and 27, and both are
+    # unchanged by the damage handling: those are white pieces whose fill has
+    # been clipped into the square colour, so the evidence for white is gone
+    # rather than smeared, and a wider margin cannot put it back. The blur rows
+    # are 0 wrong and were 0 before, on this piece set.
     r.append(check("distortion costs at most 55 wrong pieces of 1280",
                    got[1] <= 55, True))
-    r.append(check("  and still names 1117 of 1280 squares", got[0] >= 1117, True))
+    # 1133, against the 1121 the reader named before it sharpened anything.
+    # The whole of the gain is on the blur rows, 320 against 308; the
+    # brightness and contrast rows come back square for square the same.
+    r.append(check("  and still names 1133 of 1280 squares", got[0] >= 1133, True))
 
     # -- the margin is what does that -------------------------------------
     # On a clean board the closest correct call clears the runner up by 0.192,
@@ -461,6 +507,184 @@ def main():
           % (agree / union))
     r.append(check("  and the mask of a square barely moves when the screen does",
                    agree / union >= 0.97, True))
+
+    # -- measuring the capture as well as the board ------------------------
+    # A board carries its own ruler. Every square boundary is a step between
+    # the two square colours, both already measured, and a Gaussian blurred
+    # step of height h peaks at h / (sigma * root 2pi), so reading the seven
+    # internal boundaries says what the capture did to the picture. It measures
+    # the board and not the pieces, which is why it comes out the same on every
+    # set, size, orientation and position.
+    sharp_sigma, soft_sigma = [], []
+    for _, b in boards:
+        for size in (824, 560, 400, 280):
+            small = b.resize((size, size), Image.LANCZOS)
+            # -1.0 for an unmeasurable board, so that a broken estimator reads
+            # as a failed row rather than as a stack trace.
+            sharp_sigma.append(P.sigma_of(small) or -1.0)
+            soft_sigma.append(
+                P.sigma_of(small.filter(ImageFilter.GaussianBlur(1.1))) or -1.0)
+    print("      measured blur: %.3f to %.3f sharp, %.3f to %.3f at 1.1px"
+          % (min(sharp_sigma), max(sharp_sigma),
+             min(soft_sigma), max(soft_sigma)))
+    # 0.420 to 0.665 sharp against 1.031 to 1.197 blurred, over both boards at
+    # four sizes each. The gate has to sit in that gap and not inside either
+    # distribution, because sharpening a capture that is merely small pushes it
+    # away from the templates. See pieces.SHARPEN_AT.
+    r.append(check("a board measures the blur on its own capture",
+                   (max(sharp_sigma) < P.SHARPEN_AT < min(soft_sigma),
+                    round(min(soft_sigma), 1)), (True, 1.0)))
+    # And a sharp capture is left completely alone: no convolution, no wider
+    # margin, no colour refusal. Every number this adds is inert until the
+    # picture is measurably soft.
+    r.append(check("  and a sharp capture is not touched at all",
+                   [(P._unblur(b, P.sigma_of(b)) is b,
+                     P._soft_margin(P.sigma_of(b)) == P.MIN_MARGIN,
+                     P._colour_blind(P._levels(b)))
+                    for _, b in boards + six],
+                   [(True, True, False)] * 3))
+
+    # Past about 1.9 pixels the step stops fitting inside the narrow profile,
+    # every row fails the height check and the narrow window has no answer at
+    # all. Without the wide one behind it the reader would call those captures
+    # sharp, leave them alone and go straight back to the bug below.
+    hard = boards[0][1].filter(ImageFilter.GaussianBlur(2.5))
+    grey = hard.convert("L")
+    lo, hi = P._levels(hard)[:2]
+    narrow = P._sigma_at(grey, grey.size[0] / 8.0, hi - lo, P.SIGMA_HALVES[0])
+    broad = P.sigma_of(hard)
+    r.append(check("past 1.9px only the wide profile has an answer",
+                   (narrow, broad is not None and 2.6 < broad < 2.8),
+                   (None, True)))
+
+    # -- a white piece read as an empty square -----------------------------
+    # The bug this whole section is for. A white piece is a light body inside a
+    # hairline dark edge; blur puts the body under the bright cutoff and smears
+    # the edge away, and _judge then answers "." at a score of 1.0 without
+    # scoring a single template. It is the loudest possible failure, because
+    # "." is not a refusal: check() believes it and records the position.
+    bad = smeared(boards + six)
+    got = tally(reader, bad)
+    gone = vanished(reader, bad)
+    print("      badly captured: %d correct, %d wrong, %d unclear, %d pieces "
+          "read as empty" % (got + (gone,)))
+    # 228 correct and none wrong, against 228 correct and 60 wrong before. The
+    # 60 are every white piece on all six captures and no black one.
+    r.append(check("a smeared capture reads no piece as an empty square",
+                   (gone, got[1]), (0, 0)))
+    r.append(check("  and gives up nothing to do it", got[0] >= 228, True))
+
+    # The safety net under all of it, and the reason it holds whatever the
+    # sharpening did: how far apart the brightest and darkest pixel in the
+    # middle of a square are. Pinned as a gap rather than as a threshold, since
+    # a threshold inside a distribution is not a test.
+    empty_top, held_low = 0.0, 1.0
+    for name, img in bad:
+        fixed = P._unblur(img, P.sigma_of(img))
+        levels = P._levels(fixed)
+        span = max(1, levels[1] - levels[0])
+        for row, col, sq in P.squares(fixed):
+            wide, high = sq.size
+            dx = int(wide * (1 - P.OCCUPIED_INSIDE) / 2)
+            dy = int(high * (1 - P.OCCUPIED_INSIDE) / 2)
+            low, top = sq.crop((dx, dy, wide - dx,
+                                high - dy)).convert("L").getextrema()
+            reach = (top - low) / span
+            if TRUTH[name][row][col] == ".":
+                empty_top = max(empty_top, reach)
+            else:
+                held_low = min(held_low, reach)
+    print("      an empty square reaches %.4f, an occupied one %.4f"
+          % (empty_top, held_low))
+    r.append(check("  and the emptiness test sits in a gap, not a distribution",
+                   (empty_top < P.OCCUPIED_F < held_low,
+                    held_low > 10 * empty_top), (True, True)))
+
+    # What the wide profile buys, priced. Three of these six captures measure
+    # nothing at all through the narrow window alone, and the reader then reads
+    # them as sharp and gets 27 pieces back as empty squares.
+    halves = P.SIGMA_HALVES
+    P.SIGMA_HALVES = halves[:1]
+    try:
+        narrow_only = vanished(P.PieceReader(cache_dir=cache.name), bad)
+    finally:
+        P.SIGMA_HALVES = halves
+    r.append(check("  which the narrow profile alone cannot do", narrow_only, 27))
+
+    # And the same rule reaches the one square piece_at is asked about, which
+    # is the promoted pawn. Two white bishops on the 280px 6.png capture are
+    # what the sharpening alone does not recover, and without the net there
+    # piece_at answers "." on both of them, which _confirm_promotion reads as
+    # "nothing appeared" and records a queen.
+    r.append(check("  and piece_at will not call an occupied square empty",
+                   [reader.piece_at(bad[4][1], 7, col) for col in (2, 5)],
+                   [None, None]))
+
+    # -- a capture that has lost a whole ink layer -------------------------
+    # 1.25 contrast clips the light square to 246 and the white fill to 255, so
+    # _tables sees no headroom for light ink and switches the bright layer off
+    # for the whole board. Refusing colour there is right; refusing it on a
+    # board that simply has no white pieces left is not, and the two look
+    # identical to the layer test alone. The second half is that the ink is
+    # pressed against the end of the range, which a clipped capture does and an
+    # absent colour does not.
+    black_only = render.render(chess.Board("rnbqkbnr/pppppppp/8/8/8/8/8/8 w - - 0 1"))
+    r.append(check("a clipped capture is colour blind and a one-colour board is not",
+                   [P._colour_blind(P._levels(img))
+                    for img in (harsh, black_only, boards[0][1])],
+                   [True, False, False]))
+
+    # And what being colour blind then changes: the runner up is taken over all
+    # twelve symbols rather than over piece types, because the thing that
+    # normally decides colour is the layer that has gone. So a piece that does
+    # not clearly beat its own opposite comes back "?" rather than coming back
+    # the wrong colour.
+    #
+    # The templates are doctored to make that checkable. None of the three
+    # screenshots here ever reaches the state on any capture, blurred, shrunk,
+    # clipped or brightened, so the square that needs it does not exist in this
+    # file; bench.py's `contrast` variant is what measures the rule end to end,
+    # where it removes 157 wrong answers and costs no right ones. Giving "r"
+    # the white rook's own template makes the twin score exactly what the
+    # winner scores, which is the state the rule is about.
+    twinned = dict(own.templates)
+    twinned["r"] = own.templates["R"]
+    rook = next(sq for row, col, sq in P.squares(six[0][1]) if (row, col) == (7, 0))
+    feat = P._features(rook, P._levels(six[0][1]))
+    # Compared without case, because the two now score identically and which
+    # of them comes top is the sort order rather than the reader.
+    r.append(check("  a piece that cannot beat its own opposite colour is refused",
+                   (P._judge(feat, twinned, colour_blind=False)[0].lower(),
+                    P._judge(feat, twinned, colour_blind=True)[0]), ("r", None)))
+
+    # -- the arrow the program draws on the board it is reading ------------
+    # overlay.py picks a colour that greys into the band read_occupancy
+    # ignores, and that is the whole reason the recorder cannot corrupt a game
+    # with its own coach arrow. The emptiness test above asks about grey levels
+    # rather than about the two ink bands, so it is the one part of this reader
+    # that can see the arrow. What has to hold is the direction of that: the
+    # arrow may cost the reader an answer and may never change one.
+    import bench as _bench
+    withdrawn = added = altered = 0
+    for name, img in bad:
+        plain_rows, _ = reader.classify(img)
+        for uci in ("e2e4", "g1f3"):
+            drawn, _ = reader.classify(_bench._draw_arrow(img, uci))
+            for row in range(8):
+                for col in range(8):
+                    was, now = plain_rows[row][col], drawn[row][col]
+                    if was == now:
+                        continue
+                    if now == "?":
+                        withdrawn += 1
+                    elif was == "?":
+                        added += 1
+                    else:
+                        altered += 1
+    print("      with the coach arrow drawn: %d answers withdrawn, %d added, "
+          "%d altered" % (withdrawn, added, altered))
+    r.append(check("the coach arrow can cost an answer and cannot change one",
+                   (added, altered), (0, 0)))
 
     # -- unclear rather than wrong ----------------------------------------
     # Two pixels of crop error pulls a black column in off the edge of the
@@ -778,6 +1002,24 @@ def main():
     print("\n      classify: %.0f ms per 824px board, best of 20" % per)
     r.append(check("  the fastest pass over an 824px board stays under 30 ms",
                    per < 30, True))
+
+    # A soft capture pays for the unsharp mask on top: 21 ms of it, in colour,
+    # measured at 38 ms against the 21 here. The ceiling is separate rather
+    # than raised, so that the cost of sharpening cannot quietly become the
+    # cost of reading, and it is affordable for the same reason the 30 above
+    # is: chesswatch runs classify once every CHECK_EVERY frames, so this lands
+    # inside one 120 ms tick every few seconds rather than on every frame.
+    blurry = boards[0][1].filter(ImageFilter.GaussianBlur(1.1))
+    reader.classify(blurry)
+    runs = []
+    for _ in range(20):
+        t0 = time.perf_counter()
+        reader.classify(blurry)
+        runs.append(time.perf_counter() - t0)
+    soft_per = min(runs) * 1000
+    print("      classify: %.0f ms when the capture needs sharpening" % soft_per)
+    r.append(check("  and under 60 ms when it has to sharpen first",
+                   soft_per < 60, True))
 
     cache.cleanup()
     print("\n%d/%d passed" % (sum(bool(x) for x in r), len(r)))
