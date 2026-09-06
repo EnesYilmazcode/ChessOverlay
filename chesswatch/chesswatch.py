@@ -482,7 +482,14 @@ class Worker(threading.Thread):
 # of their own, and they are here for the same reason: the order that row is
 # packed in decides which of the two survives a 400px window.
 STRIPES = ("top", "setup", "hero", "clear", "advice", "detail", "note",
-           "result", "foot", "position", "moves")
+           "side", "result", "foot", "position", "moves")
+
+# The note the watcher writes while it has a game on screen and cannot tell
+# which way up the board is. It is the only note with a control that answers
+# it, which is why the note is what the side prompt is keyed off. Keyed off
+# whether a game is locked on instead, the prompt would also be up through the
+# ordinary idle state, and a row that is up at rest is a permanent row.
+UNSETTLED = "which way up"
 
 
 def showing(state):
@@ -504,6 +511,14 @@ def showing(state):
             up.add("detail")
     if state.get("note"):
         up.add("note")
+        # The wait for a pawn move is the one thing on the note line with a
+        # control that ends it, and that control is two clicks away. Offer it
+        # here, and only while all three are true: the note still says so, no
+        # side has been picked yet, and the drawer is not already showing the
+        # same control further up.
+        if (UNSETTLED in state["note"] and state.get("side") == "auto"
+                and not state.get("setup")):
+            up.add("side")
     if state.get("result"):
         up.add("result")
     if state.get("position"):
@@ -593,7 +608,14 @@ class App:
                            cursor="hand2").pack(side="left")
 
         show = self._drawer_row(setup, "Show")
-        self.coach_on = tk.BooleanVar(value=bool(self.cfg.get("coach", False)))
+        # On by default. The move to play is the reason the program exists and
+        # the window is built around it, so off by default meant a first run
+        # showed an empty hero line and nothing to say the setting existed.
+        # What it costs is a Stockfish process on a machine that wants only
+        # the recorder, and one muted line on a machine that has no Stockfish
+        # at all. Anyone who does not want it unticks it once and it is
+        # remembered, the same as the other two.
+        self.coach_on = tk.BooleanVar(value=bool(self.cfg.get("coach", True)))
         self._switch(show, "Coach", self.coach_on, self._toggle_coach)
         self.arrow_on = tk.BooleanVar(value=bool(self.cfg.get("arrow", False)))
         self._switch(show, "Arrow", self.arrow_on, self._toggle_arrow)
@@ -656,6 +678,20 @@ class App:
                                   font=("Segoe UI", 9), anchor="w")
         pack["note"] = (self.lbl_check, dict(fill="x", padx=12, pady=(4, 0)))
 
+        # The side control again, under the note that asks for it. Same
+        # variable and same command as the drawer's row, and lined up with it,
+        # so it is the same setting rather than a second one. No "auto": the
+        # prompt is only up while that is what is selected. showing() takes
+        # the row down as soon as either of those stops being true.
+        prompt = self._drawer_row(self.root, "Side")
+        pack["side"] = (prompt, dict(fill="x", padx=12, pady=(2, 0)))
+        for word in ("white", "black"):
+            tk.Radiobutton(prompt, text=word, value=word,
+                           variable=self.colour_choice, command=self._set_colour,
+                           bg=BG, fg=MUTED, selectcolor=BG, activebackground=BG,
+                           activeforeground=FG, font=("Segoe UI", 8),
+                           cursor="hand2").pack(side="left")
+
         self.lbl_result = tk.Label(self.root, text="", bg=BG, fg=ACCENT,
                                    font=("Segoe UI", 11, "bold"), anchor="w")
         pack["result"] = (self.lbl_result, dict(fill="x", padx=12, pady=(4, 0)))
@@ -695,9 +731,11 @@ class App:
         self._relayout()
 
     def _drawer_row(self, parent, name):
-        """One line of the drawer: a word, then the controls it covers. The
-        width is in characters, so the words still line up when the display
-        scaling grows the font and the window does not follow."""
+        """A word, then the controls it covers. Four of these make the drawer
+        and one is the side prompt, which is why it lines up with the drawer's
+        own Side row. The width is in characters, so the words still line up
+        when the display scaling grows the font and the window does not
+        follow."""
         row = tk.Frame(parent, bg=BG)
         row.pack(fill="x", pady=1)
         tk.Label(row, text=name, bg=BG, fg=MUTED, width=7, anchor="w",
@@ -719,6 +757,7 @@ class App:
                 "note": self.lbl_check.cget("text"),
                 "result": self.lbl_result.cget("text"),
                 "arrow": self.arrow_drawn,
+                "side": self.colour_choice.get(),
                 "position": self.show_board.get()}
 
     def _relayout(self):
@@ -758,7 +797,7 @@ class App:
     def _apply_saved_switches(self):
         """Idempotent: whichever of the two is already running is left alone."""
         if self.coach_on.get() and self.coach is None:
-            self._toggle_coach()
+            self._toggle_coach(asked=False)
         if self.arrow_on.get() and self.arrow is None:
             self._toggle_arrow()
 
@@ -818,8 +857,11 @@ class App:
             self._stop()
         self._start()
 
-    def _toggle_coach(self):
-        """Stockfish is only started when you actually ask for advice."""
+    def _toggle_coach(self, asked=True):
+        """Stockfish is started the first time coaching is on, which since it
+        is on by default is the first launch. asked is False for that one, and
+        it is the difference between a warning and a remark.
+        """
         self._save_config()
         if not self.coach_on.get():
             self.lbl_coach.configure(text="")
@@ -834,14 +876,27 @@ class App:
                 # sentence, the move slot is 14pt bold, and nothing would ever
                 # clear it again: the switch has just turned itself back off,
                 # so no later frame comes past to take it down.
+                #
+                # Muted unless it was clicked for. Nobody asked for coaching on
+                # a first launch, so this is the answer to why there is no move
+                # line rather than a report of something going wrong. The
+                # switch stays on in config.json either way, so installing
+                # Stockfish later is all it takes.
                 self.coach_on.set(False)
                 self.note_until = time.time() + NOTE_SECONDS
                 self.lbl_check.configure(
-                    text="no Stockfish found. See the README.", fg=WARN)
+                    text="no Stockfish, so no coaching. See the README.",
+                    fg=WARN if asked else MUTED)
                 return
             self.coach = CO.Coach(path, think_seconds=self._think_seconds())
             self.coach.start()
-        self.lbl_coach.configure(text="thinking...", fg=MUTED)
+        # The receipt for the tick, so it belongs to the tick. This runs at
+        # launch now, where nothing has been asked and no board has been found
+        # yet, and a 14pt line saying it is thinking would be the first thing a
+        # new user saw and would not be true. The first answer fills the line
+        # in either case.
+        if asked:
+            self.lbl_coach.configure(text="thinking...", fg=MUTED)
 
     def _think_seconds(self):
         return float(self.think_choice.get()[:-1])
