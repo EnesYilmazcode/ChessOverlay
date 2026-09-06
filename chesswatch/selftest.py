@@ -680,15 +680,30 @@ def main():
     # -- the arithmetic at one square's decision boundaries -----------------
     # Real captures never happen to land on a boundary, so these counts are
     # placed pixel by pixel. MIN_COVERAGE is 4.86 pixels out of 324, so 4
-    # bright pixels is an empty square and 5 is not, and an exact tie reads B,
-    # not W. Every border is filled with alternating black and white, so a
-    # reading that strays outside the middle 56% cannot come back ".".
+    # bright pixels is an empty square and 5 is not. Every border is filled with
+    # alternating black and white, so a reading that strays outside the middle
+    # 56% cannot come back ".".
     step = W.GRID // 8
     margin = int(step * 0.22)
     inset = step - 2 * margin
     area = inset * inset
     on = next(n for n in range(area + 1) if n / area >= W.MIN_COVERAGE)
     under, half = on - 1, area // 2
+
+    def painted(counts):
+        """A board whose sampled window on each square carries exactly these
+        (bright, dark) pixel counts."""
+        pixels = bytearray([0, 255] * (W.GRID * W.GRID // 2))
+        for row, pairs in enumerate(counts):
+            for col, (bright, dark) in enumerate(pairs):
+                grey = area - bright - dark
+                fill = [255] * bright + [0] * dark + [150] * grey
+                top, left = row * step + margin, col * step + margin
+                for i, value in enumerate(fill):
+                    at = (top + i // inset) * W.GRID + left + i % inset
+                    pixels[at] = value
+        return Image.frombytes("L", (W.GRID, W.GRID), bytes(pixels))
+
     counts = [
         [(n, 0) for n in range(8)],
         [(0, n) for n in range(8)],
@@ -702,18 +717,65 @@ def main():
         [(0, 0), (0, under), (under, 0), (0, on), (on, 0), (under, on),
          (on, under), (under, under)],
     ]
-    pixels = bytearray([0, 255] * (W.GRID * W.GRID // 2))
-    for row, pairs in enumerate(counts):
-        for col, (bright, dark) in enumerate(pairs):
-            fill = [255] * bright + [0] * dark + [150] * (area - bright - dark)
-            top, left = row * step + margin, col * step + margin
-            for i, value in enumerate(fill):
-                pixels[(top + i // inset) * W.GRID + left + i % inset] = value
-    r.append(check("  counts the coverage line, the tie and the border exactly",
-                   W.read_occupancy(Image.frombytes("L", (W.GRID, W.GRID),
-                                                    bytes(pixels))),
-                   [".....WWW", ".....BBB", ".....BBB", "....WWWW",
-                    "....BBBB", "WBBWBWBB", "BWBWB.BW", "...BWBW."]))
+    # Only whether each square is occupied is asked of this board. What colour
+    # a square is is no longer a question it can answer on its own, and these
+    # 36 counts are a ramp rather than two colours, so the letters they come
+    # back as are an artefact of the ramp and would pin nothing.
+    r.append(check("  counts the coverage line and the border exactly",
+                   ["".join("." if v == "." else "x" for v in row)
+                    for row in W.read_occupancy(painted(counts))],
+                   [".....xxx", ".....xxx", ".....xxx", "....xxxx",
+                    "....xxxx", "xxxxxxxx", "xxxxx.xx", "...xxxx."]))
+
+    # -- colour, decided against the board rather than a fixed line ---------
+    # The white counts are measured off seguisym at 824px, whose rook on a1
+    # carries 53 bright pixels against 82 dark. Counting one against the other
+    # calls that rook black, and every set drawing a light body inside a heavy
+    # dark edge loses its emptiest pieces the same way.
+    empty = [(0, 0)] * 8
+    outline = ([[(0, 180)] * 8] * 2 + [empty] * 4
+               + [[(53, 82)] * 8] * 2)
+    r.append(check("  a light body inside a heavy dark edge is still white",
+                   W.read_occupancy(painted(outline)),
+                   ["BBBBBBBB", "BBBBBBBB", "........", "........",
+                    "........", "........", "WWWWWWWW", "WWWWWWWW"]))
+
+    # One square driven to nearly all bright. No fixture here has one, so this
+    # is built rather than measured, and it is built because it is the shape the
+    # pair count exists to refuse: the gap below this square is wider than the
+    # gap between the two colours, so the widest gap on its own would call the
+    # other 31 pieces one colour together. The pair count outvotes it, because
+    # this split separates 31 pairs and the real line separates 256.
+    loud = [row[:] for row in outline]
+    loud[7] = [(300, 0)] + [(53, 82)] * 7
+    r.append(check("    and one square blown out does not become a colour",
+                   W.read_occupancy(painted(loud)),
+                   ["BBBBBBBB", "BBBBBBBB", "........", "........",
+                    "........", "........", "WWWWWWWW", "WWWWWWWW"]))
+
+    # A heavier outline eats the black pieces down to the bright rim around
+    # them. These counts are off chesscom's own set thickened by one pixel at
+    # 400px: its black knights come back as 8 bright pixels and nothing else,
+    # its white pawns as 85. Bright against total ink alone scores both a
+    # perfect 1.0 and loses the board; holding the score back by the coverage
+    # floor keeps them 0.62 and 0.95 apart.
+    rim = [[(8, 0)] * 8] * 2 + [empty] * 4 + [[(85, 0)] * 8] * 2
+    r.append(check("    and a black piece worn down to its rim is still black",
+                   W.read_occupancy(painted(rim)),
+                   ["BBBBBBBB", "BBBBBBBB", "........", "........",
+                    "........", "........", "WWWWWWWW", "WWWWWWWW"]))
+
+    # A set whose white body never reaches BRIGHT leaves both colours scoring
+    # the same. There is no line to find, and the old answer was that all 32
+    # pieces were black.
+    flatink = [[(60, 180)] * 8] * 2 + [empty] * 4 + [[(60, 180)] * 8] * 2
+    r.append(check("  no line at all is answered with ? rather than a colour",
+                   W.read_occupancy(painted(flatink)),
+                   ["????????", "????????", "........", "........",
+                    "........", "........", "????????", "????????"]))
+    r.append(check("    and a tracker refuses that frame rather than moving",
+                   W.BoardTracker(directory=tempfile.mkdtemp()).feed(
+                       W.read_occupancy(painted(flatink))), None))
 
     # -- real screenshots -------------------------------------------------
     shots = sys.argv[1:] or [shot(n) for n in ("1", "2", "4", "5")]
