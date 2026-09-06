@@ -999,6 +999,77 @@ def the_pack_order():
           (C.STRIPES[-1], stripes["moves"].get("expand")), ("moves", True))
 
 
+# ------------------------------------------------------ the region you pick
+
+def paper_desktop(at=(300, 180), size=544, width=1200, height=900):
+    """A desktop with one board on it, painted in the two colours find_board
+    hunts for. Empty squares only: what snap_region has to get right is where
+    the board is, and nothing about that is a piece."""
+    from PIL import Image
+    desk = Image.new("RGB", (width, height), (0x26, 0x24, 0x21))
+    step = size // 8
+    for row in range(8):
+        for col in range(8):
+            here = C.W.LIGHT_SQUARE if (row + col) % 2 == 0 else C.W.DARK_SQUARE
+            desk.paste(Image.new("RGB", (step, step), here),
+                       (at[0] + col * step, at[1] + row * step))
+    return desk, (at[0], at[1], step * 8, step * 8)
+
+
+def the_picked_region():
+    """A rectangle dragged by hand is snapped onto the board inside it.
+
+    Issue #52: a drag is never pixel exact, and the reporter's saved region was
+    a 540 box on a 544 board, which cuts every square four pixels off centre
+    and cost him six unreadable squares against one. The picker cannot do this
+    itself, because its own dimmed window is still over the desktop while it
+    runs, so the snap belongs to the two callers and both are checked here.
+    """
+    print("\n-- the region you picked is snapped onto the board -------")
+    desk, board = paper_desktop()
+    bounds = (0, 0, desk.size[0], desk.size[1])
+
+    def grabber(region):
+        left, top, wide, high = region
+        return desk.crop((left, top, left + wide, top + high))
+
+    def snap(region):
+        return C.snap_region(region, grabber=grabber, bounds=bounds)
+
+    left, top, size, _ = board
+    check("a drag four pixels short of the board still finds it",
+          snap((left, top, size - 4, size - 4)), board)
+    check("  and one that started two pixels inside it",
+          snap((left + 2, top + 2, size, size)), board)
+    check("  and one loose around the whole thing",
+          snap((left - 15, top - 15, size + 30, size + 30)), board)
+
+    # The reason for the fallback, and the reason the slop is not wider: hand
+    # picking exists for a board find_board cannot see, and a rectangle it
+    # cannot answer for has to come back exactly as it was dragged.
+    empty = (20, 20, 300, 300)
+    check("a rectangle with no board in it comes back as it was dragged",
+          snap(empty), empty)
+    check("  and so does one the grab itself fails on",
+          C.snap_region(empty, grabber=_forbid, bounds=bounds), empty)
+    check("  and nothing is snapped when no region is held at all",
+          snap(None), None)
+
+    # snap_region is only worth anything if the two callers reach it, and
+    # neither can be driven here: one needs a screen and the other a worker.
+    # So they are read instead.
+    calls = {name: [node.func.id
+                    for node in ast.walk(ast.parse(textwrap.dedent(
+                        inspect.getsource(getattr(C.App, name)))))
+                    if isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)]
+             for name in ("_pick", "_start")}
+    check("picking a region snaps what was dragged",
+          "snap_region" in calls["_pick"], True)
+    check("  and starting snaps the one already saved, which is his",
+          "snap_region" in calls["_start"], True)
+
+
 def unreadable_widgets_are_refused():
     print("\n-- a widget it cannot read is refused, not skipped -------")
     was = KINDS.pop("Button")
@@ -1020,6 +1091,7 @@ def main():
     what_shows()
     the_side_prompt()
     the_packer()
+    the_picked_region()
     try:
         every_stripe_is_built()
         the_pack_order()

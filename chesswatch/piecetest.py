@@ -18,7 +18,7 @@ import tempfile
 import time
 
 import chess
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 
 import pieces as P
 import watcher as W
@@ -212,6 +212,41 @@ def obstructed(boards):
         for row, col in ((0, 4), (3, 2), (6, 1), (4, 4)):
             out.append((name, _F.cover(b, row, col)))
     return out
+
+
+def with_hints(board_img, at, frac=0.28, alpha=0.16, dark=True):
+    """The board with a site's move-hint dot painted on each of `at`.
+
+    Drawn the way chess.com and lichess draw a legal destination: a flat disc
+    a third of the square across, translucent, in the middle. Supersampled so
+    its edge is antialiased like a real one, which is what puts cells part way
+    between the dot and the square and is the part a shape test has to survive.
+    """
+    size = board_img.size[0]
+    step = size / 8.0
+    out = board_img.copy()
+    ink = (0, 0, 0) if dark else (255, 255, 255)
+    for row, col in at:
+        box = (int(col * step), int(row * step),
+               int((col + 1) * step), int((row + 1) * step))
+        wide, high = box[2] - box[0], box[3] - box[1]
+        mask = Image.new("L", (wide * 4, high * 4), 0)
+        pen = ImageDraw.Draw(mask)
+        radius = frac * min(wide, high) * 4 / 2.0
+        cx, cy = wide * 2.0, high * 2.0
+        pen.ellipse([cx - radius, cy - radius, cx + radius, cy + radius],
+                    fill=int(255 * alpha))
+        patch = out.crop(box)
+        patch.paste(Image.new("RGB", (wide, high), ink), (0, 0),
+                    mask.resize((wide, high), Image.LANCZOS))
+        out.paste(patch, box)
+    return out
+
+
+def squares_of(name, held):
+    """The squares of one reference board that do or do not hold a piece."""
+    return [(row, col) for row in range(8) for col in range(8)
+            if (TRUTH[name][row][col] != ".") == held]
 
 
 def main():
@@ -532,6 +567,82 @@ def main():
     print("      filling the hole instead changes %d answers outright" % mutated)
     r.append(check("  and weighting the covered cells out is what does that",
                    mutated > 0, True))
+
+    # -- the marks the SITE draws on the board ------------------------------
+    # A dot on every legal destination, a ring on a capture, a mark on a
+    # premove. A dot on an empty square is board plus ink, so it is neither a
+    # piece nor an empty square and one of them anywhere refused the whole
+    # frame, which is what left the board of issue #52 unreadable on a crop
+    # that was otherwise perfect. Unlike the arrow above, its colour belongs to
+    # the site and cannot be known here, so it is recognised by shape.
+    #
+    # Two answers are owed and they are not the same. A dot on bare board is a
+    # decoration and the square is empty. A dot on a piece is a piece with
+    # something drawn on it, and reading that as an empty square would put a
+    # piece that is still standing into the game record.
+    # Stated against the same board without the dots rather than against a
+    # number, so 6.png, which the bundled sheet already refuses eighteen pieces
+    # of, is held to what it reads clean and not to perfection.
+    DOTS = ((0.20, 0.16, True), (0.28, 0.16, True), (0.36, 0.20, True),
+            (0.28, 0.22, False))
+    every_size = [(name, b) for name, b in boards + six] + \
+                 [(name, b.resize((400, 400), Image.LANCZOS))
+                  for name, b in boards + six]
+    changed = 0
+    for name, b in every_size:
+        clean, _ = reader.classify(b)
+        for frac, alpha, dark in DOTS:
+            rows, _ = reader.classify(
+                with_hints(b, squares_of(name, False), frac, alpha, dark))
+            changed += sum(1 for row in range(8) for col in range(8)
+                           if rows[row][col] != clean[row][col])
+    print("      a move hint on every empty square changes %d answers"
+          % changed)
+    r.append(check("a move-hint dot on an empty square is read through",
+                   changed, 0))
+
+    on_pieces = [(name, with_hints(b, squares_of(name, True), frac, alpha, dark))
+                 for name, b in every_size for frac, alpha, dark in DOTS]
+    got = tally(reader, on_pieces)
+    gone = vanished(reader, on_pieces)
+    print("      and one on every piece: %d correct, %d wrong, %d unclear, "
+          "%d pieces read as empty" % (got + (gone,)))
+    r.append(check("  a dot drawn on a piece never deletes it", (got[1], gone),
+                   (0, 0)))
+
+    # The safety argument, stated as the gap it rests on rather than as the
+    # answers above. MARK_SPAN is a bar between two measured distributions and
+    # has to stay in the gap between them: what a real dot reaches on one side,
+    # what the smallest piece these fixtures hold reaches on the other. A
+    # widened bar fails here before it deletes a piece anywhere else.
+    def reaches(feat):
+        mid = sorted(feat.cells)[len(feat.cells) // 2]
+        bar = P.MARK_INK_F * feat.span
+        ink = [i for i, v in enumerate(feat.cells) if abs(v - mid) > bar]
+        if not ink:
+            return 0.0
+        at = [(P._IDX[i] if P._IDX else i) for i in ink]
+        rows = [i // P.RES for i in at]
+        cols = [i % P.RES for i in at]
+        return max(max(rows) - min(rows), max(cols) - min(cols)) + 1.0
+
+    widest_mark, narrowest_piece, looked_like = 0.0, float(P.RES), 0
+    for name, img in ([(n, with_hints(b, squares_of(n, False), frac, alpha, dark))
+                       for n, b in every_size for frac, alpha, dark in DOTS]
+                      + every_size + shrunk(boards) + smeared(boards + six)):
+        levels = P._levels(img)
+        for i, feat in enumerate(P._board_features(img, levels)):
+            row, col = divmod(i, 8)
+            if TRUTH[name][row][col] == ".":
+                widest_mark = max(widest_mark, reaches(feat))
+            else:
+                narrowest_piece = min(narrowest_piece, reaches(feat))
+                looked_like += feat.marked
+    print("      a mark reaches %.3f of the square's grid, the smallest piece "
+          "%.3f" % (widest_mark / P.RES, narrowest_piece / P.RES))
+    r.append(check("  and MARK_SPAN is a bar in the gap between the two",
+                   (widest_mark / P.RES <= P.MARK_SPAN < narrowest_piece / P.RES,
+                    looked_like), (True, 0)))
 
     # -- unclear rather than wrong ----------------------------------------
     name, b = boards[0]

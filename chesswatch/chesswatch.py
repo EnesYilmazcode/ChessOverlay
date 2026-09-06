@@ -163,6 +163,54 @@ def find_board_on_screen():
     return left + x, top + y, size, size
 
 
+# How far outside a hand-picked rectangle to look for the board, in pixels.
+# Wide enough for a drag that undershot a corner and narrow enough that it
+# cannot reach the next thing on the page: it is under half a square on any
+# board find_board will look at, which starts at 120 wide.
+SNAP_SLOP = 24
+
+
+def snap_region(region, grabber=None, bounds=None):
+    """The board actually inside a hand-picked rectangle, as a screen region.
+
+    A drag is never pixel exact and must not be trusted as one. Every square is
+    cut as a fraction of the region, so a region a few pixels off cuts every
+    square off centre and drags a strip of its neighbour in with it. Measured
+    on the board of issue #52, with the sheet its owner taught: the board read
+    exactly leaves one square unreadable, the 540 box he had saved for it
+    leaves six, and check() refuses the frame on one.
+
+    The rectangle is handed back untouched when no board is found in it.
+    Picking by hand is what exists for a board find_board cannot see, and that
+    has to keep working.
+
+    grabber and bounds are for the tests, which have no screen.
+    """
+    if not region:
+        return region
+    grabber = grabber or grab
+    try:
+        bounds = bounds or virtual_screen()
+    except Exception:
+        return region
+    left, top, width, height = region
+    sl, st, sw, sh = bounds
+    x0, y0 = max(sl, left - SNAP_SLOP), max(st, top - SNAP_SLOP)
+    x1 = min(sl + sw, left + width + SNAP_SLOP)
+    y1 = min(st + sh, top + height + SNAP_SLOP)
+    if x1 - x0 < 120 or y1 - y0 < 120:
+        return region
+    try:
+        shot = grabber((x0, y0, x1 - x0, y1 - y0))
+    except Exception:
+        return region
+    found = W.find_board(shot)
+    if not found:
+        return region
+    x, y, size = found
+    return x0 + x, y0 + y, size, size
+
+
 def dark_titlebar(win):
     if sys.platform != "win32":
         return
@@ -816,6 +864,16 @@ class App:
         self._stop() if self.worker else self._start()
 
     def _start(self):
+        # A region saved by an older build was written down exactly as it was
+        # dragged, and a stale one that is a few pixels off goes on reading
+        # every square off centre for as long as it stays saved: the worker
+        # only ever re-hunts a manual region once it stops holding a board at
+        # all, which one four pixels short of the board still does. So it is
+        # snapped on the way in and the corrected one written back.
+        snapped = snap_region(self.board_region)
+        if snapped != self.board_region:
+            self.board_region = snapped
+            self._save_config()
         self.worker = Worker(self.board_region, self.q)
         self.worker.tracker.set_colour(self.colour_choice.get())
         # Every worker builds a fresh reader on the bundled sheet, so pieces
@@ -851,7 +909,10 @@ class App:
         picked = RegionPicker(self.root, "Drag a box around the BOARD, corner to corner").result
         if not picked:
             return
-        self.board_region = picked
+        # Snapped here and not inside the picker, which is still showing its
+        # own dimmed window over the desktop while it runs: a screenshot taken
+        # then is a picture of the dim.
+        self.board_region = snap_region(picked)
         self._save_config()
         if self.worker:
             self._stop()

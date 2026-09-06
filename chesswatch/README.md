@@ -442,12 +442,18 @@ position it is reading, which should match your screen exactly.
   facing. A **Side** row appears under that line for as long as it is true, and
   picking white or black there removes the wait. So does **Setup > Side**.
 - Use **Setup > Board > Pick** to drag a box around the board corner to corner.
-  That choice is remembered in `config.json`.
+  That choice is remembered in `config.json`. A drag is never pixel exact, so
+  the box is snapped onto whatever board is found inside it before it is saved,
+  and a region already in `config.json` is snapped again every time watching
+  starts.
 
 Detection is tuned for chess.com's default green board. A different board theme
 needs `LIGHT_SQUARE` and `DARK_SQUARE` in `watcher.py` changed to match, or use
-**Setup > Board > Pick** and drag a box around it, which skips detection
-entirely and is remembered in `config.json`. Reading the squares does not care
+**Setup > Board > Pick** and drag a box around it, which is remembered in
+`config.json`. Detection is still run inside the box you dragged, to square the
+box up on a board it can see, and the box is kept exactly as dragged when it
+cannot see one, which is the case picking by hand exists for. Reading the
+squares does not care
 about the theme, only finding the board does, so a board of your own colours
 works as soon as you have pointed at it once. The arrow follows whatever
 rectangle is in use.
