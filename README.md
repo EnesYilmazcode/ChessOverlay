@@ -28,7 +28,9 @@ Nothing signs in, nothing touches an account, and nothing leaves the machine.
           a click-through arrow      drawn on the board itself
 ```
 
-![the arrow over a board](docs/arrow.png)
+![the arrow over a middlegame board](docs/arrow.png)
+
+That is a real position twenty-two plies in, not an opening: the arrow is worth looking at when the board is busy enough that the move is not obvious. Regenerate it with `python mkshot.py` from `chesswatch/`.
 
 It works off pixels alone, so it does not care which site, app or board theme is
 showing the game. If the board is not chess.com green, drag a box around it once
@@ -39,6 +41,7 @@ with **pick board manually** and everything else carries on as normal.
 | Folder | What it is | State |
 | --- | --- | --- |
 | [`chesswatch/`](chesswatch/) | Screen recorder. Finds the board, reads it, saves PGN + JSON. | Finished. 78 headless checks plus two on-screen tests. |
+| [`chesswatch/position.py`](chesswatch/position.py) | Picks all 64 squares as one legal position instead of one at a time. | Works. 29 checks. Nothing calls it yet. |
 | [`chesswatch/coach.py`](chesswatch/coach.py) | Stockfish on the position being watched, in plain words. | Works. 18 checks. Off by default. |
 | [`chesswatch/overlay.py`](chesswatch/overlay.py) | That move drawn on the real board, click-through. | Works. 16 checks, measured on screen. |
 | [`holochess/`](holochess/) | Local board, Stockfish 18, best move as a hologram arrow. | Works. 17 checks. |
@@ -106,13 +109,18 @@ position matches no legal move, so the frame is ignored and the recorder waits,
 which is what it already does for a piece in mid animation. It cannot write down
 a move that did not happen.
 
-`overlaytest.py` measures that rather than claiming it. It covers the desktop,
-paints a real board, puts the real overlay over it, captures the screen through
-mss and reads it back: sixteen arrows across the crowded ranks and onto pieces,
-at 664px and again at 240px, every one confirmed to be on screen, none of them
-changing a single square. Then it plays a whole game with an arrow up for every
-frame. The check that the arrow is genuinely visible is the load-bearing one,
-because without it an overlay that drew nothing would pass everything else.
+`overlaytest.py` measures that rather than claiming it: sixteen arrows across
+the crowded ranks and onto pieces, at 664px and again at 240px, every one
+confirmed to be on the board, none of them changing a single square, and every
+pixel any of them touched confirmed to have landed between the two cutoffs.
+Then it plays a whole game with an arrow up for every frame. The check that the
+arrow is really there is the load-bearing one, because without it an overlay
+that drew nothing would pass everything else.
+
+By default the arrow is modelled in PIL, which settles the colour and the
+geometry and costs no screen space. `--on-screen` puts the real overlay window
+over a real board and captures it through mss, which is the only run that
+touches the transparency key, the stacking order and click-through.
 
 ## Run the engine half
 
@@ -179,17 +187,23 @@ happens to allow.
 cd chesswatch
 python selftest.py      78 headless checks, including real screenshots
 python coachtest.py     18 checks on the engine wrapper and its label
-python overlaytest.py   16 checks that the arrow cannot corrupt a reading
+python overlaytest.py   17 checks that the arrow cannot corrupt a reading
 python settletest.py    move animation, driven off a real clock
-python livetest.py      paints whole games on your desktop and records them
+python livetest.py      plays whole games past the real capture worker
 
 cd holochess
 python smoke_test.py    engine, moves, hints, undo, flip
 python shot.py          proves the arrow cannot escape the window
 ```
 
-`livetest.py`, `overlaytest.py` and `shot.py` take over the screen while they
-run.
+None of the chesswatch tests put anything on screen or screenshot your desktop.
+They render the board into memory and point the capture at that. `coachtest.py`
+does build a real Tk app, because the label it checks lives in one, but its
+window stays withdrawn and its capture is pointed at a blank image. Add
+`--on-screen` to `livetest.py` or `overlaytest.py` to run it against the real
+desktop instead, in a window the size of the board plus a margin, which is the
+only way to exercise mss, DPI scaling, coordinates on a second monitor and
+click-through. `shot.py` still takes over the screen.
 
 The screenshots the tests read are in `chesswatch/testdata/`. They are real
 chess.com windows with everything outside the board blacked out, so no account

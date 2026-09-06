@@ -21,6 +21,7 @@ import tempfile
 import time
 
 import chess
+from PIL import Image
 
 import watcher as W
 import chesswatch as C
@@ -59,7 +60,11 @@ def worker_for(render, setup, tmp):
 
 
 def main():
-    render = Renderer(REF, (225, 63, 824))
+    print("mode: headless, no window. The screen here is a script on a clock,"
+          " so nothing")
+    print("      this proves says anything about mss, DPI, or a window sitting"
+          " over the board.\n")
+    render = Renderer(REF, W.find_board(Image.open(REF)))   # measured, not typed
     ok = True
     real_grab = C.grab
 

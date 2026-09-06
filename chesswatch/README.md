@@ -59,6 +59,13 @@ Tick **arrow on board** as well and the suggestion is drawn on the board itself,
 on top of whatever program is showing it. The window is click-through, so it
 sits over the board without getting between you and it.
 
+The arrow is a function of the position on screen, not of the last thing the
+engine said. Play a move and it comes down at once rather than sitting on the
+new position until a reply arrives, drag the window and it follows, lose the
+board and it goes. **clear arrows** takes it away now and keeps the reply the
+engine is already working on from putting it straight back, which lasts until
+your next move and then stops on its own.
+
 ![the arrow over a board](../docs/arrow.png)
 
 The awkward part is that the recorder is reading the same pixels the arrow is
@@ -76,15 +83,22 @@ occupied square read empty. That position matches no legal move, so the frame
 is ignored and the recorder waits, exactly as it does for a piece in mid
 animation. It cannot write down a move that did not happen.
 
-`overlaytest.py` measures this rather than asserting it. It covers the desktop,
-paints a real board, puts the real overlay over it, captures the screen through
-mss and reads it back. Sixteen arrows across the crowded ranks, arrows landing
-on pieces, at 664px and again at 240px: every one of them is confirmed to be on
-screen, and not one of them changed a single square. Then it plays a whole game
-with an arrow up for every frame and checks the moves came out right.
+`overlaytest.py` measures this rather than asserting it. Sixteen arrows across
+the crowded ranks, arrows landing on pieces, at 664px and again at 240px: every
+one of them is confirmed to be on the board, not one of them changed a single
+square, and every pixel any of them touched is confirmed to have landed between
+the two cutoffs. Then it plays a whole game with an arrow up for every frame and
+checks the moves came out right.
 
-The check that the arrow is really visible is the important one. Without it an
+The check that the arrow is really there is the important one. Without it an
 overlay that drew nothing at all would pass every other check in the file.
+
+By default the arrow is modelled in PIL: the same path from `overlay.py`, the
+same colour, the same width, composited the way a layered window at `ALPHA`
+composites. That settles the colour and the geometry and costs no screen space.
+`--on-screen` puts the real overlay window over a real board and captures it
+through mss, which is the only run that touches the transparency key, the
+stacking order and click-through.
 
 ## How it works
 
@@ -171,6 +185,28 @@ Colour is settled first, so each match is a 1-of-6 choice.
 The templates ship in `pieces.png`, and are relearned from your own screen every
 time a game starts from the opening position, where what sits on every square is
 already known. The status line says which set is in use.
+
+Relearning needs all twelve piece types on the board at once, which in practice
+means a game you watched from the first move. A game joined part way through on
+a piece set the bundled sheet has never seen has no way to get there, and reads
+almost nothing. **teach the pieces** is the way out: it shows the board cut into
+its 64 squares with what the reader currently believes about each one, and you
+click a square and say what is on it. Twelve labels is the whole job, and it
+starts from the reader's own answer, so on a set it already half reads you only
+correct what is wrong. What it writes is a template sheet, kept in `taught.png`
+and loaded again next time you start.
+
+It keeps one square of each colour per piece where it can, and clicking a second
+square of the other colour is what buys the better read. Board colour is not
+thrown away by the mask, so a rook cut from a light square is being compared
+against a dark square rook on the square colour as much as on the shape: teach
+the pieces of 6.png from single squares and its h8 rook scores 0.518 as a pawn
+against 0.413 as a rook and is read as a pawn. With both colours the same rook
+scores 0.749 and every one of the 64 squares that is read at all is read right.
+
+It runs on its own too, against a screenshot rather than the screen:
+
+    python enroll.py board.png
 
 The checker does four things:
 
@@ -293,20 +329,43 @@ rectangle is in use.
 
 ## Checking it still works
 
-    python selftest.py      78 checks, including real screenshots
+    python selftest.py     103 checks, including real screenshots
+    python piecetest.py     49 checks on the piece reader under a bad capture
+    python positiontest.py  29 checks on the whole board solver, no pixels
+    python enrolltest.py   119 checks on teaching the pieces and on the arrow
     python coachtest.py     18 checks on the engine wrapper and its label
-    python overlaytest.py   16 checks that the arrow cannot corrupt a reading
+    python overlaytest.py   17 checks that the arrow cannot corrupt a reading
     python settletest.py    move animation, with the screen on a clock
-    python livetest.py      full loop against the real screen
+    python banktest.py      33 checks on choosing a piece set
+    python livetest.py      full loop through the real capture worker
 
-`livetest.py` cuts real chess.com piece sprites out of a screenshot, paints
-whole games onto your actual desktop, and runs the real capture worker against
-them. It plays an 18 move game with castling on both sides, a knight sacrifice
-and a queen trade, then a second game from black's side ending in checkmate, and
-checks every move, both colours, the result, and the files on disk. The
-second game is deliberately a small board on the second monitor, and a third
-run skips three moves with no frames in between to make the checker recover
-them.
+None of these put anything on screen or screenshot your desktop. `livetest.py`
+and `overlaytest.py` render the board into a desktop sized image and point the
+worker's capture at that; `coachtest.py` builds a real Tk app, since the label
+it checks lives in one, but keeps its window withdrawn and its capture pointed
+at a blank image. `--on-screen` paints on the real desktop instead, in a window
+the size of the board plus a margin rather than the whole desktop, and every run
+says which mode it was and what that mode cannot prove.
+
+Redirecting the capture means the real `grab()` stops being exercised, so both
+files check separately that it still decodes mss's BGRA bytes in the right
+order, against a stubbed mss and no screen.
+
+`livetest.py` cuts real chess.com piece sprites out of a screenshot, plays whole
+games across them, and runs the real capture worker against the result: it hunts
+for the board itself, grabs it, classifies the squares, infers the moves and
+writes the files. It plays an 18 move game with castling on both sides, a knight
+sacrifice and a queen trade, then a second game from black's side ending in
+checkmate, and checks every move, both colours, the result, and the files on
+disk. The second game is deliberately a small board on the second monitor, and a
+third run skips three moves with no frames in between and checks they come back
+in the only legal order.
+
+`enrolltest.py` opens no window at all. The arrow rule and the enrollment
+bookkeeping are written as plain functions so they can be checked without one,
+and the case where the board disappears drives the real capture worker against
+a rendered desktop, because that one is worker behaviour and no rule on its own
+can prove the worker reports it.
 
 `settletest.py` replaces the screen with a clock-driven script, so the
 animation has a real duration rather than a frame count. It covers pawn pushes,
@@ -315,13 +374,41 @@ replying while your own move is still moving, at animation speeds from 200ms to
 900ms.
 
 `fakeboard.py` is the renderer those tests use. It cuts its piece sprites out
-of a real screenshot, and checks itself before the tests trust it.
+of a real screenshot, and checks itself before the tests trust it. Give it the
+position that screenshot shows and it will cut from any of them, which is how
+`banktest.py` renders the same endgame in two different piece sets without a
+single extra file in the repository.
 
 The screenshots the tests read live in `testdata\`. They are real chess.com
 windows with everything outside the board blacked out, so they carry no account
 name. To run the same checks against your own board theme, point
-`CHESSWATCH_TESTDATA` at a folder holding your own `1.png`, `2.png`, `4.png`
-and `5.png`, or pass paths to `selftest.py` on the command line.
+`CHESSWATCH_TESTDATA` at a folder holding your own `1.png`, `2.png`, `4.png`,
+`5.png` and `6.png`, or pass paths to `selftest.py` on the command line. The
+first four are board themes; `6.png` is a board in a second piece set, and
+`banktest.py` is the only thing that reads it.
+
+## A piece set that is not chess.com's
+
+The reader relearns the pieces from your own screen the moment it sees a
+starting position, so a game watched from move one is exact whatever set you
+play with. A game joined part way through never sees one, and there is nothing
+in the position to relearn from.
+
+`piecebank.py` is the answer to that case. `piecesets\` holds a sheet per piece
+set, and given a board it scores each of them and says which set the board is
+drawn in, needing no particular position to do it. Two pieces on an otherwise
+empty board are enough.
+
+The bank ships two sets, which are the two this project has its own pixels for.
+If you play with a third, enroll it once from a screenshot of a starting
+position:
+
+    python piecebank.py my-screenshot.png my-set
+
+It writes `piecesets\my-set.png` and that set is in the bank from then on. Run
+`python piecebank.py` with no arguments to see what is in there. Nobody else's
+piece art is bundled here and none should be added: the sets are yours to add
+from your own screen.
 
 ## Needs
 

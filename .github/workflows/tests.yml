@@ -1,0 +1,102 @@
+# Runs the test suite on GitHub's machines instead of on a developer's desktop.
+#
+# That distinction matters more here than in most projects. The suites used to
+# paint a fullscreen always-on-top window across every monitor for the length of
+# a run, so checking a change meant surrendering your screen, and in practice
+# that meant the suites were run rarely and by one person. Nobody's screen is
+# involved here.
+#
+# No xvfb. Nothing in the suite should need a display now, and handing it one
+# anyway would let a test that quietly grows a display dependency keep passing
+# in CI rather than failing where someone can see it. If a suite starts failing
+# here for want of an X server, that is the finding, not the problem.
+#
+# Every suite is its own step with `if: always()`, because the first version of
+# this file ran two suites in one step and the earlier failure meant the later
+# suite never executed at all. The run reported a red mark for a suite that had
+# not been run. One step per suite, so a red mark always names what actually
+# broke.
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suite:
+    name: python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # pieces.py uses int.bit_count, so 3.10 is the real floor. It is in the
+        # matrix so that floor is measured rather than asserted; 3.13 is what
+        # the app is developed against.
+        python: ["3.10", "3.13"]
+    defaults:
+      run:
+        working-directory: chesswatch
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      # requirements.txt is unpinned, so a green run here is evidence about
+      # today's mss, pillow and chess rather than about a fixed set of them.
+      - run: pip install -r requirements.txt
+      - name: selftest
+        if: always()
+        run: python -X utf8 selftest.py
+      - name: piecetest
+        if: always()
+        run: python -X utf8 piecetest.py
+      - name: settletest
+        if: always()
+        run: python -X utf8 settletest.py
+      - name: banktest
+        if: always()
+        run: python -X utf8 banktest.py
+      - name: positiontest
+        if: always()
+        run: python -X utf8 positiontest.py
+      - name: enrolltest
+        if: always()
+        run: python -X utf8 enrolltest.py
+      - name: overlaytest
+        if: always()
+        run: python -X utf8 overlaytest.py
+      - name: livetest
+        if: always()
+        run: python -X utf8 livetest.py
+      - name: coachtest
+        if: always()
+        run: python -X utf8 coachtest.py
+
+  # The flag the coach starts Stockfish with, and the window it suppresses, only
+  # exist on Windows, so on the job above coachtest can only check that nothing
+  # Windows-only is asked for. This runs the half that is about the bug. Only
+  # coachtest is here: the other suites have never been looked at on a Windows
+  # runner, and a job that goes red for an unrelated reason is worse than one
+  # that does not run.
+  windows:
+    name: windows, coachtest only
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: chesswatch
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - run: python -X utf8 coachtest.py

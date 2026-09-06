@@ -462,7 +462,7 @@ def main():
         return t
 
     def mover(board, lit, flipped=False, highlight=HL):
-        img = render.render(board, flipped, lit, highlight)
+        img = render.render(board, flipped, lit=lit, highlight=highlight)
         return lit_tracker(board, flipped).last_mover(W.read_occupancy(img), img)
 
     bh = chess.Board()
@@ -500,7 +500,7 @@ def main():
                    mover(bh, (chess.E4,)), None))
 
     agree = lit_tracker(bh)
-    seen = render.render(bh, False, (chess.E2, chess.E4), HL)
+    seen = render.render(bh, lit=(chess.E2, chess.E4), highlight=HL)
     r.append(check("no dispute while the turn agrees with the screen",
                    agree.turn_disputed(W.read_occupancy(seen), seen), False))
     adrift = lit_tracker(bh)
@@ -511,7 +511,7 @@ def main():
     # The colour is sampled off your own board rather than trusted, so that a
     # repaint can only ever switch the signal off, never make it lie.
     OTHER = ((247, 202, 100), (188, 148, 55))
-    other = render.render(bh, False, (chess.E2, chess.E4), OTHER)
+    other = render.render(bh, lit=(chess.E2, chess.E4), highlight=OTHER)
     r.append(check("a highlight colour we never hardcoded reads as nothing",
                    W.highlight_squares(other), []))
     learn = lit_tracker(chess.Board())
