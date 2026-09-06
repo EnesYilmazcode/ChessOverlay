@@ -418,8 +418,8 @@ rectangle is in use.
     python positiontest.py  29 checks on the whole board solver, no pixels
     python enrolltest.py   176 checks on teaching the pieces and on the arrow
     python layouttest.py    73 checks on what the window shows and how wide
-    python coachtest.py     52 checks on the engine wrapper and its label,
-                            44 without a display and 31 without Stockfish
+    python coachtest.py     53 checks on the engine wrapper and its label,
+                            43 without a display and 31 without Stockfish
     python overlaytest.py   21 checks that the arrows cannot corrupt a reading
     python settletest.py    move animation, with the screen on a clock
     python banktest.py      33 checks on choosing a piece set

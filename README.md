@@ -206,7 +206,7 @@ happens to allow.
 ```
 cd chesswatch
 python selftest.py     116 headless checks, including real screenshots
-python coachtest.py     52 checks on the engine wrapper and its label
+python coachtest.py     53 checks on the engine wrapper and its label
 python overlaytest.py   21 checks that the arrows cannot corrupt a reading
 python settletest.py    move animation, driven off a real clock
 python livetest.py      plays whole games past the real capture worker
