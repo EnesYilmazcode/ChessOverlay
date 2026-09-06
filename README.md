@@ -2,11 +2,11 @@
 
 Two halves of one idea, for anyone building chess teaching tools. `chesswatch`
 watches a chess board on your screen, reads it, and writes the game to disk.
-Tick **best move** and it runs Stockfish on the position it is reading and says,
-in words, what to play. Tick **arrow on board** and it draws that move on the
-board itself, over whatever program is showing it, in one colour for your move
-and another for your opponent's. `holochess` is a full board you play against
-the engine, with the same arrow inside its own window.
+Open **Setup** and tick **Coach**, and it runs Stockfish on the position it is
+reading and says, in words, what to play. Tick **Arrow** and it draws that move
+on the board itself, over whatever program is showing it, in one colour for
+your move and another for your opponent's. `holochess` is a full board you play
+against the engine, with the same arrow inside its own window.
 
 Nothing signs in, nothing touches an account, and nothing leaves the machine.
 
@@ -35,7 +35,7 @@ That is a real position twenty-two plies in, not an opening: the arrow is worth 
 
 It works off pixels alone, so it does not care which site, app or board theme is
 showing the game. If the board is not chess.com green, drag a box around it once
-with **pick board manually** and everything else carries on as normal.
+with **Setup > Board > Pick** and everything else carries on as normal.
 
 ## What is in here
 
@@ -71,11 +71,12 @@ Games land in `chesswatch/games/` as a matched pair:
 
 ## Ask it what to play
 
-Tick **best move**. Stockfish is started the first time you do, not before, and
-the label under the board reads something like:
+Tick **Coach**, under **Setup**. Stockfish is started the first time you do, not
+before, and the line above the moves reads something like:
 
 ```
-your move  Nf3  (knight: g1 to f3)  +0.4
+your move  Nf3
+knight: g1 to f3   +0.4
 ```
 
 It names the piece and both squares rather than only the notation, says what a
@@ -84,18 +85,19 @@ That is aimed at a player who has not learned to read `Nxe5+` yet.
 
 The engine runs on its own thread and is read while it is still thinking, so
 the reader never waits for it and neither do you: a first answer is on the
-label in about a hundredth of a second and improves from there. One that is not
-the last word yet ends in `...`. An answer to a position that has already been
-played past is thrown away rather than shown against the wrong board.
+window in about a hundredth of a second and improves from there. One that is
+not the last word yet ends the small print under the move in `...`. An answer to
+a position that has already been played past is thrown away rather than shown
+against the wrong board.
 
-**think** sets how long the engine gets on one position: 0.3, 1 or 2.5 seconds.
-Because the first answer arrives at once either way, a longer think does not
-make you wait, it only searches deeper on a board you are still sitting in
-front of. It is bounded rather than open ended on purpose, since a search left
+**Setup > Think** sets how long the engine gets on one position: 0.3, 1 or 2.5
+seconds. Because the first answer arrives at once either way, a longer think
+does not make you wait, it only searches deeper on a board you are still
+sitting in front of. It is bounded rather than open ended on purpose, since a search left
 running while you decide on a move would hold a whole core for as long as you
 took. Both switches and the think time are remembered in `config.json`.
 
-Tick **arrow on board** as well and the move is drawn on the board itself, over
+Tick **Arrow** as well and the move is drawn on the board itself, over
 whatever program is showing it. The window is click-through, so it does not get
 between you and the game. There is an arrow for every position, not only for
 your own turn, because the engine's answer to your opponent's position is what
@@ -203,8 +205,8 @@ happens to allow.
 
 ```
 cd chesswatch
-python selftest.py      87 headless checks, including real screenshots
-python coachtest.py     52 checks on the engine wrapper and its label
+python selftest.py     116 headless checks, including real screenshots
+python coachtest.py     53 checks on the engine wrapper and its label
 python overlaytest.py   21 checks that the arrows cannot corrupt a reading
 python settletest.py    move animation, driven off a real clock
 python livetest.py      plays whole games past the real capture worker

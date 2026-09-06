@@ -87,6 +87,9 @@ jobs:
       - name: enrolltest
         if: always()
         run: python -X utf8 enrolltest.py
+      - name: layouttest
+        if: always()
+        run: python -X utf8 layouttest.py
       - name: overlaytest
         if: always()
         run: python -X utf8 overlaytest.py

@@ -387,20 +387,25 @@ def label_checks(path):
           app.lbl_coach.cget("text").startswith("your move  Ra8#"), True)
 
     # An answer the engine has not finished with is marked, so a move that is
-    # about to be replaced does not read as the verdict.
+    # about to be replaced does not read as the verdict. The mark is on the
+    # small print rather than on the move itself: the move line is sized to
+    # hold the longest SAN there is in a 400px window at 150% scaling, and
+    # what an unfinished answer hedges is the score, which is already there.
     def advice(final):
         app.coach.out.put(("advice", {
             "fen": MATE, "over": False, "final": final, "depth": 14,
             "turn": "white", "san": "Ra8#", "uci": "a1a8",
             "text": "rook: a1 to a8, with check", "score": "mate in 1"}))
         app._drain_coach()
-        return app.lbl_coach.cget("text")
+        return app.lbl_detail.cget("text")
 
     app.coach_fen = MATE
     check("an answer still being worked on is marked as such",
-          advice(False).endswith("  ..."), True)
+          advice(False).endswith("   ..."), True)
     check("and the mark goes when it is the last word",
           advice(True).endswith("mate in 1"), True)
+    check("and the move itself reads the same either way",
+          app.lbl_coach.cget("text"), "your move  Ra8#")
 
     # The same position with black to play is the opponent's move, and the
     # advice for the position just left behind must not be shown against it.

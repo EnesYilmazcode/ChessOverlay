@@ -81,6 +81,11 @@ SETTLE_LIMIT = 4.0
 # knight moves and captures that make up most of a game.
 SETTLE_HOLD_RISKY = 1.10
 
+# How long the note line keeps something it has nothing else to say. A
+# complaint from the piece checker pushes this forward for as long as it is
+# still true; a receipt for something you clicked gets this much and no more.
+NOTE_SECONDS = 6.0
+
 BG = "#262421"
 PANEL = "#302e2b"
 FG = "#e8e6e3"
@@ -458,6 +463,54 @@ class Worker(threading.Thread):
         return self.lost
 
 
+# ------------------------------------------------------------------ layout
+
+# The window is a stack of stripes, and this is the order they are PACKED in,
+# which is not quite the order they appear in. Which of them are up is
+# showing()'s decision, taken on plain values so it can be checked without
+# opening a window. An empty label still costs a line of height, so a stripe
+# with nothing to say is not packed at all rather than packed blank.
+#
+# Order matters because pack leaves undrawn whatever it reached last and had
+# no room for. "foot" and "position" are packed from the bottom before the
+# move list is packed at all, so a window too short for everything takes it
+# out of the move list, which shrinks visibly, rather than out of the footer,
+# which would just be missing. The footer is the only way into the games
+# folder now, so it is not allowed to be the one that goes.
+#
+# "clear" and "advice" are the two halves of the hero row rather than stripes
+# of their own, and they are here for the same reason: the order that row is
+# packed in decides which of the two survives a 400px window.
+STRIPES = ("top", "setup", "hero", "clear", "advice", "detail", "note",
+           "result", "foot", "position", "moves")
+
+
+def showing(state):
+    """The parts of the window that are up, top to bottom.
+
+    state is plain values, never widgets: what the coach said, what the note
+    line holds, whether the drawer is open. Everything optional in here is
+    optional because it is empty for most of a game.
+    """
+    up = {"top", "moves", "foot"}
+    if state.get("setup"):
+        up.add("setup")
+    if state.get("advice"):
+        up |= {"hero", "advice"}
+        # Nothing to clear until an arrow is actually on the board.
+        if state.get("arrow"):
+            up.add("clear")
+        if state.get("detail"):
+            up.add("detail")
+    if state.get("note"):
+        up.add("note")
+    if state.get("result"):
+        up.add("result")
+    if state.get("position"):
+        up.add("position")
+    return tuple(name for name in STRIPES if name in up)
+
+
 # ------------------------------------------------------------------ app
 
 class App:
@@ -476,15 +529,21 @@ class App:
         self.arrow_fen = None        # the position it named it for
         self.arrow_mine = True       # and whose move it was, which is the colour
         self.arrow_cleared = None    # a position whose arrow was cleared by hand
+        self.arrow_drawn = False     # whether one is on the board right now
         self.teacher = None          # the teach-the-pieces window, if it is open
         self.taught_sheet = self.cfg.get("sheet")   # pieces taught by hand
         self.region = None
         self.flipped = False
+        self.setup_open = False      # the drawer, shut until you ask for it
+        self.note_until = 0.0        # when the note line goes blank again
+        self._shown = ()             # the stripes packed right now
 
         root.title("ChessWatch")
         root.configure(bg=BG)
-        root.geometry("430x690")
-        root.minsize(400, 560)
+        root.geometry("420x620")
+        # Shorter than it was. With the drawer shut there are two rows of
+        # chrome above the moves rather than five.
+        root.minsize(400, 420)
 
         self._build()
         dark_titlebar(root)
@@ -497,100 +556,115 @@ class App:
         self._start()
 
     def _build(self):
-        head = tk.Frame(self.root, bg=BG)
-        head.pack(fill="x", padx=12, pady=(12, 8))
-        self.btn = tk.Button(head, text="Stop watching", command=self._toggle,
+        """Build every stripe once. _relayout decides which of them are up."""
+        pack = {}          # stripe -> the pack() it is put back with
+
+        top = tk.Frame(self.root, bg=BG)
+        pack["top"] = (top, dict(fill="x", padx=12, pady=(12, 8)))
+        self.btn = tk.Button(top, text="Stop", command=self._toggle,
                              bg="#b33a3a", fg="white", relief="flat",
-                             font=("Segoe UI", 11, "bold"), padx=14, pady=7,
+                             font=("Segoe UI", 10, "bold"), padx=12, pady=6,
                              activebackground="#8f2f2f", cursor="hand2")
         self.btn.pack(side="left")
-        self.lbl_status = tk.Label(head, text="starting", bg=BG, fg=MUTED,
-                                   font=("Segoe UI", 9), justify="left")
-        self.lbl_status.pack(side="left", padx=10)
+        # Packed before the status label although it sits to the right of it.
+        # Tk does not clip a widget a row has no room for, it leaves it
+        # undrawn, and what pack reaches last is what goes. Putting the button
+        # first means a long status loses its own tail instead.
+        self.btn_setup = tk.Button(top, text="Setup", command=self._toggle_setup,
+                                   relief="flat", bg="#3d3a37", fg=FG,
+                                   cursor="hand2", font=("Segoe UI", 9),
+                                   padx=8, pady=4)
+        self.btn_setup.pack(side="right")
+        self.lbl_status = tk.Label(top, text="starting", bg=BG, fg=MUTED,
+                                   font=("Segoe UI", 9), anchor="w")
+        self.lbl_status.pack(side="left", padx=8, fill="x", expand=True)
 
-        bar = tk.Frame(self.root, bg=BG)
-        bar.pack(fill="x", padx=12, pady=(0, 8))
-        self.lbl_board = tk.Label(bar, text="looking for the board", bg=BG,
-                                  fg=MUTED, font=("Segoe UI", 8), anchor="w")
-        self.lbl_board.pack(side="left", fill="x", expand=True)
-        tk.Button(bar, text="pick board manually", command=self._pick,
-                  relief="flat", bg="#3d3a37", fg=FG, cursor="hand2",
-                  font=("Segoe UI", 8)).pack(side="right")
+        # The drawer. Everything in it is set once and then never again, which
+        # is why it is not on screen while a game is being played.
+        setup = tk.Frame(self.root, bg=BG)
+        pack["setup"] = (setup, dict(fill="x", padx=12, pady=(0, 6)))
 
-        tools = tk.Frame(self.root, bg=BG)
-        tools.pack(fill="x", padx=12, pady=(0, 6))
-        tk.Button(tools, text="check the pieces now", command=self._check_now,
-                  relief="flat", bg="#3d3a37", fg=FG, cursor="hand2",
-                  font=("Segoe UI", 8)).pack(side="left")
-        tk.Label(tools, text="I play:", bg=BG, fg=MUTED,
-                 font=("Segoe UI", 8)).pack(side="left", padx=(10, 2))
-        for text, value in (("auto", "auto"), ("white", "white"),
-                            ("black", "black")):
-            tk.Radiobutton(tools, text=text, value=value,
+        side = self._drawer_row(setup, "Side")
+        for word in ("auto", "white", "black"):
+            tk.Radiobutton(side, text=word, value=word,
                            variable=self.colour_choice, command=self._set_colour,
                            bg=BG, fg=MUTED, selectcolor=BG, activebackground=BG,
                            activeforeground=FG, font=("Segoe UI", 8),
                            cursor="hand2").pack(side="left")
 
-        # Their own row: the tools row above is already full at this width, and
-        # a Checkbutton that does not fit is silently not drawn at all.
-        switches = tk.Frame(self.root, bg=BG)
-        switches.pack(fill="x", padx=12, pady=(0, 4))
-        tk.Label(switches, text="coaching:", bg=BG, fg=MUTED,
-                 font=("Segoe UI", 8)).pack(side="left", padx=(0, 4))
+        show = self._drawer_row(setup, "Show")
         self.coach_on = tk.BooleanVar(value=bool(self.cfg.get("coach", False)))
-        tk.Checkbutton(switches, text="best move", variable=self.coach_on,
-                       command=self._toggle_coach, bg=BG, fg=MUTED, selectcolor=BG,
-                       activebackground=BG, activeforeground=FG,
-                       font=("Segoe UI", 8), cursor="hand2").pack(side="left")
+        self._switch(show, "Coach", self.coach_on, self._toggle_coach)
         self.arrow_on = tk.BooleanVar(value=bool(self.cfg.get("arrow", False)))
-        tk.Checkbutton(switches, text="arrow on board", variable=self.arrow_on,
-                       command=self._toggle_arrow, bg=BG, fg=MUTED, selectcolor=BG,
-                       activebackground=BG, activeforeground=FG,
-                       font=("Segoe UI", 8), cursor="hand2").pack(side="left")
-        tk.Label(switches, text="think:", bg=BG, fg=MUTED,
-                 font=("Segoe UI", 8)).pack(side="left", padx=(10, 2))
+        self._switch(show, "Arrow", self.arrow_on, self._toggle_arrow)
+        # Off by default now. The board this is a copy of is already on screen
+        # beside the window, and eight lines of text repeating it was the
+        # biggest thing here that nobody had asked for. Remembered like the
+        # other two, or anyone who does want it re-ticks it every launch.
+        self.show_board = tk.BooleanVar(value=bool(self.cfg.get("position",
+                                                                False)))
+        self._switch(show, "Position", self.show_board, self._toggle_position)
+
+        # How long the engine gets. Three values on one line, the same shape
+        # as Side above, rather than a drop-down: a menu is two clicks and a
+        # block of styling to buy nothing back at three choices.
+        think = self._drawer_row(setup, "Think")
         self.think_choice = tk.StringVar(
             value="%gs" % CO.nearest_think(self.cfg.get("think_seconds")))
-        think = tk.OptionMenu(switches, self.think_choice,
-                              *["%gs" % s for s in CO.THINK_CHOICES],
-                              command=self._set_think)
-        think.configure(bg=BG, fg=MUTED, activebackground=BG, activeforeground=FG,
-                        highlightthickness=0, relief="flat", cursor="hand2",
-                        font=("Segoe UI", 8), indicatoron=0, padx=6, pady=0)
-        think["menu"].configure(bg=PANEL, fg=FG, font=("Segoe UI", 8))
-        think.pack(side="left")
+        for seconds in CO.THINK_CHOICES:
+            word = "%gs" % seconds
+            tk.Radiobutton(think, text=word, value=word,
+                           variable=self.think_choice, command=self._set_think,
+                           bg=BG, fg=MUTED, selectcolor=BG, activebackground=BG,
+                           activeforeground=FG, font=("Segoe UI", 8),
+                           cursor="hand2").pack(side="left")
 
-        # A row of their own, for the reason written above the switches. The
-        # tools row is full at 400px already, and Segoe UI grows with the
-        # display scaling while the 400px floor does not, so at 150% a widget
-        # added to a full row is the one silently not drawn. Both pack left, so
-        # neither of these is the one on the end that goes first.
-        extras = tk.Frame(self.root, bg=BG)
-        extras.pack(fill="x", padx=12, pady=(0, 4))
-        tk.Button(extras, text="clear arrows", command=self._clear_arrows,
-                  relief="flat", bg="#3d3a37", fg=FG, cursor="hand2",
-                  font=("Segoe UI", 8)).pack(side="left")
-        tk.Button(extras, text="teach the pieces", command=self._teach_pieces,
-                  relief="flat", bg="#3d3a37", fg=FG, cursor="hand2",
-                  font=("Segoe UI", 8)).pack(side="left", padx=(6, 0))
+        board = self._drawer_row(setup, "Board")
+        for word, command in (("Pick", self._pick),
+                              ("Pieces", self._teach_pieces),
+                              ("Recheck", self._check_now)):
+            tk.Button(board, text=word, command=command, relief="flat",
+                      bg="#3d3a37", fg=FG, cursor="hand2",
+                      font=("Segoe UI", 8)).pack(side="left", padx=(0, 6))
 
-        self.lbl_coach = tk.Label(self.root, text="", bg=BG, fg=ACCENT,
-                                  font=("Segoe UI", 10, "bold"), anchor="w")
-        self.lbl_coach.pack(fill="x", padx=12, pady=(2, 0))
+        # Where the board was found and which pieces are reading it. Both are
+        # diagnostics: they are worth something when the drawer is open
+        # because something looks wrong, and nothing the rest of the time.
+        self.lbl_board = tk.Label(setup, text="no board on screen", bg=BG,
+                                  fg=MUTED, font=("Segoe UI", 8), anchor="w")
+        self.lbl_board.pack(fill="x", pady=(5, 0))
+
+        # The move to play. It is the reason the program exists, so it is the
+        # one thing here allowed to be large.
+        hero = tk.Frame(self.root, bg=BG)
+        pack["hero"] = (hero, dict(fill="x", padx=12, pady=(4, 0)))
+        self.btn_clear = tk.Button(hero, text="clear", command=self._clear_arrows,
+                                   relief="flat", bg="#3d3a37", fg=MUTED,
+                                   cursor="hand2", font=("Segoe UI", 8), padx=4)
+        pack["clear"] = (self.btn_clear, dict(side="right", padx=(6, 0)))
+        self.lbl_coach = tk.Label(hero, text="", bg=BG, fg=ACCENT, anchor="w",
+                                  justify="left", font=("Segoe UI", 14, "bold"))
+        pack["advice"] = (self.lbl_coach, dict(side="left", fill="x",
+                                               expand=True))
+        self.lbl_coach.bind("<Configure>", self._wrap)
+
+        self.lbl_detail = tk.Label(self.root, text="", bg=BG, fg=MUTED,
+                                   font=("Segoe UI", 9), anchor="w")
+        pack["detail"] = (self.lbl_detail, dict(fill="x", padx=12))
 
         self.lbl_check = tk.Label(self.root, text="", bg=BG, fg=MUTED,
-                                  font=("Segoe UI", 8), anchor="w")
-        self.lbl_check.pack(fill="x", padx=12)
+                                  font=("Segoe UI", 9), anchor="w")
+        pack["note"] = (self.lbl_check, dict(fill="x", padx=12, pady=(4, 0)))
 
         self.lbl_result = tk.Label(self.root, text="", bg=BG, fg=ACCENT,
-                                   font=("Segoe UI", 11, "bold"))
-        self.lbl_result.pack(fill="x", padx=12)
+                                   font=("Segoe UI", 11, "bold"), anchor="w")
+        pack["result"] = (self.lbl_result, dict(fill="x", padx=12, pady=(4, 0)))
 
         self.moves_box = tk.Text(self.root, bg=PANEL, fg=FG, relief="flat",
                                  font=("Consolas", 12), state="disabled",
-                                 padx=12, pady=10, height=13)
-        self.moves_box.pack(fill="both", expand=True, padx=12, pady=(4, 6))
+                                 padx=12, pady=10, height=14, wrap="word")
+        pack["moves"] = (self.moves_box, dict(fill="both", expand=True,
+                                              padx=12, pady=6))
         self.moves_box.tag_configure("num", foreground=MUTED)
         self.moves_box.tag_configure("mine", foreground=ACCENT,
                                      font=("Consolas", 12, "bold"))
@@ -600,24 +674,85 @@ class App:
         self.moves_box.tag_configure("warn", foreground=WARN,
                                      font=("Consolas", 10))
 
-        self.show_board = tk.BooleanVar(value=True)
         self.board_box = tk.Text(self.root, bg="#1e1c1a", fg=MUTED, relief="flat",
                                  font=("Consolas", 10), height=8, padx=10, pady=6,
                                  state="disabled")
-        self.board_box.pack(fill="x", padx=12, pady=(0, 6))
+        pack["position"] = (self.board_box, dict(side="bottom", fill="x",
+                                                 padx=12, pady=(0, 6)))
 
-        foot = self.foot = tk.Frame(self.root, bg=BG)
-        foot.pack(fill="x", padx=12, pady=(0, 10))
-        self.lbl_file = tk.Label(foot, text="", bg=BG, fg=MUTED,
-                                 font=("Segoe UI", 8), anchor="w")
+        foot = tk.Frame(self.root, bg=BG)
+        pack["foot"] = (foot, dict(side="bottom", fill="x", padx=12,
+                                   pady=(0, 10)))
+        # The filename is the way into the folder, so there is no button for
+        # one. Underlined, on a hand cursor, is what says it can be clicked.
+        self.lbl_file = tk.Label(foot, text="games", bg=BG, fg=MUTED, anchor="w",
+                                 font=("Segoe UI", 8, "underline"),
+                                 cursor="hand2")
         self.lbl_file.pack(side="left", fill="x", expand=True)
-        tk.Checkbutton(foot, text="show board", variable=self.show_board,
-                       command=self._toggle_board, bg=BG, fg=MUTED, selectcolor=BG,
-                       activebackground=BG, activeforeground=FG,
-                       font=("Segoe UI", 8), cursor="hand2").pack(side="right", padx=6)
-        tk.Button(foot, text="open games folder", command=self._open_folder,
-                  relief="flat", bg="#3d3a37", fg=FG, cursor="hand2",
-                  font=("Segoe UI", 8)).pack(side="right")
+        self.lbl_file.bind("<Button-1>", lambda e: self._open_folder())
+
+        self._pack = pack
+        self._relayout()
+
+    def _drawer_row(self, parent, name):
+        """One line of the drawer: a word, then the controls it covers. The
+        width is in characters, so the words still line up when the display
+        scaling grows the font and the window does not follow."""
+        row = tk.Frame(parent, bg=BG)
+        row.pack(fill="x", pady=1)
+        tk.Label(row, text=name, bg=BG, fg=MUTED, width=7, anchor="w",
+                 font=("Segoe UI", 8)).pack(side="left")
+        return row
+
+    def _switch(self, parent, text, variable, command):
+        tk.Checkbutton(parent, text=text, variable=variable, command=command,
+                       bg=BG, fg=MUTED, selectcolor=BG, activebackground=BG,
+                       activeforeground=FG, font=("Segoe UI", 8),
+                       cursor="hand2").pack(side="left")
+
+    # -- layout ------------------------------------------------------
+    def _state(self):
+        """What the window has to say, read back off the labels holding it."""
+        return {"setup": self.setup_open,
+                "advice": self.lbl_coach.cget("text"),
+                "detail": self.lbl_detail.cget("text"),
+                "note": self.lbl_check.cget("text"),
+                "result": self.lbl_result.cget("text"),
+                "arrow": self.arrow_drawn,
+                "position": self.show_board.get()}
+
+    def _relayout(self):
+        """Put up the stripes showing() asks for, and only those.
+
+        Everything is unpacked and packed again rather than patched, so what
+        is on screen is in STRIPES order however it got there. That is
+        affordable because it only runs when the set has really changed,
+        which is a handful of times a game.
+        """
+        want = showing(self._state())
+        if want == self._shown:
+            return
+        self._shown = want
+        for name in STRIPES:
+            self._pack[name][0].pack_forget()
+        for name in want:
+            widget, how = self._pack[name]
+            widget.pack(**how)
+
+    def _wrap(self, event):
+        """Wrap the move line at the width it has been given, so a long
+        message (Stockfish failing to start) folds rather than running off the
+        edge. Only on a real change: setting it fires <Configure> again."""
+        if event.width != int(self.lbl_coach.cget("wraplength")):
+            self.lbl_coach.configure(wraplength=event.width)
+
+    def _toggle_setup(self):
+        self.setup_open = not self.setup_open
+        self._relayout()
+
+    def _toggle_position(self):
+        self._save_config()
+        self._relayout()
 
     # -- actions -----------------------------------------------------
     def _apply_saved_switches(self):
@@ -630,8 +765,8 @@ class App:
     def _check_now(self):
         if self.worker:
             self.worker.check_now.set()
-            self.lbl_check.configure(text="relearning the pieces, then checking "
-                                          "every square...", fg=MUTED)
+            self.note_until = time.time() + NOTE_SECONDS
+            self.lbl_check.configure(text="rechecking every square", fg=MUTED)
 
     def _set_colour(self):
         self._save_config()
@@ -651,7 +786,7 @@ class App:
         if self.taught_sheet:
             self._use_taught(self.taught_sheet)
         self.worker.start()
-        self.btn.configure(text="Stop watching", bg="#b33a3a",
+        self.btn.configure(text="Stop", bg="#b33a3a",
                            activebackground="#8f2f2f")
 
     def _stop(self):
@@ -661,9 +796,12 @@ class App:
         game = self.worker.tracker.game
         if game and game.moves:
             game.save()
-            self.lbl_file.configure(text="saved " + os.path.basename(game.path))
+            # Still the same path, and still the way into the folder, so it is
+            # written the same way it is written while a game is running.
+            self.lbl_file.configure(
+                text="games\\" + os.path.basename(game.path))
         self.worker = None
-        self.btn.configure(text="Start watching", bg=ACCENT,
+        self.btn.configure(text="Start", bg=ACCENT,
                            activebackground="#6d9245")
         self.lbl_status.configure(text="stopped", fg=MUTED)
         # No frames are coming any more, so nothing else would ever take it
@@ -685,14 +823,20 @@ class App:
         self._save_config()
         if not self.coach_on.get():
             self.lbl_coach.configure(text="")
+            self.lbl_detail.configure(text="")
             self.coach_fen = None
             self._hide_arrow()
             return
         if self.coach is None:
             path = CO.find_engine()
             if path is None:
+                # On the note line rather than in the move slot. It is a
+                # sentence, the move slot is 14pt bold, and nothing would ever
+                # clear it again: the switch has just turned itself back off,
+                # so no later frame comes past to take it down.
                 self.coach_on.set(False)
-                self.lbl_coach.configure(
+                self.note_until = time.time() + NOTE_SECONDS
+                self.lbl_check.configure(
                     text="no Stockfish found. See the README.", fg=WARN)
                 return
             self.coach = CO.Coach(path, think_seconds=self._think_seconds())
@@ -702,7 +846,7 @@ class App:
     def _think_seconds(self):
         return float(self.think_choice.get()[:-1])
 
-    def _set_think(self, _value=None):
+    def _set_think(self):
         """Write the new think time down and hand it to the engine thread.
 
         Set on the running Coach rather than restarting it, because the next
@@ -757,10 +901,14 @@ class App:
         on every frame costs nothing while nothing is changing.
         """
         if self.arrow is None:
+            self.arrow_drawn = False
             return
         want = OV.wanted(self.arrow_on.get(), self.region, self.coach_fen,
                          self.arrow_fen, self.arrow_uci, self.arrow_cleared,
                          self.flipped, self.arrow_mine)
+        # The clear button is only on screen while there is something drawn
+        # for it to take away, which is this.
+        self.arrow_drawn = want is not None
         if want is None:
             self.arrow.hide()
             return
@@ -785,6 +933,7 @@ class App:
         needs all twelve types on the board and such a game never has them."""
         import enroll        # deferred: enroll imports this module for the grab
         if self.worker is None or self.region is None:
+            self.note_until = time.time() + NOTE_SECONDS
             self.lbl_check.configure(text="no board on screen to teach from",
                                      fg=WARN)
             return
@@ -816,6 +965,7 @@ class App:
             reader.source = "taught by hand"
             self.taught_sheet = path
             self._save_config()
+            self.note_until = time.time() + NOTE_SECONDS
             self.lbl_check.configure(text="reading with the pieces you taught",
                                      fg=ACCENT)
             return
@@ -828,13 +978,8 @@ class App:
             # rather than complaining about it at every launch from now on.
             self.taught_sheet = None
             self._save_config()
+        self.note_until = time.time() + NOTE_SECONDS
         self.lbl_check.configure(text="that sheet would not load", fg=WARN)
-
-    def _toggle_board(self):
-        if self.show_board.get():
-            self.board_box.pack(fill="x", padx=12, pady=(0, 6), before=self.foot)
-        else:
-            self.board_box.pack_forget()
 
     def _open_folder(self):
         os.makedirs(W.GAMES_DIR, exist_ok=True)
@@ -848,18 +993,26 @@ class App:
                 if kind == "frame":
                     self._render(payload)
                 elif kind == "searching":
-                    self.lbl_status.configure(text="looking for a chess board",
-                                              fg=MUTED)
-                    self.lbl_board.configure(text="no board on screen yet")
+                    self.lbl_status.configure(text="no board", fg=MUTED)
+                    self.lbl_board.configure(text="no board on screen")
                     # There are no board pixels left for an arrow to be right
                     # about. Forgetting the region is what takes it down.
                     self.region = None
                     self._sync_arrow()
                 elif kind == "error":
-                    self.lbl_status.configure(text=payload[:70], fg=WARN)
+                    # A word on the top row, the sentence on the note line,
+                    # which has the width for it.
+                    self.lbl_status.configure(text="error", fg=WARN)
+                    self.note_until = time.time() + NOTE_SECONDS
+                    self.lbl_check.configure(text=payload[:70], fg=WARN)
         except queue.Empty:
             pass
         self._drain_coach()
+        # Notes come down here rather than where they went up, so one put
+        # there by a click still goes away when no frames are arriving.
+        if self.lbl_check.cget("text") and time.time() > self.note_until:
+            self.lbl_check.configure(text="")
+        self._relayout()
         self.root.after(120, self._drain)
 
     def _drain_coach(self):
@@ -872,13 +1025,17 @@ class App:
                 kind, payload = self.coach.out.get_nowait()
                 if kind == "engine":
                     if payload != "ready":
-                        self.lbl_coach.configure(text=payload[:70], fg=WARN)
+                        self.note_until = time.time() + NOTE_SECONDS
+                        self.lbl_check.configure(text=payload[:70], fg=WARN)
+                        self.lbl_coach.configure(text="")
+                        self.lbl_detail.configure(text="")
                         self.coach_on.set(False)
                 elif kind == "advice" and self.coach_on.get():
                     if payload["fen"] != self.coach_fen:
                         continue
                     if payload.get("over"):
                         self.lbl_coach.configure(text="the game is over", fg=MUTED)
+                        self.lbl_detail.configure(text="")
                         self._hide_arrow()
                         continue
                     # Their best move is what they are threatening, so it is
@@ -888,16 +1045,23 @@ class App:
                     mine = payload["turn"] == self.my_colour
                     whose = "your move" if mine else "their move"
                     self._show_arrow(payload["uci"], payload["fen"], mine)
-                    # An answer that is not finished with can still change, and
-                    # saying so is worth more to a learner than the depth it
-                    # happens to have got to.
+                    # Whose move it is and what to play, large, on their own.
+                    # The naming of the squares, the score, and the mark that
+                    # says the engine has not finished are the small print
+                    # under it. The mark goes there rather than on the move
+                    # because the move line is sized to hold the longest SAN
+                    # there is at 150% scaling in a 400px window, with 3px to
+                    # spare, and five more characters do not fit; and because
+                    # what an unfinished answer is hedging is the score, which
+                    # is already on that line.
                     self.lbl_coach.configure(
-                        text="%s  %s  (%s)  %s%s" % (whose, payload["san"],
-                                                     payload["text"],
-                                                     payload["score"],
-                                                     "" if payload.get("final")
-                                                     else "  ..."),
+                        text="%s  %s" % (whose, payload["san"]),
                         fg=ACCENT if mine else MUTED)
+                    self.lbl_detail.configure(
+                        text="   ".join(part for part in
+                                        (payload["text"], payload["score"],
+                                         "" if payload.get("final") else "...")
+                                        if part))
         except queue.Empty:
             pass
 
@@ -906,18 +1070,14 @@ class App:
         self.flipped = f.get("flipped", False)
         self.region = f["region"]
         region = f["region"]
-        if region:
-            self.lbl_board.configure(
-                text="board %dx%d at %d,%d" % (region[2], region[3],
-                                               region[0], region[1]))
 
-        if not f["locked"]:
-            self.lbl_status.configure(
-                text="waiting for a game to start", fg=MUTED)
+        # One word. At 400px and 150% display scaling this row has about
+        # fifteen characters to spare beside the two buttons, and how many
+        # moves have been recorded is the move list, right underneath.
+        if f["locked"]:
+            self.lbl_status.configure(text="recording", fg=ACCENT)
         else:
-            self.lbl_status.configure(
-                text="recording  |  %d moves  |  %d saved" % (f["count"], f["saved"]),
-                fg=ACCENT)
+            self.lbl_status.configure(text="waiting", fg=MUTED)
 
         if f["result"] != "*":
             word = {"won": "You won", "lost": "You lost",
@@ -930,23 +1090,23 @@ class App:
         box.configure(state="normal")
         box.delete("1.0", "end")
         if not f["locked"]:
-            box.insert("end", "waiting for a game to start\n\n", "hint")
-            box.insert("end",
-                       "Open a game on chess.com. Recording begins\n"
-                       "from the opening position, so start a new\n"
-                       "game rather than joining one midway.", "hint")
+            # One line, and no line breaks in it. This is the first thing seen
+            # on launch and the largest text on screen while it is up, and it
+            # was three lines of prose hand-wrapped to 41 characters, which
+            # soft-wrapped again at 150% scaling. The box wraps by word.
+            box.insert("end", "Open a game. Recording starts from the opening "
+                              "position.", "hint")
         elif not f["rows"]:
-            box.insert("end", "game found, playing as %s\n\n" % f["color"], "hint")
-            box.insert("end", "no moves yet", "hint")
+            box.insert("end", "playing as %s, no moves yet" % f["color"], "hint")
         else:
             mine_is_white = f["color"] == "white"
             if f.get("joined"):
                 # Numbers cannot line up with chess.com here: nothing in the
                 # picture says how many moves were played before we looked.
                 box.insert("end",
-                           "picked this game up part way through, so\n"
-                           "these are counted from where watching\n"
-                           "started, not from chess.com's numbers\n\n", "warn")
+                           "picked this game up part way through, so these are"
+                           " counted from where watching started, not from"
+                           " chess.com's numbers\n\n", "warn")
             for num, white, black in f["rows"]:
                 label = ("+%d." % num) if f.get("joined") else ("%d." % num)
                 box.insert("end", "%5s " % label, "num")
@@ -965,22 +1125,35 @@ class App:
             self.board_box.insert("1.0", f["board"] or "(no position yet)")
             self.board_box.configure(state="disabled")
 
-        # Which templates are reading the board decides how much the rest of
-        # this line is worth, so it shows on its own and not only when there
-        # happens to be a check note to hang it off.
+        # Where the board was found and what is reading it, on one line in the
+        # drawer. Both are diagnostics: they are worth reading when you have
+        # opened the drawer because something looks wrong, and never otherwise.
+        where = "no board on screen"
+        if region:
+            where = "board %dx%d at %d,%d" % (region[2], region[3],
+                                              region[0], region[1])
+        kind = f.get("templates") or ""
+        if kind == "bundled" and f.get("sheet") not in (None,
+                                                        pieces.TEMPLATE_SHEET):
+            # use_bundled() calls whatever self.sheet points at "bundled", and
+            # relearn() calls use_bundled(), so the reader's own word for a
+            # taught sheet does not survive the first relearn. Which file is
+            # loaded does.
+            kind = "taught by hand"
+        self.lbl_board.configure(
+            text=where + ("   pieces %s" % kind if kind else ""))
+
+        # The note line carries two things: a complaint from the piece
+        # checker, which is worth the whole time it is true, and a receipt for
+        # something you clicked, which is worth a few seconds. The complaint
+        # wins. "position confirmed" is the checker finding nothing to say,
+        # and it says that almost every time, so it never reaches the line at
+        # all: as a permanent line it said nothing and still cost the height.
         note = f.get("check") or ""
-        if f.get("templates"):
-            kind = f["templates"]
-            loaded = f.get("sheet")
-            if kind == "bundled" and loaded not in (None, pieces.TEMPLATE_SHEET):
-                # use_bundled() calls whatever self.sheet points at "bundled",
-                # and relearn() calls use_bundled(), so the reader's own word
-                # for a taught sheet does not survive the first relearn. Which
-                # file is loaded does.
-                kind = "taught by hand"
-            note = (note + "   " if note else "") + "(pieces %s)" % kind
-        self.lbl_check.configure(
-            text=note, fg=ACCENT if "confirmed" in note else MUTED)
+        if note and note != "position confirmed":
+            if self.lbl_check.cget("text") != note:
+                self.lbl_check.configure(text=note, fg=MUTED)
+            self.note_until = time.time() + NOTE_SECONDS
 
         if self.coach is not None and self.coach_on.get():
             if f.get("fen") and f["result"] == "*":
@@ -988,6 +1161,7 @@ class App:
                 self.coach_fen = f["fen"]
             else:
                 self.lbl_coach.configure(text="")
+                self.lbl_detail.configure(text="")
                 self.coach_fen = None
                 self._hide_arrow()
 
@@ -1022,6 +1196,7 @@ class App:
                        "coach": bool(self.coach_on.get()),
                        "think_seconds": self._think_seconds(),
                        "arrow": bool(self.arrow_on.get()),
+                       "position": bool(self.show_board.get()),
                        "sheet": self.taught_sheet}, fh, indent=2)
         os.replace(tmp, CONFIG_PATH)
 

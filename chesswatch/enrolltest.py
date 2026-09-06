@@ -29,7 +29,8 @@ could reach. Anything that can be driven is driven.
 
 What is NOT checked here: every widget in enroll.py, the arrow really appearing
 on screen, and Windows click-through. The first needs a desktop, and the last
-two are already what overlaytest.py measures.
+two are already what overlaytest.py measures. The window's own layout, and how
+wide each of its rows comes out, are layouttest.py's.
 """
 
 import ast
@@ -904,7 +905,7 @@ def coach_side():
             coach_on=types.SimpleNamespace(get=lambda: True, set=lambda v: None),
             coach_fen=FEN_A, my_colour=yours, arrow=None, arrow_uci=None,
             arrow_fen=None, arrow_mine=None, arrow_cleared=None, region=R1,
-            flipped=False, lbl_coach=Blank(),
+            flipped=False, lbl_coach=Blank(), lbl_detail=Blank(),
             arrow_on=types.SimpleNamespace(get=lambda: True))
         app._show_arrow = lambda *a: CW.App._show_arrow(app, *a)
         app._sync_arrow = lambda: CW.App._sync_arrow(app)
@@ -1083,6 +1084,7 @@ def stub_app(reader):
         colour_choice=types.SimpleNamespace(get=lambda: "auto"),
         coach_on=types.SimpleNamespace(get=lambda: False),
         arrow_on=types.SimpleNamespace(get=lambda: True),
+        show_board=types.SimpleNamespace(get=lambda: False),
         think_choice=types.SimpleNamespace(get=lambda: "1s"),
         taught_sheet=None,
         lbl_check=Blank(),
@@ -1145,11 +1147,11 @@ def persistence():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-# ---------------------------------------------------------------- the layout
+# ------------------------------------------------ the teach panel's width
 
 # Tk turns a positive point size into pixels through `tk scaling`, which on
 # Windows is the display dpi over 72. The app calls SetProcessDpiAwareness(2),
-# so the font grows with the display scaling while minsize does not.
+# so the font grows with the display scaling while the window does not.
 PX = {"100%": round(8 * 96 / 72), "150%": round(8 * 144 / 72)}
 
 # Chrome drawn round the text, low and high. This is bounded rather than
@@ -1157,16 +1159,6 @@ PX = {"100%": round(8 * 96 / 72), "150%": round(8 * 144 / 72)}
 # load bearing, since that is the one that has to fit.
 CHROME = {"btn": (10, 24), "lbl": (0, 6), "check": (18, 30), "radio": (18, 30)}
 
-ROWS = {
-    "tools": [("btn", "check the pieces now"), ("lbl", "I play:"),
-              ("radio", "auto"), ("radio", "white"), ("radio", "black")],
-    "switches": [("lbl", "coaching:"), ("check", "best move"),
-                 ("check", "arrow on board")],
-    "extras": [("btn", "clear arrows"), ("btn", "teach the pieces")],
-}
-
-# minsize is 400 and the rows are packed with padx=12 a side.
-AVAILABLE = 400 - 24
 FONT_PATH = "C:/Windows/Fonts/segoeui.ttf"
 
 
@@ -1183,28 +1175,14 @@ def row_px(items, px):
     return round(low), round(high)
 
 
-def layout():
-    print("\n-- the new buttons fit the window ------------------------")
+def teach_panel():
+    """Only the teach window is measured here. The main window's own rows
+    used to be, off a table of labels written into this file; they are
+    layouttest.py's now, read off App._build rather than copied."""
+    print("\n-- the teach panel's new button fits ---------------------")
     if not os.path.exists(FONT_PATH):
-        print("SKIP  no Segoe UI on this machine, cannot measure the rows")
+        print("SKIP  no Segoe UI on this machine, cannot measure the row")
         return
-    for label, px in PX.items():
-        for name, items in ROWS.items():
-            low, high = row_px(items, px)
-            print("      %-9s at %s: %d to %d px of %d"
-                  % (name, label, low, high, AVAILABLE))
-    check("the row the two new buttons sit on fits at 100% scaling",
-          row_px(ROWS["extras"], PX["100%"])[1] <= AVAILABLE, True)
-    check("  and at 150%, where the font grows and minsize does not",
-          row_px(ROWS["extras"], PX["150%"])[1] <= AVAILABLE, True)
-    check("the coaching switches still fit at both",
-          [row_px(ROWS["switches"], px)[1] <= AVAILABLE for px in PX.values()],
-          [True, True])
-    # The tools row was already full before any of this. Nothing was added to
-    # it, and this holds it at what it was: fitting at 100% and not at 150%.
-    check("nothing was added to the row that was already full",
-          row_px(ROWS["tools"], PX["100%"])[1] <= AVAILABLE, True)
-
     # The teach window is its own window, and the width of its panel is set by
     # the two columns of piece buttons. Tk sizes a button given width=7 to
     # seven of the font's average characters, which is what "0" measures, so
@@ -1220,8 +1198,6 @@ def layout():
     check("the opening button fits inside the two columns it spans",
           [row_px(button, px)[1] <= row_px(columns, px)[1]
            for px in PX.values()], [True, True])
-
-
 # ---------------------------------------------------------------- the wiring
 
 def calls_of(src, name):
@@ -1306,7 +1282,7 @@ def main():
     clear_across_games()
     board_goes_away()
     persistence()
-    layout()
+    teach_panel()
     wiring()
     print("\n%d/%d passed" % (sum(bool(x) for x in R), len(R)))
     return 0 if all(R) else 1

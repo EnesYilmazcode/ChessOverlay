@@ -35,12 +35,16 @@ loses nothing. Starting a new game closes out the old one automatically.
 
 ## Asking what to play
 
-Tick **best move** and Stockfish is started, once, and asked about whatever
-position is on screen. The label under the board reads:
+Open **Setup** and tick **Coach**, and Stockfish is started, once, and asked
+about whatever position is on screen. The line above the moves reads:
 
 ```
-your move  Nf3  (knight: g1 to f3)  +0.4
+your move  Nf3
+knight: g1 to f3   +0.4
 ```
+
+Whose move it is and what to play is the large line, and the naming of the
+squares is the small print under it.
 
 Piece and squares in words rather than only the notation, what a capture takes,
 when a move gives check, and a forced mate counted in moves. `coach.py` holds
@@ -49,17 +53,18 @@ newest question is answered, and an answer that arrives after the position has
 changed is dropped rather than shown against the wrong board.
 
 The engine is read while it is still thinking rather than only once it has
-finished. The first answer is on the label in about a hundredth of a second and
-improves from there, and one the engine has not finished with ends in `...` so
-a move that is about to be replaced does not read as the verdict.
+finished. The first answer is up in about a hundredth of a second and improves
+from there, and one the engine has not finished with ends the small print under
+the move in `...`, so a move that is about to be replaced does not read as the
+verdict.
 
-**think** is how long it gets on one position: 0.3, 1 or 2.5 seconds, saved as
-`think_seconds`. Since the first answer arrives at once whichever is picked, a
-longer think costs you no waiting; it only searches deeper on a board you are
-still in front of. It is a short list rather than a box you type into because
-a search nobody bounded holds a core for as long as you take over a move, and
-a number edited into `config.json` by hand is pulled back to the nearest
-offered one for the same reason.
+**Setup > Think** is how long it gets on one position: 0.3, 1 or 2.5 seconds,
+saved as `think_seconds`. Since the first answer arrives at once whichever is
+picked, a longer think costs you no waiting; it only searches deeper on a board
+you are still in front of. It is a short list rather than a box you type into
+because a search nobody bounded holds a core for as long as you take over a
+move, and a number edited into `config.json` by hand is pulled back to the
+nearest offered one for the same reason.
 
 You supply the engine. `coach.py` looks at `$STOCKFISH_PATH`, then
 `chesswatch\engine\stockfish`, then the sibling `holochess\engine\stockfish`,
@@ -67,16 +72,17 @@ then your `PATH`. Without one the switch says so and turns itself back off.
 
 ## The arrow on the board
 
-Tick **arrow on board** as well and the suggestion is drawn on the board itself,
-on top of whatever program is showing it. The window is click-through, so it
-sits over the board without getting between you and it.
+Tick **Arrow** as well and the suggestion is drawn on the board itself, on top
+of whatever program is showing it. The window is click-through, so it sits over
+the board without getting between you and it.
 
 The arrow is a function of the position on screen, not of the last thing the
 engine said. Play a move and it comes down at once rather than sitting on the
 new position until a reply arrives, drag the window and it follows, lose the
-board and it goes. **clear arrows** takes it away now and keeps the reply the
-engine is already working on from putting it straight back, which lasts until
-your next move and then stops on its own.
+board and it goes. **clear**, which appears beside the move for as long as
+there is an arrow to clear, takes it away now and keeps the reply the engine is
+already working on from putting it straight back, which lasts until your next
+move and then stops on its own.
 
 ![the arrow over a board](../docs/arrow.png)
 
@@ -196,7 +202,7 @@ Everything above only ever asks "white piece, black piece, or empty?". That is
 fast, but it cannot tell you what is on a square it has lost track of. So there
 is a second, slower reader that identifies the actual piece on all 64 squares,
 and it runs every few seconds, whenever the fast reader has been stuck for a
-while, and whenever you press **check the pieces now**.
+while, and whenever you press **Setup > Board > Recheck**.
 
 It works the same way as everything else here: a square is reduced to a mask of
 its very bright and very dark pixels, which is the piece and nothing else, since
@@ -206,14 +212,15 @@ Colour is settled first, so each match is a 1-of-6 choice.
 
 The templates ship in `pieces.png`, and are relearned from your own screen every
 time a game starts from the opening position, where what sits on every square is
-already known. The status line says which set is in use.
+already known. **Setup** says which set is in use.
 
 Relearning needs all twelve piece types on the board at once, which in practice
 means a game you watched from the first move. A game joined part way through on
 a piece set the bundled sheet has never seen has no way to get there, and reads
-almost nothing. **teach the pieces** is the way out: it shows the board cut into
-its 64 squares with what the reader currently believes about each one, and you
-click a square and say what is on it. Twelve labels is the whole job, and it
+almost nothing. **Setup > Board > Pieces** is the way out: it shows the board
+cut into its 64 squares with what the reader currently believes about each one,
+and you click a square and say what is on it. Twelve labels is the whole job,
+and it
 starts from the reader's own answer, so on a set it already half reads you only
 correct what is wrong. What it writes is a template sheet, kept in `taught.png`
 and loaded again next time you start.
@@ -317,7 +324,7 @@ enough to take the piece away, still does.
 half a turn is itself a legal game, so a knight or queen move explains the
 screen equally well both ways up. A pawn move does not, because pawns only move
 one way, so the first pawn move settles it, usually within seconds. If you would
-rather not wait, set **I play** to white or black and any move will do.
+rather not wait, set **Setup > Side** to white or black and any move will do.
 
 ## The last-move highlight
 
@@ -384,21 +391,21 @@ separate files for the same game, so a second launch says so and exits.
 
 ## If it does not pick up the board
 
-The status line tells you whether it has found a board and whether it has locked
-onto a game. Tick **show board** to see the position it is reading, which should
-match your screen exactly.
+The word at the top of the window tells you whether it has found a board and
+whether it has locked onto a game. Tick **Setup > Show > Position** to see the
+position it is reading, which should match your screen exactly.
 
-- "looking for a chess board" means nothing on screen matched. Check the board
-  is not covered by another window.
-- Stuck on "waiting for a pawn move to tell which way up" means it has found a
-  game in progress and needs one pawn move before it can tell which way the
-  board is facing. Setting **I play** removes the wait.
-- Use **pick board manually** to drag a box around the board corner to corner.
+- "no board" means nothing on screen matched. Check the board is not covered by
+  another window.
+- "waiting for a pawn move to tell which way up" means it has found a game in
+  progress and needs one pawn move before it can tell which way the board is
+  facing. Setting **Setup > Side** removes the wait.
+- Use **Setup > Board > Pick** to drag a box around the board corner to corner.
   That choice is remembered in `config.json`.
 
 Detection is tuned for chess.com's default green board. A different board theme
 needs `LIGHT_SQUARE` and `DARK_SQUARE` in `watcher.py` changed to match, or use
-**pick board manually** and drag a box around it, which skips detection
+**Setup > Board > Pick** and drag a box around it, which skips detection
 entirely and is remembered in `config.json`. Reading the squares does not care
 about the theme, only finding the board does, so a board of your own colours
 works as soon as you have pointed at it once. The arrow follows whatever
@@ -406,12 +413,13 @@ rectangle is in use.
 
 ## Checking it still works
 
-    python selftest.py     104 checks, including real screenshots
-    python piecetest.py     49 checks on the piece reader under a bad capture
+    python selftest.py     116 checks, including real screenshots
+    python piecetest.py     62 checks on the piece reader under a bad capture
     python positiontest.py  29 checks on the whole board solver, no pixels
-    python enrolltest.py   180 checks on teaching the pieces and on the arrow
-    python coachtest.py     52 checks on the engine wrapper and its label,
-                            44 without a display and 31 without Stockfish
+    python enrolltest.py   176 checks on teaching the pieces and on the arrow
+    python layouttest.py    73 checks on what the window shows and how wide
+    python coachtest.py     53 checks on the engine wrapper and its label,
+                            43 without a display and 31 without Stockfish
     python overlaytest.py   21 checks that the arrows cannot corrupt a reading
     python settletest.py    move animation, with the screen on a clock
     python banktest.py      33 checks on choosing a piece set
@@ -444,6 +452,15 @@ checkmate, and checks every move, both colours, the result, and the files on
 disk. The second game is deliberately a small board on the second monitor, and a
 third run skips three moves with no frames in between and checks they come back
 in the only legal order.
+
+`layouttest.py` opens no window either, and enforces that the same way. What it
+can check without one is the decision about which parts of the window are up,
+the packing that carries that decision out, and the width of each row measured
+against the real Segoe UI at both 100% and 150% display scaling. The rows are
+read off `_build`'s syntax tree rather than listed in the test, so a widget
+added to a full row is measured rather than missed, and one written in a shape
+the reader cannot account for fails the run instead of being skipped. How any of
+it looks is not checked and cannot be.
 
 `enrolltest.py` opens no window at all, and enforces it by replacing Tk's two
 window classes with a refusal before any check runs. The arrow rule and the
