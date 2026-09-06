@@ -64,24 +64,26 @@ def grab_reads_bgra():
     class Stub:
         asked = None
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_):
-            return False
-
         def grab(self, box):
             Stub.asked = box
             return Shot()
+
+        def close(self):
+            pass
 
     real = getattr(C, "_MSS", None)
     if real is None:
         return None
     C._MSS = Stub
+    # grab() holds one grabber per thread, so the stub only reaches it if
+    # whatever this thread already had is dropped first, and the stub must not
+    # be left behind for the rest of the run either.
+    C.close_sct()
     try:
         got = list(C.grab((7, 9, 2, 1)).convert("RGB").getdata())
     finally:
         C._MSS = real
+        C.close_sct()
     return (got == [(255, 0, 0), (0, 0, 255)]
             and Stub.asked == {"left": 7, "top": 9, "width": 2, "height": 1})
 
