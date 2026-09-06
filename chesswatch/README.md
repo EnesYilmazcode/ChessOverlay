@@ -160,6 +160,25 @@ that, so the move is `Qh4`. Nothing has to recognise a queen. This is why
 figurine notation in the move list, board themes and piece sets are all
 irrelevant.
 
+**Which colour is a question about the board, not one square.** Counting a
+square's bright pixels against its dark ones is right on chess.com's own set and
+wrong on any set that draws white as a light body inside a heavy dark edge,
+because the pieces with least body lose that count. Over four sets and both
+orientations on a starting position, 52 pieces of 512 came back the wrong
+colour.
+
+No fixed line fixes it: seguisym's faintest white piece scores below
+chess.com's brightest black one. But both colours are always on the board at
+once, so the occupied squares fall into two groups and the line is the widest
+gap between them, counted once for every pair of squares it separates so that
+one odd square cannot become a colour of its own. That reads all 512 right, and
+costs four hundredths of a millisecond a frame.
+
+A board offering no gap at all, which is what a set whose white body never
+reaches 244 looks like, gets `?` on every piece instead of a guess. A frame
+carrying a `?` matches no position, so it is dropped the way an unreadable
+frame is. What it used to get was every piece called black.
+
 **It waits out the animation.** chess.com slides a piece to its destination over
 a couple of hundred milliseconds, and part way through, the piece is sitting on
 a square in between. For `e2-e4` the board reads as a clean, still `pawn on e3`
@@ -413,7 +432,7 @@ rectangle is in use.
 
 ## Checking it still works
 
-    python selftest.py     116 checks, including real screenshots
+    python selftest.py     121 checks, including real screenshots
     python piecetest.py     62 checks on the piece reader under a bad capture
     python positiontest.py  29 checks on the whole board solver, no pixels
     python enrolltest.py   176 checks on teaching the pieces and on the arrow

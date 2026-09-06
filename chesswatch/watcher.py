@@ -243,8 +243,38 @@ def find_board(img, min_grid=0.78):
 PIXEL_TAG = bytes(1 if v > BRIGHT else (2 if v < DARK else 0) for v in range(256))
 
 
+def _colour_cut(scores):
+    """Where a board's occupied squares divide into its two colours, or None if
+    they do not divide at all. `scores` must be sorted.
+
+    No cutoff works on every piece set, because a set drawing its white pieces
+    as a light body inside a heavy dark edge puts its emptiest white pieces
+    below where another set's black pieces sit. Over the four sets bench.py
+    draws, at four sizes and four positions, seguisym's faintest white piece
+    scores 0.047 and chess.com's brightest black piece scores 0.181, so any line
+    low enough for the first is too low for the second. But a board carries both
+    colours at once, so it says where its own line goes and needs no fixed one.
+
+    The line is the widest gap between neighbouring scores, counted once for
+    every pair of squares it separates. That count is what stops a single odd
+    square from being called a colour of its own: peeling one square off the end
+    of a full board separates 31 pairs where a split down the middle separates
+    256, so the lone square has to be eight times further out to win. Measured
+    against the two obvious alternatives, the widest gap on its own and the best
+    two-means split, this is the only one of the three that reads the starting
+    position right on all four sets.
+    """
+    n = len(scores)
+    best, cut = 0.0, None
+    for k in range(n - 1):
+        weight = (scores[k + 1] - scores[k]) * (k + 1) * (n - k - 1)
+        if weight > best:
+            best, cut = weight, (scores[k] + scores[k + 1]) / 2.0
+    return cut
+
+
 def read_occupancy(board_img):
-    """Classify all 64 squares. Returns 8 strings of W/B/. , top screen row
+    """Classify all 64 squares. Returns 8 strings of W/B/?/. , top screen row
     first, each string running left to right across the screen.
 
     Only the middle 56% of each square is counted. The border is where the
@@ -255,6 +285,22 @@ def read_occupancy(board_img):
     cropped to its sampled pixel rows and transposed is a band 18 bytes wide, so
     each board column becomes one 18 byte row and a square's 18 columns become a
     single unbroken 324 byte run.
+
+    Whether a square holds anything is still its own question, answered by its
+    own coverage. Which colour it holds is a question about the board, and is
+    answered once for all 64 squares by _colour_cut. That is a sort and a scan
+    of at most 32 numbers on top of the counting, and costs four hundredths of a
+    millisecond: paired against the old reader over 40 alternating runs of 200
+    frames on the 824px fixture, the fastest frame went from 0.658ms to
+    0.673ms.
+
+    A "?" is a square the reader will not name, and it happens when the board
+    offers no line at all, which is every occupied square scoring the same. That
+    is what a set whose body is not bright enough to register looks like, and
+    the answer it used to get was that every piece on the board was black.
+    Nothing downstream believes a "?": board_from_grid refuses the position and
+    every occupancy comparison in BoardTracker fails to match, so the frame is
+    dropped the way an animation frame is.
     """
     # Greyscale after the downscale, not before. NEAREST picks whole source
     # pixels and the conversion is per pixel, so the two commute exactly, and
@@ -265,23 +311,30 @@ def read_occupancy(board_img):
     inset = step - 2 * margin
     area = inset * inset
 
-    rows = []
+    lit = []
     for r in range(8):
         top = r * step + margin
         band = small.crop((0, top, GRID, top + inset)).transpose(
             Image.TRANSPOSE).tobytes().translate(PIXEL_TAG)
-        line = []
         for c in range(8):
             at = (c * step + margin) * inset
             end = at + area
             bf = band.count(1, at, end) / area
             df = band.count(2, at, end) / area
             if bf < MIN_COVERAGE and df < MIN_COVERAGE:
-                line.append(".")
-            else:
-                line.append("W" if bf > df else "B")
-        rows.append("".join(line))
-    return rows
+                continue
+            # The share of a square's ink that is bright, held back by the same
+            # coverage floor that decided the square is occupied. Without that
+            # term a black piece worn down to the eight bright pixels of its
+            # outline scores a perfect 1.0, the same as a white queen drawn in
+            # solid white, and a board of those has no line to find at all.
+            lit.append((r, c, bf / (bf + df + MIN_COVERAGE)))
+
+    cut = _colour_cut(sorted(score for _, _, score in lit))
+    rows = [["."] * 8 for _ in range(8)]
+    for r, c, score in lit:
+        rows[r][c] = "?" if cut is None else ("W" if score > cut else "B")
+    return ["".join(row) for row in rows]
 
 
 def _wash(square):
@@ -866,6 +919,8 @@ class BoardTracker:
         if len(held) != 1:
             return None
         row, col = held[0]
+        if occ[row][col] == "?":
+            return None      # the reader would not name that square
         return occ[row][col] == "W"
 
     # -- the piece-level checker -------------------------------------

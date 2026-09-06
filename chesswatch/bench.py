@@ -118,9 +118,13 @@ def teach(entrant, name, flipped, sizes=SIZES):
     return entrant.learn(img, start, flipped)
 
 
-def score(entrant_factory, quick=False, verbose=True):
+def score(entrant_factory, quick=False, verbose=True, colours=False):
     """Run one entrant over the whole corpus. Returns the totals and a
-    breakdown, and never lets a crash on one board pass as a good result."""
+    breakdown, and never lets a crash on one board pass as a good result.
+
+    colours scores W/B/. against the position instead of piece letters, which is
+    what the occupancy reader answers.
+    """
     totals = {"right": 0, "wrong": 0, "unknown": 0, "crashed": 0}
     by = {}
     taught = {}
@@ -131,7 +135,8 @@ def score(entrant_factory, quick=False, verbose=True):
             e = entrant_factory()
             taught[key] = (e, teach(e, name, flipped))
         entrant, ok = taught[key]
-        want = W.grid_of(board, flipped)
+        want = (W.occupancy_of(board, flipped) if colours
+                else W.grid_of(board, flipped))
         try:
             rows = entrant.classify(img)
             if isinstance(rows, tuple):
@@ -174,7 +179,23 @@ def baseline():
     return P.PieceReader()
 
 
+class Occupancy:
+    """watcher.read_occupancy as an entrant, so the fast reader can be measured
+    on the same boards as the slow one. There is nothing for it to learn, and it
+    answers colours, so it is scored with colours=True."""
+
+    def learn(self, board_img, board, flipped):
+        return True
+
+    def classify(self, board_img):
+        return W.read_occupancy(board_img)
+
+
 if __name__ == "__main__":
     quick = "--quick" in sys.argv
-    print("scoring the reader in the tree")
-    score(baseline, quick=quick)
+    if "--occupancy" in sys.argv:
+        print("scoring the occupancy reader in the tree")
+        score(Occupancy, quick=quick, colours=True)
+    else:
+        print("scoring the piece reader in the tree")
+        score(baseline, quick=quick)
