@@ -547,6 +547,18 @@ class App:
                        command=self._toggle_arrow, bg=BG, fg=MUTED, selectcolor=BG,
                        activebackground=BG, activeforeground=FG,
                        font=("Segoe UI", 8), cursor="hand2").pack(side="left")
+        tk.Label(switches, text="think:", bg=BG, fg=MUTED,
+                 font=("Segoe UI", 8)).pack(side="left", padx=(10, 2))
+        self.think_choice = tk.StringVar(
+            value="%gs" % CO.nearest_think(self.cfg.get("think_seconds")))
+        think = tk.OptionMenu(switches, self.think_choice,
+                              *["%gs" % s for s in CO.THINK_CHOICES],
+                              command=self._set_think)
+        think.configure(bg=BG, fg=MUTED, activebackground=BG, activeforeground=FG,
+                        highlightthickness=0, relief="flat", cursor="hand2",
+                        font=("Segoe UI", 8), indicatoron=0, padx=6, pady=0)
+        think["menu"].configure(bg=PANEL, fg=FG, font=("Segoe UI", 8))
+        think.pack(side="left")
 
         # A row of their own, for the reason written above the switches. The
         # tools row is full at 400px already, and Segoe UI grows with the
@@ -682,9 +694,22 @@ class App:
                 self.lbl_coach.configure(
                     text="no Stockfish found. See the README.", fg=WARN)
                 return
-            self.coach = CO.Coach(path)
+            self.coach = CO.Coach(path, think_seconds=self._think_seconds())
             self.coach.start()
         self.lbl_coach.configure(text="thinking...", fg=MUTED)
+
+    def _think_seconds(self):
+        return float(self.think_choice.get()[:-1])
+
+    def _set_think(self, _value=None):
+        """Write the new think time down and hand it to the engine thread.
+
+        Set on the running Coach rather than restarting it, because the next
+        search reads the attribute and the one in progress belongs to a
+        position you are about to move past anyway."""
+        self._save_config()
+        if self.coach is not None:
+            self.coach.think_seconds = self._think_seconds()
 
     def _toggle_arrow(self):
         """The arrow needs the coach, since it draws what the coach found."""
@@ -860,10 +885,15 @@ class App:
                     self._show_arrow(payload["uci"] if whose == "your move"
                                      or self.my_colour is None else None,
                                      payload["fen"])
+                    # An answer that is not finished with can still change, and
+                    # saying so is worth more to a learner than the depth it
+                    # happens to have got to.
                     self.lbl_coach.configure(
-                        text="%s  %s  (%s)  %s" % (whose, payload["san"],
-                                                   payload["text"],
-                                                   payload["score"]),
+                        text="%s  %s  (%s)  %s%s" % (whose, payload["san"],
+                                                     payload["text"],
+                                                     payload["score"],
+                                                     "" if payload.get("final")
+                                                     else "  ..."),
                         fg=ACCENT if whose == "your move" else MUTED)
         except queue.Empty:
             pass
@@ -987,6 +1017,7 @@ class App:
             json.dump({"board_region": self.board_region,
                        "colour": self.colour_choice.get(),
                        "coach": bool(self.coach_on.get()),
+                       "think_seconds": self._think_seconds(),
                        "arrow": bool(self.arrow_on.get()),
                        "sheet": self.taught_sheet}, fh, indent=2)
         os.replace(tmp, CONFIG_PATH)

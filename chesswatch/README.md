@@ -44,10 +44,22 @@ your move  Nf3  (knight: g1 to f3)  +0.4
 
 Piece and squares in words rather than only the notation, what a capture takes,
 when a move gives check, and a forced mate counted in moves. `coach.py` holds
-that, and it runs on its own thread with a 300 ms budget so the reader never
-waits on it. Only the newest question is answered, and an answer that arrives
-after the position has changed is dropped rather than shown against the wrong
-board.
+that, and it runs on its own thread so the reader never waits on it. Only the
+newest question is answered, and an answer that arrives after the position has
+changed is dropped rather than shown against the wrong board.
+
+The engine is read while it is still thinking rather than only once it has
+finished. The first answer is on the label in about a hundredth of a second and
+improves from there, and one the engine has not finished with ends in `...` so
+a move that is about to be replaced does not read as the verdict.
+
+**think** is how long it gets on one position: 0.3, 1 or 2.5 seconds, saved as
+`think_seconds`. Since the first answer arrives at once whichever is picked, a
+longer think costs you no waiting; it only searches deeper on a board you are
+still in front of. It is a short list rather than a box you type into because
+a search nobody bounded holds a core for as long as you take over a move, and
+a number edited into `config.json` by hand is pulled back to the nearest
+offered one for the same reason.
 
 You supply the engine. `coach.py` looks at `$STOCKFISH_PATH`, then
 `chesswatch\engine\stockfish`, then the sibling `holochess\engine\stockfish`,
@@ -346,8 +358,9 @@ rectangle is in use.
     python selftest.py     104 checks, including real screenshots
     python piecetest.py     49 checks on the piece reader under a bad capture
     python positiontest.py  29 checks on the whole board solver, no pixels
-    python enrolltest.py   119 checks on teaching the pieces and on the arrow
-    python coachtest.py     18 checks on the engine wrapper and its label
+    python enrolltest.py   120 checks on teaching the pieces and on the arrow
+    python coachtest.py     52 checks on the engine wrapper and its label,
+                            44 without a display and 31 without Stockfish
     python overlaytest.py   17 checks that the arrow cannot corrupt a reading
     python settletest.py    move animation, with the screen on a clock
     python banktest.py      33 checks on choosing a piece set

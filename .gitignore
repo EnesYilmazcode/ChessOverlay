@@ -6,7 +6,10 @@ chesswatch/taught.png
 chesswatch/test-games/
 
 # Stockfish. 114 MB, over GitHub's file limit, and GPL licensed separately.
+# Both halves look for it under engine/, and CI puts a copy in the
+# chesswatch one.
 holochess/engine/
+chesswatch/engine/
 
 # Test output.
 holochess/shot_a_app.png
