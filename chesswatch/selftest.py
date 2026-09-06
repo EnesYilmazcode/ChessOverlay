@@ -384,13 +384,13 @@ def main():
     r.append(check("checker rewinds a takeback", t.game.moves, LINE[:9]))
 
     # -- something drawn over the board -----------------------------------
-    # A square the reader cannot name still stops the pass, all 64 squares or
-    # nothing. What changed is how many boards can answer all 64: the position
-    # in hand is handed to the reader, and a square the scores refuse is put
-    # back as a yes or no question about the piece believed to be standing on
-    # it, which a pointer does not spoil. On main every one of these reads
+    # A square the reader will not name no longer throws the pass away. It is
+    # a hole in the reading rather than a stop sign, and the pass goes through
+    # when the squares that WERE read leave exactly one position the game can
+    # be in. On main every check from here to the end of this section reads
     # "board unclear".
     import fakeboard as _F
+    import wildcardbench as _B
 
     two_missed = render.render(tracked(8)[1])
     for spot in ((0, 0), (0, 2), (2, 2), (3, 2), (5, 5)):
@@ -399,46 +399,187 @@ def main():
         r.append(check("a pointer at %s does not stop the check pass" % (spot,),
                        seen.game.moves, LINE[:8]))
 
-    # What the belief cannot answer is refused exactly as it was. A square
-    # painted over edge to edge fills a whole layer of the mask, so every piece
-    # of that colour is equally present, nothing is confirmed on it, and the
-    # pass gives up rather than reasoning around it.
+    # A square painted over edge to edge fills a whole layer of the mask, so
+    # nothing can be confirmed on it and the belief cannot put it back. That
+    # makes it the hole itself rather than the piece reader's answer to one.
+    # Two moves were missed, a8 held a rook neither of them could have touched,
+    # and no other pair of moves reaches a board agreeing with the other 63
+    # squares, so the run is written down rather than refused.
     blanked = tracked(6)[0]
-    r.append(check("a square covered outright still stops the pass",
-                   blanked.check(_F.cover(two_missed, 0, 0)), "board unclear"))
-    r.append(check("  so nothing is written down", blanked.game.moves, LINE[:6]))
+    covered = _F.cover(two_missed, 0, 0)
+    read = blanked.reader.classify(covered, W.grid_of(blanked.board, False))[0]
+    r.append(check("a covered square stays a hole the belief cannot fill",
+                   (read[0][0], sum(row.count("?") for row in read)), ("?", 1)))
+    r.append(check("  and the pass reads around it instead of refusing",
+                   (blanked.check(covered), blanked.game.moves),
+                   ("caught up 2 missed moves", LINE[:8])))
 
-    # And the belief may never become the answer. Hiding a square must not turn
-    # a board that is refused into a board that is explained. The tracker here
-    # is three plies behind and the clean frame is already too far gone to
-    # explain, so an obstruction may only ever leave it that way: Evans Gambit
-    # with b2 covered, where the pawn that went to b4 was captured there, and
-    # believing b2 still holds it would explain the board with a bishop move
-    # that never happened.
-    played = "e4 e5 Nf3 Nc6 Bc4 Bc5 b4 Bxb4".split()
-    gambit = chess.Board()
-    for san in played:
-        gambit.push_san(san)
-    shown = render.render(gambit)
+    # A board with nothing missing and a hole in it is confirmed, not refused.
+    # The run that explains it is the run of no moves, and a run of no moves
+    # writes nothing down, so the hole cannot have cost anything.
+    upto = tracked(8)[0]
+    r.append(check("a hole in a board that has not moved confirms it",
+                   upto.check(_F.cover(two_missed, 4, 4)), "position confirmed"))
+    r.append(check("  and the record is left alone", upto.game.moves, LINE[:8]))
 
-    def three_behind():
-        t = W.BoardTracker(directory=tempfile.mkdtemp(), reader=P.PieceReader())
+    # -- the two boards that must never be explained ----------------------
+    # Both of these are PR #15's, which treated "?" as a wildcard inside the
+    # shallowest-first search and wrote down moves that were never played. They
+    # are here as pairs: this tracker has to refuse, and wildcardbench's copy of
+    # that rule has to invent the exact move it invented, so the fixture cannot
+    # quietly stop being a trap and leave a check that passes on nothing.
+    def behind(sans, upto, cls=W.BoardTracker):
+        t = cls(directory=tempfile.mkdtemp(), reader=P.PieceReader())
         t.feed(W.START_WHITE_VIEW)
         board = chess.Board()
-        for san in played[:5]:
+        for san in sans[:upto]:
             board.push_san(san)
             t.feed(W.occupancy_of(board, False))
         return t
 
-    r.append(check("the clean frame is already too far gone to explain",
-                   three_behind().check(shown),
+    def shown_after(sans):
+        board = chess.Board()
+        for san in sans:
+            board.push_san(san)
+        return render.render(board)
+
+    def hidden(img, squares):
+        """The same frame under each of the four ways of drawing over those
+        squares, since a pointer, a big pointer, a popup and a covered square
+        wreck the mask in four different ways."""
+        out = []
+        for name, draw in (("pointer", lambda i, s: _F.with_pointer(i, *s)),
+                           ("big pointer",
+                            lambda i, s: _F.with_pointer(i, *s, size=1.8)),
+                           ("panel", lambda i, s: _F.with_panel(i, *s, 1, 1)),
+                           ("covered", lambda i, s: _F.cover(i, *s))):
+            frame = img
+            for square in squares:
+                frame = draw(frame, (7 - chess.square_rank(square),
+                                     chess.square_file(square)))
+            out.append((name, frame))
+        return out
+
+    # Evans Gambit, three plies behind, b2 hidden. b2-b4 was played and the
+    # pawn was taken on b4, so b2 is empty; believing the pawn still stands
+    # there lets one bishop move explain every square that is left. The clean
+    # frame is already too far gone to explain, and hiding a square may only
+    # ever leave it that way.
+    played = "e4 e5 Nf3 Nc6 Bc4 Bc5 b4 Bxb4".split()
+    evans = shown_after(played)
+    r.append(check("the clean Evans frame is too far gone to explain",
+                   behind(played, 5).check(evans),
                    "lost the thread, waiting for a move"))
-    for hide in (_F.with_pointer(shown, 6, 1), _F.with_pointer(shown, 6, 1, 1.8),
-                 _F.with_panel(shown, 6, 1, 1), _F.cover(shown, 6, 1)):
-        blind = three_behind()
-        r.append(check("  and covering b2 does not make it explicable",
-                       (blind.check(hide), blind.game.moves),
+    for name, frame in hidden(evans, [chess.B2]):
+        blind = behind(played, 5)
+        r.append(check("  b2 under a %s does not make it explicable" % name,
+                       (blind.check(frame), blind.game.moves),
                        ("board unclear", played[:5])))
+        liar = behind(played, 5, _B.Shallowest)
+        liar.check(frame)
+        r.append(check("    and the shallowest rule still writes Bb4 there",
+                       liar.game.moves, played[:5] + ["Bb4"]))
+
+    # Sicilian, three plies behind, c5 and d2 hidden. Worse than the Evans
+    # board because the clean frame IS explained, correctly and in three moves,
+    # and hiding two squares turns that into one knight move that was never
+    # played and three real plies dropped.
+    sicilian = "e4 c5 Nf3 d6 d4 cxd4 Nxd4".split()
+    open_game = shown_after(sicilian)
+    caught = behind(sicilian, 4)
+    r.append(check("the clean Sicilian frame is caught up in full",
+                   (caught.check(open_game), caught.game.moves),
+                   ("caught up 3 missed moves", sicilian)))
+    for name, frame in hidden(open_game, [chess.C5, chess.D2]):
+        blind = behind(sicilian, 4)
+        r.append(check("  c5 and d2 under a %s stop it being explained" % name,
+                       (blind.check(frame), blind.game.moves),
+                       ("board unclear", sicilian[:4])))
+        liar = behind(sicilian, 4, _B.Shallowest)
+        liar.check(frame)
+        r.append(check("    and the shallowest rule still writes Nd4 there",
+                       liar.game.moves, sicilian[:4] + ["Nd4"]))
+
+    # -- the search itself against the plainest way of asking --------------
+    # The wildcard search prunes on how far the board is from the reading, does
+    # not play a last move it can tell will miss, and gives up the moment two
+    # candidates disagree. Every one of those can only ever lose a candidate,
+    # and a lost candidate is a refusal turned into an answer. So it is checked
+    # against wildcardbench.every_fit, which plays out every run and looks at
+    # the whole board afterwards.
+    same, alone = [], 0
+    for sans, upto, holes, deep in (
+            (played, 5, [chess.B2], 3),
+            (sicilian, 4, [chess.C5, chess.D2], 3),
+            (LINE[:8], 6, [chess.A8], 2),
+            (LINE[:8], 7, [chess.F1, chess.G1], 2)):
+        for _name, frame in hidden(shown_after(sans), holes):
+            t = behind(sans, upto)
+            rows = t.reader.classify(frame, W.grid_of(t.board, False))[0]
+            if not any("?" in row for row in rows):
+                continue          # the belief answered it, so there is no hole
+            target = t._target_map(rows)
+            want_seen, want_runs = _B.every_fit(t, rows, deep)
+            t.WILDCARD_NODES = 10 ** 9          # the reference does not give up
+            state = t._wildcard_scan(target, deep, t._wrong_known(target))
+            del t.WILDCARD_NODES
+            if len(want_seen) > 1:
+                same.append(state is None)
+                continue
+            alone += 1
+            got = set() if state is None else {
+                (n, order) for n, orders in state["fits"].items()
+                for order in orders}
+            same.append(got == want_runs)
+    # The counts are here so this cannot pass on nothing. Eight of the thirteen
+    # boards have two positions fitting and have to be refused, five have one
+    # and have to come back with the same runs the reference found, and three
+    # frames are dropped because the belief filled the square and left no hole.
+    r.append(check("the fast search finds what playing out every run finds",
+                   (len(same), same.count(True), alone), (13, 13, 5)))
+
+    # Which of several right answers gets written down. Driven at a fixed
+    # depth on rows built by hand, because what is under test is the search and
+    # not the reader, and because through check() the budget and the margin
+    # would be deciding these as well.
+    def with_hole(sans, squares):
+        board = chess.Board()
+        for san in sans:
+            board.push_san(san)
+        rows = [list(row) for row in W.grid_of(board, False)]
+        for square in squares:
+            rows[7 - chess.square_rank(square)][chess.square_file(square)] = "?"
+        return rows
+
+    fresh = W.BoardTracker(directory=tempfile.mkdtemp(), reader=P.PieceReader())
+    fresh.feed(W.START_WHITE_VIEW)
+    two_moves = fresh._solve_wildcard(with_hole(["e4", "e5"], [chess.A8]), 2)
+    r.append(check("two missed moves through a hole are written down",
+                   [m.uci() for m in two_moves or []], ["e2e4", "e7e5"]))
+    # 1.e4 e5 2.Nf3 and 1.Nf3 e5 2.e4 leave the same picture, and a hole in it
+    # leaves the same two orders rather than settling them.
+    r.append(check("  and three that could be two orders are not",
+                   fresh._solve_wildcard(
+                       with_hole(["e4", "e5", "Nf3"], [chess.A8]), 3), None))
+
+    # The same picture at more than one length, which is not a curiosity: a
+    # pawn reaches the fourth rank by one double push or by two single ones.
+    # From the start b4 f5, b3 f5 b4 and b3 f6 b4 f5 all leave it, the middle
+    # one with the other side to move. Two of the three drop moves that were
+    # played, and nothing in the picture says which, so all three are refused.
+    split = with_hole(["b3", "f6", "b4", "f5"], [chess.A8])
+    seen, runs = _B.every_fit(fresh, split, 3)
+    r.append(check("one picture, two lengths and two sides to move",
+                   (len(seen), sorted({n for n, _ in runs})), (2, [2, 3])))
+    r.append(check("  so none of the three is written down",
+                   fresh._solve_wildcard(split, 3), None))
+    # Read in full it is the same three stories, and the all 64 search takes
+    # the shortest without looking. That is what stopping at the shallowest
+    # depth means, it is untouched here, and it is not what #6 is about.
+    r.append(check("  while a board read in full still takes the shortest",
+                   [m.uci() for m in fresh._solve(
+                       with_hole(["b3", "f6", "b4", "f5"], []), 3, False) or []],
+                   ["b2b4", "f7f5"]))
 
     # Joining a game already under way. A knight move leaves the board's
     # orientation ambiguous, because a rotated board is a legal game too; the

@@ -937,15 +937,19 @@ class BoardTracker:
         you like. This is what recovers a game after missed moves, and what
         lets a game already in progress be picked up.
 
-        Still all 64 squares or nothing. What changed is how many boards can
-        answer all 64: the position already in hand is handed to the reader, so
-        a square the scores refuse can be put back as a yes or no question
-        about the piece believed to be standing on it, which is a question a
-        pointer or a popup does not spoil. Nothing here reasons about a square
-        that stays unreadable, and one is still the whole pass.
+        A square the reader would not name no longer throws the pass away once
+        a position is being followed. The reading is treated as a partial one
+        and _solve_wildcard decides whether the squares that WERE read leave
+        only one position the game can be in; see its docstring for why that is
+        sound and why skipping the unread squares inside the old search is not.
 
-        There is nothing to confirm against before a position is locked on, so
-        a cold join is left exactly as it was.
+        A board with every square named takes exactly the path it took before,
+        down to _solve, so nothing this changes can reach a board the checker
+        already accepted.
+
+        A cold join still needs all 64. There is no position to continue from,
+        so there is nothing to be the only continuation of, and board_from_grid
+        refuses a "?" for the same reason.
         """
         if not self.reader or not self.reader.ready:
             self.last_check = "no piece templates"
@@ -953,11 +957,12 @@ class BoardTracker:
 
         believed = grid_of(self.board, self.flipped) if self.board else None
         rows, _ = self.reader.classify(board_img, believed)
-        if any("?" in row for row in rows):
-            self.last_check = "board unclear"
-            return self.last_check
+        blind = any("?" in row for row in rows)
 
         if self.board is None:
+            if blind:
+                self.last_check = "board unclear"
+                return self.last_check
             self.last_check = self._cold_start(rows, board_img)
             return self.last_check
 
@@ -972,6 +977,13 @@ class BoardTracker:
 
         caught = self._search_grid(rows, min(depth or self.MAX_CATCHUP,
                                              self.MAX_CATCHUP))
+        if caught == []:
+            # The only position the read squares allow is the one already held,
+            # so the unread ones hid nothing. Reached only from the wildcard
+            # search; the full-board search never returns an empty answer.
+            self._pending = None
+            self.last_check = "position confirmed"
+            return self.last_check
         if caught:
             self._apply(caught, board_img)
             self.last_check = "caught up %d missed move%s" % (
@@ -1043,7 +1055,14 @@ class BoardTracker:
         Only the squares a move actually rewrites are re-examined, and a branch
         is abandoned as soon as too many squares are still wrong for the moves
         that remain. Without that this costs seconds and cannot run live.
+
+        A reading with a square in it the reader would not name goes somewhere
+        else entirely. Shallowest first is exactly what is unsafe there, and
+        the two searches are kept apart rather than merged so that a board read
+        in full cannot take a single instruction it did not take before.
         """
+        if any("?" in row for row in rows):
+            return self._solve_wildcard(rows, depth)
         return self._solve(rows, depth, colour_only=False)
 
     def _solve(self, rows, depth, colour_only):
@@ -1089,6 +1108,191 @@ class BoardTracker:
             if len(out) >= limit:
                 break
         return out
+
+    # How much of the search is worth paying for before giving up on it. A
+    # board with most of its squares unread starves the distance bound below of
+    # anything to prune on, and the answer there is to refuse rather than to
+    # spend seconds arriving at the same refusal. Measured in positions
+    # visited; wildcardbench.py reports what the sweep actually spends.
+    WILDCARD_NODES = 60000
+
+    # How far past the answer the alternatives are looked for. Two moves.
+    #
+    # This is the one number here that is a judgement rather than a rule. The
+    # search that proves an answer unique is exhaustive, and exhausting four
+    # moves out of a position that already nearly fits costs about two hundred
+    # thousand positions and two seconds, which is not a thing that can run
+    # while a game is being watched. Two past the answer costs a tenth of that.
+    #
+    # Two rather than one because two is what the failure this replaces needed:
+    # a bishop reaching b4 in one move, against a pawn going to b4 and being
+    # taken there, is one move against three. An extra pair of moves is what it
+    # takes to route a piece the long way round and pay for it with a capture,
+    # and the capture has to fall on a square the reader could not see or the
+    # story does not fit in the first place.
+    #
+    # Measured rather than argued. Over the 1440 frames wildcardbench.py sweeps,
+    # one past the answer invents 20 moves and two past it invents none.
+    #
+    # It is still a margin and not a proof, and it is the thing to raise first
+    # if a fabrication is ever found. wildcardbench.py takes --margin so the
+    # cost of raising it can be looked at rather than guessed.
+    WILDCARD_MARGIN = 2
+
+    def _solve_wildcard(self, rows, depth):
+        """The catch-up search over a reading with holes in it.
+
+        Every legal run of moves from the position already believed is played
+        out, and a run is a candidate when the position it arrives at agrees
+        with every square the reader DID name. It is accepted only when all of
+        them arrive at the same position. That is the whole rule, and it is
+        what makes an unread square safe: if two candidates disagree about what
+        stands on it then its reading was load-bearing and is missing, and if
+        they all agree then nothing could have written to it differently and
+        reading it would have told us nothing.
+
+        Skipping unread squares inside _solve instead looks like the same idea
+        and is not. That search stops at the shallowest depth that fits, and a
+        hidden square does not cost it information so much as delete a
+        disagreement, so a short false story and a long true one become
+        indistinguishable and the short one wins. Evans Gambit, three plies
+        behind, a mouse pointer on b2: b2-b4 was played and captured there, the
+        pointer hides the empty b2, and Bf8-b4 in one move then explains every
+        square that is left. Obstruction made it MORE confident. Here both runs
+        are found, they disagree about b2, and it refuses.
+
+        Two further rules, both about which of several right answers to write
+        down rather than about which position is right:
+
+        The one length has to be the only length. Two runs of different lengths
+        reaching the same position are still two different accounts of what was
+        played, and the shorter is not the safer one, it is the one that leaves
+        moves out. The exception is a run of no moves at all, which writes
+        nothing down and so cannot leave anything out: a position that confirms
+        itself stays confirmed even though a knight can always be sent out and
+        brought back.
+
+        And the one length has to hold one move order, which is the
+        transposition rule _solve already applies, for the same reason.
+        """
+        target = self._target_map(rows)
+        wrong = self._wrong_known(target)
+        state = None
+        for limit in range(depth + 1):
+            if wrong > self.SQUARES_PER_MOVE * limit:
+                continue           # too far away to be reached in this many
+            state = self._wildcard_scan(target, limit, wrong)
+            if state is None:
+                return None
+            if state["fits"]:
+                # Found the shortest run that fits. Everything after this is
+                # looking for a second answer that disagrees with it.
+                far = min(depth, limit + self.WILDCARD_MARGIN)
+                if far > limit:
+                    state = self._wildcard_scan(target, far, wrong)
+                    if state is None:
+                        return None
+                break
+        if state is None or not state["fits"]:
+            return None
+        shortest = min(state["fits"])
+        if shortest and len(state["fits"]) > 1:
+            return None
+        orders = state["fits"][shortest]
+        if len(orders) != 1:
+            return None
+        return list(next(iter(orders.values())))
+
+    def _wildcard_scan(self, target, depth, wrong):
+        """Every run of up to `depth` moves that fits, or None for refuse.
+
+        None rather than an empty answer because the two reasons to stop early,
+        two candidates that disagree and a budget that ran out, both mean the
+        answer cannot be trusted, and an empty answer means something else.
+        """
+        state = {"seen": set(), "fits": {}, "nodes": 0, "spent": False}
+        self._wildcard_walk(target, depth, wrong, [], state)
+        return None if state["spent"] or len(state["seen"]) > 1 else state
+
+    def _wrong_known(self, target):
+        """Squares the reader named and the position disagrees with. An unnamed
+        square is neither right nor wrong, which is the point."""
+        return sum(1 for sq in chess.SQUARES
+                   if target[sq] != "?" and self._symbol_at(sq) != target[sq])
+
+    def _wildcard_walk(self, target, k, wrong, prefix, state):
+        """Play out every run of up to k moves and collect the ones that fit.
+
+        Returns False once the answer cannot change any more, which is as soon
+        as two candidates disagree about the position, or the budget is gone.
+
+        The distance bound is the one _walk uses and stays honest under
+        wildcards: a move rewrites at most four squares whatever is drawn on
+        top of them, so a position disagreeing with the reading on more squares
+        than the moves left can rewrite is out of reach.
+        """
+        if wrong == 0:
+            # Whose turn it is belongs in the answer. Two runs of different
+            # lengths that leave the pieces in the same places have still left
+            # the game in two different states.
+            state["seen"].add((self.board.board_fen(), self.board.turn))
+            if len(state["seen"]) > 1:
+                return False
+            order = tuple((m.from_square, m.to_square) for m in prefix)
+            state["fits"].setdefault(len(prefix), {}).setdefault(order,
+                                                                 list(prefix))
+        if k == 0:
+            return True
+        hurt = None
+        if k == 1:
+            hurt = frozenset(sq for sq in chess.SQUARES if target[sq] != "?"
+                             and self._symbol_at(sq) != target[sq])
+        for move in _ordered_moves(self.board):
+            state["nodes"] += 1
+            if state["nodes"] > self.WILDCARD_NODES:
+                state["spent"] = True
+                return False
+            touched = self._touched(move)
+            if hurt is not None and not self._could_land(target, hurt, touched):
+                continue
+            before = sum(1 for sq in touched if target[sq] != "?"
+                         and self._symbol_at(sq) != target[sq])
+            self.board.push(move)
+            after = sum(1 for sq in touched if target[sq] != "?"
+                        and self._symbol_at(sq) != target[sq])
+            now = wrong + after - before
+            alive = True
+            if now <= self.SQUARES_PER_MOVE * (k - 1):
+                alive = self._wildcard_walk(target, k - 1, now,
+                                            prefix + [move], state)
+            self.board.pop()
+            if not alive:
+                return False
+        return True
+
+    @staticmethod
+    def _could_land(target, hurt, touched):
+        """Whether a last move touching these squares could leave the reading.
+
+        A square a move touches is rewritten: the square it leaves goes empty,
+        the square it arrives on takes a piece of the moving colour, and the
+        rook and the taken pawn of a castle and an en passant go the same way.
+        None of those can be what was already standing there. So a readable
+        square the move touches that agrees NOW will disagree after, and a
+        readable square that disagrees now and is not touched still will.
+
+        Which leaves exactly one shape for a last move: the readable squares it
+        touches are the disagreements, all of them, and everything else it
+        touches is a square the reader could not name. Worth the two set tests
+        because it decides without playing the move, and the last move of the
+        run is where nearly all of the search is.
+
+        wildcardbench.py carries a search that does not use this, and selftest
+        checks the two agree.
+        """
+        if not hurt.issubset(touched):
+            return False
+        return not any(target[sq] != "?" and sq not in hurt for sq in touched)
 
     def _earlier_match(self, rows):
         """Number of moves after which the game looked like this, if it did.
