@@ -46,6 +46,14 @@ REFIND_IDLE = 8
 REFIND_CHECK = 6
 STILL_A_BOARD = 0.7
 
+# How long to wait between hunts while no board is on screen at all, widening
+# with each miss. A hunt grabs the whole desktop and searches it, 120 ms on a
+# 3840x1080 screen, and the tick below only ever sleeps its 50 ms floor after
+# one. Back to back that is 71% of a core for as long as chess.com is closed.
+# Nobody needs a board found inside a tenth of a second of it appearing, so the
+# last step is the one that matters and a second is plenty.
+IDLE_BACKOFF = (0.0, 0.2, 0.5, 1.0, 1.0, 2.0)
+
 # How often the slower piece-by-piece check runs, in frames. While the fast
 # reader is stuck it runs far sooner, because that is exactly when a gap is
 # still small enough to be bridged.
@@ -81,23 +89,62 @@ MUTED = "#8b8987"
 WARN = "#d08a70"
 
 _MSS = getattr(mss, "MSS", None) or mss.mss
+_local = threading.local()
 
 
 # ------------------------------------------------------------------ capture
 
+def _sct():
+    """One screen grabber per thread, kept alive between shots.
+
+    Per thread rather than one shared, because mss is not thread safe and both
+    the capture worker and the Tk thread take screenshots. Kept alive because
+    building one allocates a device context and a bitmap, and the settle loop
+    takes several shots per move.
+    """
+    sct = getattr(_local, "sct", None)
+    if sct is None:
+        sct = _local.sct = _MSS()
+    return sct
+
+
+def close_sct():
+    """Drop this thread's grabber. A worker that has stopped should not keep a
+    device context open for a screen nobody is reading."""
+    sct = getattr(_local, "sct", None)
+    if sct is not None:
+        _local.sct = None
+        try:
+            sct.close()
+        except Exception:
+            pass
+
+
 def grab(region):
     """Screenshot one region. region is (left, top, width, height)."""
     left, top, width, height = region
-    with _MSS() as sct:
-        shot = sct.grab({"left": left, "top": top, "width": width, "height": height})
-        return Image.frombytes("RGB", (shot.width, shot.height), shot.bgra,
-                               "raw", "BGRX")
+    try:
+        shot = _sct().grab({"left": left, "top": top,
+                            "width": width, "height": height})
+    except Exception:
+        # A grabber that has gone bad stays bad. It holds a device context, and
+        # unplugging a monitor or changing the resolution invalidates that, so
+        # every later shot through the same instance fails the same way.
+        # Building one per shot used to heal that for free; dropping it here is
+        # what holding on to one costs. The next call builds a fresh one.
+        close_sct()
+        raise
+    return Image.frombytes("RGB", (shot.width, shot.height), shot.bgra,
+                           "raw", "BGRX")
 
 
 def virtual_screen():
-    with _MSS() as sct:
-        m = sct.monitors[0]
-        return m["left"], m["top"], m["width"], m["height"]
+    try:
+        m = _sct().monitors[0]
+    except Exception:
+        close_sct()                # same reason as in grab
+        raise
+    return m["left"], m["top"], m["width"], m["height"]
 
 
 def find_board_on_screen():
@@ -201,26 +248,41 @@ class Worker(threading.Thread):
         self._frames = 0
         self._since_check = 0
         self._accepted = None      # the last reading we acted on
+        self._misses = 0           # hunts in a row that found no board
+        self._last_hunt = 0.0
+        self._searching = False    # whether the app has been told there is none
         self._board_px = None      # board width the templates were last fitted to
         self.settle_stats = [0, 0]  # readings taken, readings acted on
 
     def run(self):
-        while not self.stop_flag.is_set():
-            started = time.time()
-            try:
-                self._tick()
-            except Exception as exc:
-                self.out.put(("error", "%s: %s" % (type(exc).__name__, exc)))
-            time.sleep(max(0.05, POLL_SECONDS - (time.time() - started)))
+        try:
+            while not self.stop_flag.is_set():
+                started = time.time()
+                try:
+                    self._tick()
+                except Exception as exc:
+                    self.out.put(("error", "%s: %s" % (type(exc).__name__, exc)))
+                time.sleep(max(0.05, POLL_SECONDS - (time.time() - started)))
+        finally:
+            close_sct()
 
     def _tick(self):
         self._frames += 1
-        if self.region is None or self._should_refind():
+        if self._should_refind():
+            self._last_hunt = time.time()
             found = find_board_on_screen()
             if found:
                 self.region = found
                 self._quiet = 0
-            elif self.region is None or self.lost:
+                self._misses = 0
+            elif self.region is None:
+                # Only a hunt with no region to fall back on counts towards the
+                # backoff. The routine re-hunt runs with one held and comes back
+                # empty whenever the board has not moved, and counting those
+                # left the first hunt after the region was finally given up
+                # waiting the longest gap in the table rather than firing.
+                self._misses += 1
+            elif self.lost:
                 # The rectangle we were watching has stopped holding a board
                 # and the hunt found no other one, so let it go. Keeping it
                 # went on reading a position off pixels that are no longer a
@@ -228,8 +290,16 @@ class Worker(threading.Thread):
                 # the app ran, which is what left the coaching arrow drawn over
                 # whatever took the board's place.
                 self.region = None
+        if self.region is None:
+            # Said once on the way in, not eight times a second for as long as
+            # nothing is on screen. The app answers this by reconfiguring two
+            # labels and re-syncing the arrow, and none of that changes while
+            # the answer stays "still looking".
+            if not self._searching:
+                self._searching = True
                 self.out.put(("searching", None))
-                return
+            return
+        self._searching = False
 
         shot, occ, settled = self._read_settled()
         if not settled:
@@ -361,8 +431,20 @@ class Worker(threading.Thread):
         region that has stopped holding a board both ask for the same search,
         but only the second is a reason to give the region up when the search
         comes back empty, and _tick needs to tell them apart.
+
+        While no region is held at all the gap between hunts widens with each
+        miss. This used to be the caller's job and the caller got it wrong: it
+        asked `self.region is None or self._should_refind()`, and the left half
+        is true for as long as no board is found, so the backoff on the right
+        never got a say and the hunt ran every tick.
         """
         self.lost = False
+        if self.region is None:
+            # Nothing to lose, so self.lost stays false and the wait is the
+            # only question.
+            waited = time.time() - self._last_hunt
+            return waited >= IDLE_BACKOFF[min(self._misses,
+                                              len(IDLE_BACKOFF) - 1)]
         if not self.tracker.locked_on and not self.manual:
             return self._frames % REFIND_IDLE == 0
         if not self._quiet or self._quiet % REFIND_CHECK:
