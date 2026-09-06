@@ -123,14 +123,27 @@ def close_sct():
 def grab(region):
     """Screenshot one region. region is (left, top, width, height)."""
     left, top, width, height = region
-    shot = _sct().grab({"left": left, "top": top,
-                        "width": width, "height": height})
+    try:
+        shot = _sct().grab({"left": left, "top": top,
+                            "width": width, "height": height})
+    except Exception:
+        # A grabber that has gone bad stays bad. It holds a device context, and
+        # unplugging a monitor or changing the resolution invalidates that, so
+        # every later shot through the same instance fails the same way.
+        # Building one per shot used to heal that for free; dropping it here is
+        # what holding on to one costs. The next call builds a fresh one.
+        close_sct()
+        raise
     return Image.frombytes("RGB", (shot.width, shot.height), shot.bgra,
                            "raw", "BGRX")
 
 
 def virtual_screen():
-    m = _sct().monitors[0]
+    try:
+        m = _sct().monitors[0]
+    except Exception:
+        close_sct()                # same reason as in grab
+        raise
     return m["left"], m["top"], m["width"], m["height"]
 
 
@@ -237,6 +250,7 @@ class Worker(threading.Thread):
         self._accepted = None      # the last reading we acted on
         self._misses = 0           # hunts in a row that found no board
         self._last_hunt = 0.0
+        self._searching = False    # whether the app has been told there is none
         self._board_px = None      # board width the templates were last fitted to
         self.settle_stats = [0, 0]  # readings taken, readings acted on
 
@@ -261,19 +275,31 @@ class Worker(threading.Thread):
                 self.region = found
                 self._quiet = 0
                 self._misses = 0
-            else:
+            elif self.region is None:
+                # Only a hunt with no region to fall back on counts towards the
+                # backoff. The routine re-hunt runs with one held and comes back
+                # empty whenever the board has not moved, and counting those
+                # left the first hunt after the region was finally given up
+                # waiting the longest gap in the table rather than firing.
                 self._misses += 1
-                if self.lost:
-                    # The rectangle we were watching has stopped holding a
-                    # board and the hunt found no other one, so let it go.
-                    # Keeping it went on reading a position off pixels that are
-                    # no longer a board, and reporting that position every frame
-                    # for as long as the app ran, which is what left the
-                    # coaching arrow drawn over whatever took the board's place.
-                    self.region = None
+            elif self.lost:
+                # The rectangle we were watching has stopped holding a board
+                # and the hunt found no other one, so let it go. Keeping it
+                # went on reading a position off pixels that are no longer a
+                # board, and reporting that position every frame for as long as
+                # the app ran, which is what left the coaching arrow drawn over
+                # whatever took the board's place.
+                self.region = None
         if self.region is None:
-            self.out.put(("searching", None))
+            # Said once on the way in, not eight times a second for as long as
+            # nothing is on screen. The app answers this by reconfiguring two
+            # labels and re-syncing the arrow, and none of that changes while
+            # the answer stays "still looking".
+            if not self._searching:
+                self._searching = True
+                self.out.put(("searching", None))
             return
+        self._searching = False
 
         shot, occ, settled = self._read_settled()
         if not settled:

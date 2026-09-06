@@ -307,6 +307,40 @@ def capture_checks():
         def close(self):
             Fake.closed += 1
 
+    class Flaky:
+        """A grabber a display change has invalidated. The instance already
+        built stops working, a newly built one is fine, which is what unplugging
+        a monitor or changing the resolution does to the device context mss
+        holds."""
+        live = None
+
+        def __init__(self):
+            Flaky.live = self
+            self.ok = True
+
+        def _still_there(self):
+            if not self.ok:
+                raise OSError("the display changed under it")
+
+        @property
+        def monitors(self):
+            self._still_there()
+            return [{"left": 0, "top": 0, "width": 8, "height": 4}]
+
+        def grab(self, box):
+            self._still_there()
+            return Shot()
+
+        def close(self):
+            pass
+
+    def broke(fn):
+        """What fn raised, or what it returned if it did not raise."""
+        try:
+            return fn()
+        except Exception as exc:
+            return "%s: %s" % (type(exc).__name__, exc)
+
     real = C._MSS
     C.close_sct()          # the stub only reaches grab() if the real one is gone
     C._MSS = Fake
@@ -324,6 +358,24 @@ def capture_checks():
         check("  closing drops it", getattr(C._local, "sct", None), None)
         check("  and shuts it rather than leaking the device context",
               Fake.closed, 1)
+
+        # Holding one costs what building one per shot gave away for free: a
+        # grabber that has gone bad has to be dropped or the app never captures
+        # again, and this is a display change away rather than a rare one.
+        C._MSS = Flaky
+        C.close_sct()
+        C.grab((0, 0, 1, 1))
+        Flaky.live.ok = False
+        check("a screenshot that fails is reported",
+              broke(lambda: C.grab((0, 0, 1, 1))),
+              "OSError: the display changed under it")
+        check("  and the next one works, the bad grabber having been dropped",
+              broke(lambda: C.grab((0, 0, 1, 1)).size), (1, 1))
+        C.virtual_screen()
+        Flaky.live.ok = False
+        check("the screen bounds recover the same way",
+              (broke(C.virtual_screen), broke(C.virtual_screen)),
+              ("OSError: the display changed under it", (0, 0, 8, 4)))
     finally:
         C._MSS = real
         C.close_sct()
@@ -339,7 +391,10 @@ def capture_checks():
     w.manual = False
     w.lost = False
     w._quiet = 0
-    w._frames = 0
+    # Not frame zero. The shape this replaced re-hunts on every REFIND_IDLE-th
+    # frame, and frame zero is one of those, so a check made there would pass
+    # against the bug as well as against the fix.
+    w._frames = 1
     w.tracker = Idle()
 
     w._misses, w._last_hunt = 0, 0.0
@@ -383,6 +438,35 @@ def capture_checks():
     finally:
         C.find_board_on_screen = hunt
     check("finding a board resets the wait", (w.region, w._misses), (found, 0))
+
+    # A hunt that misses while a region is still held is not the kind of miss
+    # the backoff is counting. The routine re-hunt comes back empty whenever
+    # the board has not moved, and counting those left the first hunt after the
+    # region was finally given up waiting the longest gap in the table.
+    w.lost = False
+    w._misses, w._quiet, w._frames = 0, 0, 0
+    w.out = queue.Queue()
+    try:
+        C.find_board_on_screen = lambda: None
+        for _ in range(C.REFIND_IDLE * 10):
+            C.Worker._tick(w)
+    finally:
+        C.find_board_on_screen = hunt
+    check("misses under a region that is still held are not counted",
+          (w.region, w._misses), (found, 0))
+
+    # Idle frames are the ones this branch is meant to make cheap, and every
+    # "searching" costs the Tk thread two label reconfigures and an arrow sync.
+    w.region, w.lost = None, False
+    w._misses, w._last_hunt, w._searching = 0, 0.0, False
+    w.out = queue.Queue()
+    try:
+        C.find_board_on_screen = lambda: None
+        for _ in range(10):
+            C.Worker._tick(w)
+    finally:
+        C.find_board_on_screen = hunt
+    check("ten idle frames say there is no board once", w.out.qsize(), 1)
 
 
 def main():
