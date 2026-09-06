@@ -404,6 +404,49 @@ def grid_of(board, flipped=False):
     return out
 
 
+# The two ranks at each end of the screen, and how many pieces one end has to
+# hold before its colour is worth anything. One piece is a king that has walked
+# up the board; two of one colour with none of the other is a home rank.
+ENDS = 2
+ENDS_MIN = 2
+
+
+def facing(rows):
+    """Which way up the board is, read off the pieces that have been named.
+    False means white is at the bottom of the screen, True means black is, and
+    None means the position does not say.
+
+    The letters have to come from the piece pass. read_occupancy separates the
+    two colours by pixel level, which is exactly the reading a set it has never
+    seen gets wrong, and this may not guess: a board taken the wrong way up
+    reads every square transposed and writes every move down mirrored, which is
+    a wrong game record rather than a missing one.
+
+    So both ends have to be one-sided and not merely leaning. Each colour has
+    to hold one end of the board with none of the other colour standing there,
+    which is what a position with either king still near home looks like and is
+    not what a position in the middle of the board looks like at all.
+
+    It can still be wrong. Two kings that have both crossed to the far side,
+    each with a piece for company and neither leaving anything behind, reads
+    upside down. Nothing in one frame separates that from the ordinary case, so
+    the rules come first wherever they answer it: see _cold_start.
+    """
+    counts = []
+    for band in (rows[:ENDS], rows[-ENDS:]):
+        cells = [cell for row in band for cell in row]
+        counts.append((sum(1 for c in cells if c.isupper()),
+                       sum(1 for c in cells if c.islower())))
+    (top_white, top_black), (low_white, low_black) = counts
+    if (not top_white and not low_black
+            and top_black >= ENDS_MIN and low_white >= ENDS_MIN):
+        return False
+    if (not top_black and not low_white
+            and top_white >= ENDS_MIN and low_black >= ENDS_MIN):
+        return True
+    return None
+
+
 def board_from_grid(rows, flipped=False, turn=chess.WHITE):
     """Build a position from letters read off the screen.
 
@@ -1335,7 +1378,14 @@ class BoardTracker:
     def _cold_start(self, rows, board_img=None):
         """Join a game already in progress. Which way the board faces and whose
         turn it is cannot both be read from one picture, so any that the rules
-        allow are kept and the next move decides between them."""
+        allow are kept and the next move decides between them.
+
+        Which way up is the half of that the identified pieces can often answer
+        on their own, and answering it here is worth doing because the other
+        half is cheap: with the board the right way up the first move of any
+        kind names the side to move, where an ambiguous orientation needs a
+        pawn move specifically and can wait many moves for one.
+        """
         if rows in (grid_of(chess.Board(), False), grid_of(chess.Board(), True)):
             return "waiting for the game to start"
 
@@ -1354,12 +1404,21 @@ class BoardTracker:
                    if b is not None]
         if not options:
             return "board unclear"
+        settled = facing(rows)
+        if len(options) > 1 and settled is not None:
+            # Narrowing what the rules already left, never overruling them. A
+            # position legal only one way up is proof and stays that way up;
+            # facing() is evidence and only ever picks between the ways up that
+            # were both still standing, so it cannot empty this list.
+            options = [o for o in options if o[1] == settled] or options
         if len(options) == 1:
             board, flipped = options[0]
             self._begin(board, flipped, joined_late=True)
             return "joined a game already in progress"
 
         self._pending = rows
+        if len({flipped for _, flipped in options}) == 1:
+            return "found a game, waiting for a move to say whose turn it is"
         return "found a game, waiting for a pawn move to tell which way up"
 
     def _orientations(self):
@@ -1375,9 +1434,26 @@ class BoardTracker:
         game, so a knight or queen move explains the screen equally well both
         ways up. A pawn move does not: pawns only go one way, so the first pawn
         move settles it. That is why this waits rather than guesses.
+
+        Where the pieces of the earlier position say which way up the board is,
+        that way up is tried on its own first, and then only the side to move is
+        left to settle. Any move at all settles that, because the side that did
+        not move still has every piece where it was. The search over both ways
+        up is still run when the one way up explains nothing, so a position
+        facing() reads upside down costs a slower answer rather than no answer.
         """
+        settled = facing(before)
+        ways = self._orientations()
+        if settled is not None and len(ways) > 1:
+            hit = self._resolve_facing((settled,), before, after)
+            if hit is not None:
+                return hit
+        return self._resolve_facing(ways, before, after)
+
+    def _resolve_facing(self, ways, before, after):
+        """_resolve over the ways up it is handed, and only those."""
         hits = []
-        for flipped in self._orientations():
+        for flipped in ways:
             for turn in (chess.WHITE, chess.BLACK):
                 start = board_from_grid(before, flipped, turn)
                 if start is None:

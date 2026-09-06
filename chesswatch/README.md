@@ -303,6 +303,24 @@ read as one you taught where it used to be read as nothing at all. On the set of
 all 64 squares with nothing wrong; teaching two of them reads 56 with 3 wrong,
 against 50 read and 14 unread for teaching nothing.
 
+Two different pieces cannot look alike, so a sheet whose slots hold one picture
+twice is refused rather than written. Scored the way the reader scores a square,
+the twelve slots of a good sheet are never closer than 0.185 to each other; a
+slot cut from another piece's square scores 0.000 against it. A slot taught
+wrong is worse than one never taught, because the reader names squares off
+whatever it was taught and does it confidently, and because a piece nobody
+teaches is carried forward out of the sheet in use, so one wrong slot outlives
+every later sitting.
+
+That is also why a slot can be put back:
+
+    python enroll.py --reset n
+
+which returns the black knight to the bundled template and leaves the other
+eleven where teaching left them. Deleting `taught.png` is the only other route
+and it loses all twelve, and on a board that piece is not standing on, teaching
+cannot reach it at all.
+
 It runs on its own too, against a screenshot rather than the screen:
 
     python enroll.py board.png
@@ -360,11 +378,26 @@ enough to take the piece away, still does.
 
 *Joining a game before it knows which way the board faces.* A board rotated
 half a turn is itself a legal game, so a knight or queen move explains the
-screen equally well both ways up. A pawn move does not, because pawns only move
-one way, so the first pawn move settles it, usually within seconds. If you would
-rather not wait, the note saying so brings a **Side** row up under it while it
-is true: pick white or black there and any move will do. The same setting lives
-in **Setup > Side**, which is where it stays once the wait is over.
+screen equally well both ways up.
+
+Which way up is read off the pieces first. Where one colour holds the top two
+ranks with none of the other standing there, and the other colour holds the
+bottom two the same way, that says which end each side is at and it says it on
+the first frame. It has to be that one-sided rather than merely leaning: both
+ends holding a mix is an unusual position, and a board taken the wrong way up
+would write every move down mirrored, which is worse than waiting. Where the
+rules leave only one way up, the rules win and this is not consulted.
+
+Where the position does not say, a pawn move does, because pawns only move one
+way. That is the fallback and it can be a long wait, so if you would rather not,
+the note saying so brings a **Side** row up under it while it is true: pick
+white or black there and any move will do. The same setting lives in
+**Setup > Side**, which is where it stays once the wait is over.
+
+Whose turn it is cannot be read off one picture either way, so one move is
+still wanted before the game starts being written down. Any move does it once
+the board is the right way up, because the side that did not move still has
+every piece where it was.
 
 ## The last-move highlight
 
@@ -437,10 +470,13 @@ position it is reading, which should match your screen exactly.
 
 - "no board" means nothing on screen matched. Check the board is not covered by
   another window.
-- "waiting for a pawn move to tell which way up" means it has found a game in
-  progress and needs one pawn move before it can tell which way the board is
-  facing. A **Side** row appears under that line for as long as it is true, and
-  picking white or black there removes the wait. So does **Setup > Side**.
+- "waiting for a move to say whose turn it is" means it has found a game in
+  progress and knows which way up the board is. The next move of any kind
+  starts the record.
+- "waiting for a pawn move to tell which way up" means the pieces did not say
+  which way the board is facing, so it needs a pawn move. A **Side** row appears
+  under that line for as long as it is true, and picking white or black there
+  removes the wait. So does **Setup > Side**.
 - Use **Setup > Board > Pick** to drag a box around the board corner to corner.
   That choice is remembered in `config.json`. A drag is never pixel exact, so
   the box is snapped onto whatever board is found inside it before it is saved,
@@ -460,10 +496,10 @@ rectangle is in use.
 
 ## Checking it still works
 
-    python selftest.py     121 checks, including real screenshots
+    python selftest.py     147 checks, including real screenshots
     python piecetest.py     62 checks on the piece reader under a bad capture
     python positiontest.py  29 checks on the whole board solver, no pixels
-    python enrolltest.py   191 checks on teaching the pieces and on the arrow
+    python enrolltest.py   212 checks on teaching the pieces and on the arrow
     python layouttest.py    98 checks on what the window shows and how wide
     python coachtest.py     53 checks on the engine wrapper and its label,
                             43 without a display and 31 without Stockfish

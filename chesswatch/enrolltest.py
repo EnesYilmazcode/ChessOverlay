@@ -1425,9 +1425,143 @@ def wiring():
               W.DARK < grey < W.BRIGHT, True)
 
 
+# The board of #54 and #55, as it stands in testdata/7.png. A middlegame in a
+# set the bundled sheet leaves seven squares of unread, holding eight of the
+# twelve piece types, which is the joined-game case #50 is for.
+TRUTH_7 = ["..b..r..", "..p.....", "..p.p...", "..NpP.k.",
+           "PP.P....", ".....PP.", "........", "R.....K."]
+
+
+def taught_7(tmp):
+    """A sheet taught off 7.png, the four types not standing on it carried over
+    from the bundled sheet the way write_sheet carries them."""
+    return E.write_sheet(board_of("7"), slots_from(TRUTH_7),
+                         os.path.join(tmp, "7.png"))
+
+
+def one_picture():
+    print("\n-- refusing a sheet that holds one piece twice -------------")
+    b7 = board_of("7")
+    tmp = tempfile.mkdtemp()
+    try:
+        good = taught_7(tmp)
+        check("a sheet taught off a real board holds twelve pieces",
+              E.confusable(good), None)
+        check("  and the bundled sheet does too",
+              E.confusable(P.TEMPLATE_SHEET), None)
+
+        # #54 as it was reported: the black king's square clicked while the
+        # knight button was selected, which the window accepts in silence.
+        wrong = slots_from(TRUTH_7)
+        wrong["n"] = {False: [(3, 6)]}
+        why = refused(E.write_sheet, b7, wrong, os.path.join(tmp, "bad.png"))
+        check("a king taught into the knight slot is refused",
+              (why or "").startswith("the black king and the black knight"),
+              True)
+        check("  and the refusal names both pieces and the way back",
+              ("--reset" in (why or ""), os.path.exists(
+                  os.path.join(tmp, "bad.png"))), (True, False))
+
+        # Carrying a piece over from the sheet in use is what #50 added and it
+        # has to keep working: eight taught here, four carried.
+        short = {s: v for s, v in slots_from(TRUTH_1).items() if s in "KQRBNP"}
+        check("carrying the other colour over is still allowed",
+              refused(E.write_sheet, board_of("1"), short,
+                      os.path.join(tmp, "half.png"), None), None)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def put_back():
+    print("\n-- putting one piece back ---------------------------------")
+    tmp = tempfile.mkdtemp()
+    try:
+        path = taught_7(tmp)
+        before = Image.open(path).convert("RGB")
+        # A sheet already carrying the bad slot, which is what the reporter had
+        # on disk and what teaching could not reach: his board has no black
+        # knight to point at.
+        sick = Image.open(path).convert("RGB")
+        for half in (0, P.PLAIN_SLOTS):
+            sick.paste(slot(before, "k", half == 0),
+                       ((half + P.ORDER.index("n")) * P.TEMPLATE_PX, 0))
+        sick.save(path)
+        check("the sheet on disk cannot tell the two apart",
+              E.confusable(path), ("k", "n"))
+
+        E.reset_slot("n", path)
+        after = Image.open(path).convert("RGB")
+        check("the knight goes back to the bundled template",
+              E.confusable(path), None)
+
+        def moved(one, two):
+            return sorted({s for s in P.ORDER for light in (True, False)
+                           if ImageChops.difference(
+                               slot(one, s, light),
+                               slot(two, s, light)).getbbox()})
+
+        check("  and it is the only slot that moved", moved(sick, after), ["n"])
+        # The eight of the twelve that were taught off the board are in here,
+        # which is the half of #54 that deleting taught.png cannot do.
+        check("  the other eleven are where teaching left them",
+              moved(before, after), [])
+        check("  the sheet still loads", P.PieceReader(path).ready, True)
+        check("  and still reads the board it was taught from",
+              tally(P.PieceReader(path), board_of("7"), TRUTH_7), (64, 0, 0))
+
+        check("resetting a piece that is not one is refused",
+              refused(E.reset_slot, "x", path) is not None, True)
+        gone = os.path.join(tmp, "nothing.png")
+        check("resetting a sheet that is not there is refused",
+              refused(E.reset_slot, "n", gone) is not None, True)
+        check("the command line route runs without a window",
+              (E.reset_main(["n"], path), E.reset_main([], path)), (0, 1))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def which_way_up():
+    print("\n-- which way up, off the pieces ---------------------------")
+    tmp = tempfile.mkdtemp()
+    try:
+        reader = P.PieceReader(taught_7(tmp))
+        b7 = board_of("7")
+        check("the taught sheet reads all 64 squares of 7.png",
+              tally(reader, b7, TRUTH_7), (64, 0, 0))
+
+        # The acceptance test of #55. One frame, no move of any kind.
+        rows, _ = reader.classify(b7)
+        check("three black at the top and two white at the bottom says white "
+              "is at the bottom", W.facing(rows), False)
+        cold = W.BoardTracker(directory=tmp, reader=reader)
+        note = cold.check(b7)
+        check("  so the first frame no longer asks which way up",
+              "which way up" in note, False)
+        check("  and it is not guessing whose turn it is either",
+              cold.locked_on, False)
+
+        # The one move it still wants is any move, where before this it was a
+        # pawn move specifically. This one is a rook.
+        board = W.board_from_grid([list(row) for row in TRUTH_7],
+                                  False, chess.BLACK)
+        ren = Renderer(shot("7"), W.find_board(
+            Image.open(shot("7")).convert("RGB")), board=board)
+        board.push_san("Rf7")
+        cold.check(ren.render(board))
+        check("a rook move settles it", cold.locked_on, True)
+        check("  the right way up", cold.flipped, False)
+        check("  at the right position",
+              cold.board.board_fen(), board.board_fen())
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     no_windows()
     sheet()
+    one_picture()
+    put_back()
+    which_way_up()
     partial()
     averaging()
     opening()

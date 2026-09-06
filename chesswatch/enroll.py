@@ -1,6 +1,7 @@
 """Teach the reader your piece set by hand.
 
 Run:  python enroll.py [screenshot.png]
+      python enroll.py --reset n     put one piece back on the bundled sheet
 
 The reader normally learns the twelve piece shapes off a starting position, for
 free and exactly at your window size. That needs all twelve types on the board
@@ -34,6 +35,12 @@ templates already in use, so saving costs nothing that was working before.
 
 Saving writes the same twelve slot PNG make_templates.py writes, because that
 is the only format the reader loads. Nothing here changes pieces.png.
+
+A sheet holding one picture in two pieces' slots is refused rather than
+written. A piece nobody teaches is carried forward out of the sheet in use, so
+a slot taught wrong outlives every later sitting, and the piece it names is
+usually the one not on the board and so not teachable. --reset is the way back
+for a slot that already got in.
 """
 
 import os
@@ -539,6 +546,128 @@ def _held_slot(sheet_img, symbol, light):
                            (at + 1) * TEMPLATE_PX, TEMPLATE_PX))
 
 
+# How far apart two slots of a sheet have to score before they are two
+# different pieces rather than two pictures of one.
+#
+# Measured the way confusable() measures, over all 96 slots of four sheets that
+# are known good: the bundled chess.com sheet, the two in piecesets/, and one
+# taught off testdata/7.png with the four types not standing on it carried over
+# from the bundled sheet, which is the joined-game case #50 is for. The closest
+# any slot comes to another piece is 0.185, a pawn against a bishop, and it is
+# 0.185 on two unrelated sets, so that is where the good distribution stops
+# rather than where one sheet happens to sit. A slot cut from another piece's
+# square scores 0.000, and the sheet #54 was reported from is not in the tree
+# but the 0.9843 that issue measures is a margin of 0.016. 0.10 is the gap
+# between the two, not a threshold inside either.
+SLOT_MARGIN = 0.10
+
+
+def _name(symbol):
+    return ("white " if symbol.isupper() else "black ") + NAMES[symbol.upper()]
+
+
+def confusable(path):
+    """The two pieces a sheet cannot tell apart, or None when every slot is its
+    own piece.
+
+    Scored the way the reader scores a square, because that is the only
+    comparison that predicts what the sheet will do once it is in use. Each
+    slot is handed to the same feature reduction and the same ranking a board
+    square gets, against templates loaded out of the sheet itself, so a slot
+    always wins against its own piece at 1.0 and the number that matters is how
+    close the next piece comes.
+
+    Both colours of a piece are asked about here where the reader itself does
+    not: it drops a piece's own colour twin as a rival, on the argument that
+    which colour a shape is drawn in is not a thing to be uncertain between. A
+    sheet holding one picture in two colours' slots is exactly that thing, and
+    it is the sheet this check exists to refuse.
+    """
+    reader = pieces.PieceReader(path)
+    if not reader.ready:
+        return None
+    img = Image.open(path).convert("L")
+    whole = img.size[0] // TEMPLATE_PX
+    slots = PAIRED_SLOTS if whole >= PAIRED_SLOTS else PLAIN_SLOTS
+    levels = pieces._levels(img)
+    span = pieces._span(levels)
+    for slot in range(slots):
+        symbol = ORDER[slot % PLAIN_SLOTS]
+        feat = pieces._features(img.crop((slot * TEMPLATE_PX, 0,
+                                          (slot + 1) * TEMPLATE_PX,
+                                          TEMPLATE_PX)), span=span)
+        if feat is None:
+            continue
+        scored = {sym: value for value, sym
+                  in pieces.ranking(feat, reader.templates, keep=None)}
+        own = scored.get(symbol, 0.0)
+        for other, value in scored.items():
+            if other != symbol and own - value < SLOT_MARGIN:
+                return symbol, other
+    return None
+
+
+def _refuse_confusable(path):
+    """Raise if the sheet at path holds one picture in two pieces' slots.
+
+    A wrong template is worse than an untaught piece: the reader names a square
+    off whatever it was taught, confidently, so one wrong slot makes every board
+    holding that piece illegal and unreadable rather than merely incomplete.
+    And write_sheet carries a slot nobody taught forward into the next sheet, so
+    a slot that gets in survives every later teaching of every other piece.
+    """
+    clash = confusable(path)
+    if not clash:
+        return
+    mine, other = clash
+    # Both named and neither blamed. Which of the two slots holds the wrong
+    # picture is not something the comparison can say, and guessing it would
+    # send the reader of #54 to reset the piece that was right.
+    raise ValueError(
+        "the %s and the %s are the same picture; python enroll.py --reset %s "
+        "or %s puts one back" % (_name(mine), _name(other), mine, other))
+
+
+def reset_slot(symbols, path=TAUGHT_SHEET):
+    """Put one piece back on the bundled template and leave the other eleven.
+    symbols may name several, for a sheet with more than one slot to undo.
+
+    The only way out of a slot taught wrong. Deleting the sheet loses the
+    eleven that are right, and teaching over it cannot reach a piece that is
+    not standing on the board in front of you, which is the case a slot taught
+    wrong is most likely to be in: the reporter of #54 had no black knight on
+    his board and so taught three times without ever replacing the bad one.
+
+    Written at the width the sheet already has. A plain twelve slot sheet says
+    nothing about which square colour a piece stood on and reading one as
+    paired would claim it does.
+    """
+    for symbol in symbols:
+        if symbol not in ORDER:
+            raise ValueError("no such piece: " + symbol)
+    if not pieces.PieceReader(path).ready:
+        raise ValueError("no sheet at " + os.path.basename(path) + " to reset")
+    current = Image.open(path).convert("RGB")
+    bundled = Image.open(pieces.TEMPLATE_SHEET).convert("RGB")
+    slots = (PAIRED_SLOTS if current.size[0] // TEMPLATE_PX >= PAIRED_SLOTS
+             else PLAIN_SLOTS)
+    out = Image.new("RGB", (TEMPLATE_PX * slots, TEMPLATE_PX))
+    for slot in range(slots):
+        symbol = ORDER[slot % PLAIN_SLOTS]
+        light = slot < PLAIN_SLOTS if slots == PAIRED_SLOTS else True
+        out.paste(_held_slot(bundled if symbol in symbols else current,
+                             symbol, light), (slot * TEMPLATE_PX, 0))
+    tmp = path + ".tmp"
+    out.save(tmp, "PNG")
+    try:
+        _refuse_confusable(tmp)
+    except ValueError:
+        os.remove(tmp)
+        raise
+    os.replace(tmp, path)
+    return path
+
+
 def write_sheet(board_img, slots, path=TAUGHT_SHEET, held=None):
     """Write the paired sheet: the twelve pieces as they look on a light
     square, then the same twelve on a dark one.
@@ -578,6 +707,11 @@ def write_sheet(board_img, slots, path=TAUGHT_SHEET, held=None):
     A sheet with a slot left black would not fail to load, it would load as a
     template matching every square, so a missing piece is refused here rather
     than written and discovered later.
+
+    Two slots holding one picture are refused for the same reason and it is the
+    worse of the two: a blank slot matches everything and so reads as nothing,
+    while a slot holding another piece names squares wrongly and confidently.
+    See confusable().
     """
     # A colour taught no squares at all is that colour untaught, and saying so
     # here is what keeps the checks below reading what is really there.
@@ -625,6 +759,11 @@ def write_sheet(board_img, slots, path=TAUGHT_SHEET, held=None):
     # sheet that was already working rather than half of a new one.
     tmp = path + ".tmp"
     sheet.save(tmp, "PNG")
+    try:
+        _refuse_confusable(tmp)
+    except ValueError:
+        os.remove(tmp)
+        raise
     os.replace(tmp, path)
     return path
 
@@ -722,8 +861,11 @@ class Enroller:
         self.btn_save.grid(row=9, column=0, columnspan=2, sticky="we",
                            pady=(8, 0))
 
+        # Wrapped rather than let to run on: the window is fixed width and a
+        # refusal naming two pieces and a command is longer than one line.
         self.lbl_status = tk.Label(self.win, text="", bg=C.BG, fg=C.MUTED,
-                                   font=("Segoe UI", 8), anchor="w")
+                                   font=("Segoe UI", 8), anchor="w",
+                                   wraplength=side + 150, justify="left")
         self.lbl_status.pack(fill="x", padx=10, pady=(0, 8))
 
         self._redraw()
@@ -838,7 +980,34 @@ class Enroller:
         self.win.mainloop()
 
 
+def reset_main(wanted, path=None):
+    """python enroll.py --reset n
+
+    A command line rather than a button because it is the escape hatch and not
+    part of teaching: the window teaches off the board in front of you, and the
+    piece that needs putting back is the one that is not on it.
+    """
+    if not wanted:
+        print("Which piece? One or more of " + ORDER + ", as in:")
+        print("  python enroll.py --reset n")
+        return 1
+    symbols = "".join(wanted)
+    # The sheet is looked up here rather than defaulted into the signature so
+    # that a test can point it somewhere other than the app directory.
+    path = path or TAUGHT_SHEET
+    try:
+        reset_slot(symbols, path)
+    except (ValueError, OSError) as exc:
+        print(str(exc))
+        return 1
+    print("put the %s back on the bundled template in %s"
+          % (", ".join(_name(s) for s in symbols), os.path.basename(path)))
+    return 0
+
+
 def main():
+    if "--reset" in sys.argv[1:]:
+        return reset_main(sys.argv[sys.argv.index("--reset") + 1:])
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     if args:
         img = board_of(Image.open(args[0]).convert("RGB"))
