@@ -393,11 +393,22 @@ def main():
     import wildcardbench as _B
 
     two_missed = render.render(tracked(8)[1])
+    survived = []
     for spot in ((0, 0), (0, 2), (2, 2), (3, 2), (5, 5)):
         seen = tracked(6)[0]
         seen.check(_F.with_pointer(two_missed, spot[0], spot[1], size=1.8))
-        r.append(check("a pointer at %s does not stop the check pass" % (spot,),
-                       seen.game.moves, LINE[:8]))
+        if seen.game.moves == LINE[:8]:
+            survived.append(spot)
+    # Four of the five, and the fifth is priced rather than dropped. The
+    # correlation reader refuses a square by a different measure than the mask
+    # reader it replaced: it divides by the square's own spread, which a
+    # pointer moves, so a big cursor over d5 takes that square below the bar
+    # where the mask reader still had it. On main all five pass and thirty
+    # eight squares of the same obstructed corpus come back as the WRONG piece;
+    # here none does. Pinned as the exact set, so losing another one fails and
+    # so does silently gaining one back.
+    r.append(check("a pointer costs a check pass on one of five squares",
+                   survived, [(0, 0), (0, 2), (2, 2), (5, 5)]))
 
     # A square painted over edge to edge fills a whole layer of the mask, so
     # nothing can be confirmed on it and the belief cannot put it back. That
@@ -780,8 +791,8 @@ def main():
     # board worse than the bundled sheet does.
     tiny = W.BoardTracker(directory=tempfile.mkdtemp(), reader=P.PieceReader())
     tiny.feed(W.START_WHITE_VIEW)
-    tiny.learn_pieces(render.render(chess.Board()).resize((200, 200),
-                                                          Image.LANCZOS))
+    tiny.learn_pieces(render.render(chess.Board()).resize(
+        (P.MIN_LEARN_PX - 8, P.MIN_LEARN_PX - 8), Image.LANCZOS))
     tiny.board = chess.Board(ENDGAME)
     r.append(check("  but an undersized set is dropped rather than kept",
                    (tiny.relearn_pieces(render.render(tiny.board)),

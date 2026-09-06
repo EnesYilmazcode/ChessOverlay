@@ -55,10 +55,23 @@ NAMES = {"K": "king", "Q": "queen", "R": "rook",
 # How much brighter the ink on one half of a board has to be than the ink on
 # the other before "starting position" will say which way round it is drawn.
 # Measured on the two sets there are fixtures for, at every window size and
-# either way up: chess.com's own separates by 0.77 and the flat set of 6.png,
-# which is the harder one, by 0.50. A set whose two colours do not separate by
-# this much is refused rather than guessed at.
+# either way up: the closest any of the eight comes is 0.491, and a board with
+# white pieces drawn at both ends, which is what a set whose colours do not
+# separate looks like, comes to 0.000. A gap rather than a threshold inside a
+# distribution.
 OPENING_INK_GAP = 0.25
+
+# And how far past a square colour a pixel has to be to count as ink, as a
+# fraction of the gap between the two square colours.
+#
+# Anchored on the two square colours rather than on the extremes the ink
+# reaches, because the square colours are stable and always present while the
+# extremes are whatever the capture did to the picture. It has to stay under
+# the nearest a piece comes to the square under it, which on chess.com is a
+# white body at 250 over a light square at 233, or 0.167 of the span. 0.10
+# leaves room either side and every one of the eight boards reads the right way
+# up at 0.05, 0.10 and 0.15 alike.
+OPENING_INK_F = 0.10
 
 # Which squares the opening covers, as True and False rather than letters. The
 # same both ways up, which is why one of the two is enough: turning the board
@@ -183,12 +196,16 @@ def opening_view(board_img):
     a standard board onto position #300 takes fourteen of its thirty two
     squares from the wrong piece.
 
-    Which half is inked brighter says which way up it is. That is the same
-    bright against dark test _judge already applies to a square, taken sixteen
+    Which half is inked brighter says which way up it is. Counted sixteen
     squares at a time because one square does not settle it: on the flat set of
-    6.png four of the white pieces on the back rank read darker than they are
-    bright, the a1 rook at 281 bright against 323 dark, while its half of the
-    board reads 0.57 bright against the other half's 0.07.
+    6.png four of the white pieces on the back rank hold more dark pixels than
+    bright ones, while its half of the board still separates from the other by
+    half the count.
+
+    The reader itself decides nothing here. It normalises every square by its
+    own spread, which is exactly what makes it blind to how bright a piece is,
+    so this counts pixels off the picture against the board's two square
+    colours instead. See OPENING_INK_F.
 
     What none of this checks is which piece is which. Drawn in both fixture
     sets, at capture size and at 400 pixels, 948 of the 959 non-standard
@@ -202,8 +219,9 @@ def opening_view(board_img):
     here, and the only thing standing in their way is the person seeing where
     the twelve letters landed before pressing save.
     """
-    feats = pieces._board_features(board_img, pieces._levels(board_img))
-    holds = [[f is not None and f.coverage >= W.MIN_COVERAGE
+    levels = pieces._levels(board_img)
+    feats = pieces._board_features(board_img, levels)
+    holds = [[f is not None and f.occupied
               for f in feats[row * 8:row * 8 + 8]] for row in range(8)]
     if holds != OPENING_OCCUPANCY:
         raise ValueError("this board is not in the starting position")
@@ -219,18 +237,36 @@ def opening_view(board_img):
                    for j in range(3) if j != i):
                 raise ValueError("the ends of the back rank do not match, so "
                                  "this is not the standard opening")
-    shares = []
-    for rows in ((0, 1), (6, 7)):
-        here = [feats[r * 8 + c] for r in rows for c in range(8)]
-        # Every one of these squares passed MIN_COVERAGE, which counts bright
-        # and dark together, so there is always ink here to take a share of.
-        bright = sum(f.bright for f in here)
-        shares.append(bright / (bright + sum(f.dark for f in here)))
-    top, bottom = shares
+    top, bottom = (_ink_share(board_img, levels, rows)
+                   for rows in ((0, 1), (6, 7)))
     if abs(top - bottom) < OPENING_INK_GAP:
         raise ValueError("which way round this board is drawn cannot be told "
                          "from its two halves")
     return top > bottom
+
+
+def _ink_share(board_img, levels, rows):
+    """How much of the ink on these ranks is brighter than the board rather
+    than darker, counted off the picture at the size it was captured.
+
+    Both cutoffs come off the two square colours, which a brightness or a
+    contrast knob moves along with the pieces, so the count is the same
+    whatever the screen is set to. Every one of these squares holds a piece, so
+    there is always ink here to take a share of.
+    """
+    lo, hi = levels
+    span = max(1, hi - lo)
+    up = int(hi + OPENING_INK_F * span)
+    down = int(lo - OPENING_INK_F * span)
+    grey = board_img.convert("L")
+    size = board_img.size[0]
+    bright = dark = 0
+    for row in rows:
+        for col in range(8):
+            counts = grey.crop(pieces._square_box(size, row, col)).histogram()
+            bright += sum(counts[up + 1:])
+            dark += sum(counts[:max(0, down)])
+    return bright / (bright + dark) if bright + dark else 0.5
 
 
 def opening_slots(board_img, scored):

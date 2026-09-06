@@ -199,14 +199,17 @@ def sheet():
               got[0] > base[0], True)
 
         # The square colour is what does that, and h8 is where it shows. A
-        # rook cut only from light a8 loses that square to a pawn cut from dark
-        # a7, on parity rather than on shape, and no threshold reaches it
-        # because both scores are honest.
+        # rook cut only from light a8 used to lose that square to a pawn cut
+        # from dark a7, on parity rather than on shape. The reader moves a
+        # taught piece onto the other square colour itself now, so a one colour
+        # sheet no longer names anything wrong; what it still costs is squares
+        # it will not name at all, because a repainted ground is a guess at the
+        # rendering where a second slot is the rendering.
         one = E.write_sheet(b6, slots_from(TRUTH_6, paired=False),
                             os.path.join(tmp, "d.png"))
         flat = tally(P.PieceReader(one), b6, TRUTH_6)
         print("        one colour only: correct %d  wrong %d  unknown %d" % flat)
-        check("  one square a piece is what got h8 wrong", flat[1], 1)
+        check("  one square a piece still names nothing wrong", flat[1], 0)
         for label, sheet_path in (("one colour", one), ("both colours", path6)):
             ranked = h8_ranking(P.PieceReader(sheet_path), b6)
             print("      h8, a black rook on a dark square, taught from %s:"
@@ -219,7 +222,7 @@ def sheet():
               h8_ranking(P.PieceReader(path6), b6)[0][1], "r")
         check("  clear of the pawn by more than the margin asks",
               h8_ranking(P.PieceReader(path6), b6)[0][0]
-              - h8_ranking(P.PieceReader(path6), b6)[1][0] > P.MIN_MARGIN, True)
+              - h8_ranking(P.PieceReader(path6), b6)[1][0] > P.MARGIN, True)
 
         # A person who clicks twelve times and stops has to be no worse off
         # than the one slot sheet left them, which means the same reading.
@@ -255,14 +258,16 @@ def sheet():
         check("  and claims no square colour it cannot know",
               {t.light for v in plain.templates.values() for t in v}, {None})
 
-        # Cut short. Under twelve is rubble. Past twelve it falls back to the
-        # first twelve slots and reads as a plain sheet. Cut to exactly twelve
-        # it is refused, and rightly: those twelve are every light square and
-        # nothing else, so _levels finds one board colour where it needs two
-        # and every slot reduces to nothing. All three are all or nothing,
-        # which is the guarantee that matters.
+        # Cut short. Under twelve is rubble. Twelve or more reads as a plain
+        # sheet off the first twelve slots. Cut to exactly twelve those twelve
+        # are every light square and nothing else, which the reader that
+        # thresholded could not load at all because the sheet then had one
+        # board colour where it needed two; this one normalises each slot by
+        # its own spread and reads them, and holds a piece on one square colour
+        # rather than nothing. All of them are all or nothing, which is the
+        # guarantee that matters.
         wide = Image.open(path6)
-        for slots, want in ((5, False), (P.PLAIN_SLOTS, False),
+        for slots, want in ((5, False), (P.PLAIN_SLOTS, True),
                             (P.PLAIN_SLOTS + 4, True), (P.PAIRED_SLOTS, True)):
             cut = os.path.join(tmp, "cut%d.png" % slots)
             wide.crop((0, 0, slots * P.TEMPLATE_PX, P.TEMPLATE_PX)).save(cut)
@@ -538,16 +543,18 @@ def shuffled():
               E.OPENING_OCCUPANCY)
 
         # The reader is asked as a bonus rather than as a guard, and it is
-        # worth saying which. On 6.png it has no opinion about the back rank at
-        # all, which is where a shuffled board differs, so the check above is
-        # what covers that and this covers nothing.
+        # worth saying which. On 6.png it names four of the sixteen back rank
+        # squares and refuses the rest, so it covers a quarter of where a
+        # shuffled board differs and the check above covers all of it. What it
+        # must never do is name one of them WRONG, which is the line below.
         rows = bundled.classify(b6)[0]
-        back = {rows[r][c] for r in (0, 7) for c in range(8)}
+        back = [(rows[r][c], TRUTH_6[r][c]) for r in (0, 7) for c in range(8)]
         print("      on 6.png the reader names %d of the 64 squares and reads "
               "%s on the back rank"
               % (sum(1 for row in rows for s in row if s not in (".", "?")),
-                 " ".join(sorted(back))))
-        check("the reader has no opinion about 6.png's back rank", back, {"?"})
+                 " ".join(sorted({g for g, _ in back}))))
+        check("what the reader does say about 6.png's back rank is right",
+              [g for g, w in back if g not in ("?", w)], [])
         lying = [[(".", None)] * 8 for _ in range(8)]
         lying[0][0] = ("R", 0.9)          # a white rook where a8 holds a black one
         check("  but where it does disagree it stops the press, and says so",
@@ -591,11 +598,14 @@ def button():
     lab.symbol("r")
     lab.square(7, 4)
     lab.symbol("K")
+    # One of the two clicks lands on a square the reader now proposes on this
+    # set, so it replaces a seeded slot rather than adding one. What the row is
+    # for is that the two counts stay apart, which they do.
     check("clicking is counted apart from what the reader proposed",
-          (len(lab.by_hand), seeded), (2, 2))
+          (len(lab.by_hand), seeded), (1, 5))
     E.Enroller._opening(win)
     check("  and the opening says how much of it it replaced",
-          lab.hint(), "took all 32 squares, over the 2 you had clicked. "
+          lab.hint(), "took all 32 squares, over the 1 you had clicked. "
                       "Which piece is which was not checked.")
     check("  after which there is nothing clicked left to replace",
           (lab.by_hand, lab.samples()), (set(), 32))
@@ -653,8 +663,13 @@ def knows():
     # paired from any board, and are the ones written into both halves.
     check("  and it proposes both colours wherever both are there",
           sum(1 for here in seeded1.values() if len(here) == 2), 8)
-    check("on the set from issue #20 it proposes almost nothing",
-          len(E.seed_slots(E.beliefs(bundled, boards["6"]))) < 4, True)
+    # It used to propose almost nothing here, which is what issue #20 was.
+    # The correlation reader names ten of that set's thirty two pieces off the
+    # bundled sheet, so the seed is worth having and the person still has the
+    # rest to click.
+    seeded6 = E.seed_slots(E.beliefs(bundled, boards["6"]))
+    check("on the set from issue #20 it proposes some of it and not all",
+          (4 <= len(seeded6) <= 10, len(seeded6) < 12), (True, True))
 
     # A build of pieces.py with no per square score to give must show no
     # number, not a made up one. A hard coded 1.00 rendered where a
