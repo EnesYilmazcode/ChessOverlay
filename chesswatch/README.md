@@ -218,8 +218,40 @@ starts from the reader's own answer, so on a set it already half reads you only
 correct what is wrong. What it writes is a template sheet, kept in `taught.png`
 and loaded again next time you start.
 
-It keeps one square of each colour per piece where it can, and clicking a second
-square of the other colour is what buys the better read. Board colour is not
+If the board is sitting in the opening, **it is the opening** is the whole job
+in one press: it takes all thirty two pieces at once, four samples of each pawn
+among them. Twelve templates taught off the wrong position is the most
+expensive thing this program can be told, since the reader then names squares
+confidently from them, so three things about the picture are checked before any
+of it is taken, and each refusal says which one stopped it:
+
+- **Nothing has moved.** Every square of the outer two ranks is covered and the
+  middle four are empty. On a board with all thirty two pieces still on it that
+  proves no pawn has moved. It proves nothing about the pieces behind them.
+- **The ends of each back rank match.** The opening puts rooks on a and h,
+  knights on b and g, bishops on c and f, so each of the three squares at one
+  end has to be a better match for the square it mirrors than for either of the
+  others. This is what refuses a chess960 game, which keeps all thirty two
+  pieces on the outer ranks and so passes the first check exactly. Over all 960
+  positions drawn in both fixture sets, at capture size and at 400 pixels, 948
+  of the 959 non-standard ones are refused in three of those four and 942 in
+  the fourth.
+- **The two halves are inked apart**, which is what says which way round the
+  board is drawn.
+
+None of that knows which piece is which, and the button says "it is the
+opening" rather than claiming the program checked it. Three arrangements get
+through: a back rank that mirrors the opening's outside the king and queen, 11
+of the 959, a king and queen swapped, and the knights swapped for each other's
+colour, which is reachable in a legal game. The window draws a letter on every
+square it is about to cut from, and looking at them before saving is what
+catches those.
+
+Every square you click is kept. One of each colour per piece is what buys the
+better read, and more squares of the same colour are averaged into that piece's
+slot, the way the reader averages the frames it folds in while a game runs.
+Clicking a taught square again takes it back, which is how a mis-click is
+undone now that a second click no longer replaces the first. Board colour is not
 thrown away by the mask, so a rook cut from a light square is being compared
 against a dark square rook on the square colour as much as on the shape: teach
 the pieces of 6.png from single squares and its h8 rook scores 0.518 as a pawn
@@ -369,7 +401,7 @@ rectangle is in use.
     python selftest.py     104 checks, including real screenshots
     python piecetest.py     49 checks on the piece reader under a bad capture
     python positiontest.py  29 checks on the whole board solver, no pixels
-    python enrolltest.py   131 checks on teaching the pieces and on the arrow
+    python enrolltest.py   180 checks on teaching the pieces and on the arrow
     python coachtest.py     52 checks on the engine wrapper and its label,
                             44 without a display and 31 without Stockfish
     python overlaytest.py   21 checks that the arrows cannot corrupt a reading
@@ -405,11 +437,12 @@ disk. The second game is deliberately a small board on the second monitor, and a
 third run skips three moves with no frames in between and checks they come back
 in the only legal order.
 
-`enrolltest.py` opens no window at all. The arrow rule and the enrollment
-bookkeeping are written as plain functions so they can be checked without one,
-and the case where the board disappears drives the real capture worker against
-a rendered desktop, because that one is worker behaviour and no rule on its own
-can prove the worker reports it.
+`enrolltest.py` opens no window at all, and enforces it by replacing Tk's two
+window classes with a refusal before any check runs. The arrow rule and the
+enrollment bookkeeping are written as plain functions so they can be checked
+without one, and the case where the board disappears drives the real capture
+worker against a rendered desktop, because that one is worker behaviour and no
+rule on its own can prove the worker reports it.
 
 `settletest.py` replaces the screen with a clock-driven script, so the
 animation has a real duration rather than a frame count. It covers pawn pushes,
