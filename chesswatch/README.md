@@ -35,7 +35,7 @@ loses nothing. Starting a new game closes out the old one automatically.
 
 ## Asking what to play
 
-Open **Setup** and tick **Coach**, and Stockfish is started, once, and asked
+Coaching is on by default, so Stockfish is started at launch, once, and asked
 about whatever position is on screen. The line above the moves reads:
 
 ```
@@ -45,6 +45,10 @@ knight: g1 to f3   +0.4
 
 Whose move it is and what to play is the large line, and the naming of the
 squares is the small print under it.
+
+Untick **Coach** to run as a recorder and start no engine. A machine with no
+Stockfish on it does that anyway, and says so once on the note line rather than
+in the move slot, since nobody asked for coaching on a first launch.
 
 Piece and squares in words rather than only the notation, what a capture takes,
 when a move gives check, and a forced mate counted in moves. `coach.py` holds
@@ -343,7 +347,9 @@ enough to take the piece away, still does.
 half a turn is itself a legal game, so a knight or queen move explains the
 screen equally well both ways up. A pawn move does not, because pawns only move
 one way, so the first pawn move settles it, usually within seconds. If you would
-rather not wait, set **Setup > Side** to white or black and any move will do.
+rather not wait, the note saying so brings a **Side** row up under it while it
+is true: pick white or black there and any move will do. The same setting lives
+in **Setup > Side**, which is where it stays once the wait is over.
 
 ## The last-move highlight
 
@@ -418,7 +424,8 @@ position it is reading, which should match your screen exactly.
   another window.
 - "waiting for a pawn move to tell which way up" means it has found a game in
   progress and needs one pawn move before it can tell which way the board is
-  facing. Setting **Setup > Side** removes the wait.
+  facing. A **Side** row appears under that line for as long as it is true, and
+  picking white or black there removes the wait. So does **Setup > Side**.
 - Use **Setup > Board > Pick** to drag a box around the board corner to corner.
   That choice is remembered in `config.json`.
 
@@ -436,7 +443,7 @@ rectangle is in use.
     python piecetest.py     62 checks on the piece reader under a bad capture
     python positiontest.py  29 checks on the whole board solver, no pixels
     python enrolltest.py   176 checks on teaching the pieces and on the arrow
-    python layouttest.py    73 checks on what the window shows and how wide
+    python layouttest.py    98 checks on what the window shows and how wide
     python coachtest.py     53 checks on the engine wrapper and its label,
                             43 without a display and 31 without Stockfish
     python overlaytest.py   21 checks that the arrows cannot corrupt a reading
@@ -478,8 +485,11 @@ the packing that carries that decision out, and the width of each row measured
 against the real Segoe UI at both 100% and 150% display scaling. The rows are
 read off `_build`'s syntax tree rather than listed in the test, so a widget
 added to a full row is measured rather than missed, and one written in a shape
-the reader cannot account for fails the run instead of being skipped. How any of
-it looks is not checked and cannot be.
+the reader cannot account for fails the run instead of being skipped. It also
+drives the switch that starts the engine, with an engine to find and without
+one, and reads the sentence the **Side** prompt keys off out of `watcher.py`
+rather than copying it, so rewording that note fails the run instead of quietly
+taking the prompt away. How any of it looks is not checked and cannot be.
 
 `enrolltest.py` opens no window at all, and enforces it by replacing Tk's two
 window classes with a refusal before any check runs. The arrow rule and the

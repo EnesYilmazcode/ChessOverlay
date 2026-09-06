@@ -2,8 +2,9 @@
 
 Two halves of one idea, for anyone building chess teaching tools. `chesswatch`
 watches a chess board on your screen, reads it, and writes the game to disk.
-Open **Setup** and tick **Coach**, and it runs Stockfish on the position it is
-reading and says, in words, what to play. Tick **Arrow** and it draws that move
+It runs Stockfish on the position it is
+reading and says, in words, what to play, which is on unless you untick
+**Coach** under **Setup**. Tick **Arrow** and it draws that move
 on the board itself, over whatever program is showing it, in one colour for
 your move and another for your opponent's. `holochess` is a full board you play
 against the engine, with the same arrow inside its own window.
@@ -43,7 +44,7 @@ with **Setup > Board > Pick** and everything else carries on as normal.
 | --- | --- | --- |
 | [`chesswatch/`](chesswatch/) | Screen recorder. Finds the board, reads it, saves PGN + JSON. | Finished. 87 headless checks plus two on-screen tests. |
 | [`chesswatch/position.py`](chesswatch/position.py) | Picks all 64 squares as one legal position instead of one at a time. | Works. 29 checks. Nothing calls it yet. |
-| [`chesswatch/coach.py`](chesswatch/coach.py) | Stockfish on the position being watched, read while it thinks. | Works. 52 checks. Off by default. |
+| [`chesswatch/coach.py`](chesswatch/coach.py) | Stockfish on the position being watched, read while it thinks. | Works. 52 checks. On by default. |
 | [`chesswatch/overlay.py`](chesswatch/overlay.py) | That move drawn on the real board, click-through, one colour per side. | Works. 21 checks, headless by default. |
 | [`holochess/`](holochess/) | Local board, Stockfish 18, best move as a hologram arrow. | Works. 17 checks. |
 
@@ -71,8 +72,8 @@ Games land in `chesswatch/games/` as a matched pair:
 
 ## Ask it what to play
 
-Tick **Coach**, under **Setup**. Stockfish is started the first time you do, not
-before, and the line above the moves reads something like:
+Coaching is on, so Stockfish is started at the first launch and the line above
+the moves reads something like:
 
 ```
 your move  Nf3
@@ -82,6 +83,10 @@ knight: g1 to f3   +0.4
 It names the piece and both squares rather than only the notation, says what a
 capture takes and when a move gives check, and counts a forced mate in moves.
 That is aimed at a player who has not learned to read `Nxe5+` yet.
+
+A machine with no Stockfish on it says so once, in small text under the move
+list, and carries on as a recorder. Untick **Coach** under **Setup** to run that
+way on purpose, and it is remembered.
 
 The engine runs on its own thread and is read while it is still thinking, so
 the reader never waits for it and neither do you: a first answer is on the

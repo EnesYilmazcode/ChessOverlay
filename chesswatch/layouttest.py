@@ -87,13 +87,53 @@ def nothing_opens():
 # ---------------------------------------------------------------- what shows
 
 QUIET = {"setup": False, "advice": "", "detail": "", "note": "",
-         "result": "", "arrow": False, "position": False}
+         "result": "", "arrow": False, "side": "auto", "position": False}
 
 
 def with_(**changes):
     state = dict(QUIET)
     state.update(changes)
     return state
+
+
+def unsettled_note():
+    """The sentence the watcher returns while it cannot tell which way up the
+    board is, read out of watcher.py rather than typed here.
+
+    The prompt is keyed off the note text, so the two have to be checked
+    against each other. Reworded upstream and copied here, the prompt would
+    stop appearing and every check below would stay green.
+    """
+    tree = ast.parse(inspect.getsource(C.W))
+    return [node.value.value for node in ast.walk(tree)
+            if isinstance(node, ast.Return)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+            and C.UNSETTLED in node.value.value]
+
+
+def waiting_note():
+    """That sentence on its own. Falls back to the marker so a run that has
+    already failed the check above carries on rather than stopping on an
+    index error."""
+    written = unsettled_note()
+    return written[0] if written else C.UNSETTLED
+
+
+def state_keys():
+    """Every key showing() reads out of the state it is handed."""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(C.showing)))
+    keys = set()
+    for node in ast.walk(tree):
+        owner = value = None
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and node.func.attr == "get" and node.args:
+            owner, value = node.func.value, node.args[0]
+        elif isinstance(node, ast.Subscript):
+            owner, value = node.value, node.slice
+        if isinstance(owner, ast.Name) and owner.id == "state":
+            keys.add(_const(value, {}))
+    return keys - {None}
 
 
 def what_shows():
@@ -140,8 +180,50 @@ def what_shows():
     everything = with_(setup=True, advice="your move  Nf3", detail="knight",
                        note="board unclear", result="You won", arrow=True,
                        position=True)
-    check("with everything up, nothing is missing and nothing is doubled",
-          C.showing(everything), C.STRIPES)
+    check("with the drawer open, nothing is missing and nothing is doubled",
+          C.showing(everything),
+          tuple(name for name in C.STRIPES if name != "side"))
+    check("  and the side prompt is the one stripe the drawer stands in for",
+          C.showing(dict(everything, setup=False, note=C.UNSETTLED)),
+          tuple(name for name in C.STRIPES if name != "setup"))
+
+
+def the_side_prompt():
+    print("\n-- the side control while the board's orientation is open ")
+    check("the watcher returns exactly one note the prompt answers",
+          len(unsettled_note()), 1)
+    waiting = waiting_note()
+    print("      keyed off %r" % waiting)
+
+    check("an ordinary note brings up no control",
+          "side" in C.showing(with_(note="board unclear")), False)
+    check("the one that says it is waiting to be told does",
+          C.showing(with_(note=waiting)),
+          ("top", "note", "side", "foot", "moves"))
+    check("  under the note that asks for it",
+          C.STRIPES[C.STRIPES.index("note") + 1], "side")
+    check("  and not once a side has been picked",
+          [side for side in ("white", "black")
+           if "side" in C.showing(with_(note=waiting, side=side))], [])
+    check("  nor while the drawer is showing the same control",
+          "side" in C.showing(with_(note=waiting, setup=True)), False)
+    check("  nor at rest, which is what keeps it from being a permanent row",
+          "side" in C.showing(QUIET), False)
+
+    app = types.SimpleNamespace(
+        setup_open=False, arrow_drawn=False, lbl_coach=Blank(),
+        lbl_detail=Blank(), lbl_check=Blank(), lbl_result=Blank(),
+        show_board=types.SimpleNamespace(get=lambda: False),
+        colour_choice=types.SimpleNamespace(get=lambda: "auto"))
+    app.lbl_check.configure(text=waiting)
+    check("the window reads the side back off the control it is set with",
+          C.App._state(app).get("side"), "auto")
+    check("  and hands showing() every value it reads",
+          sorted(state_keys() - set(C.App._state(app))), [])
+    check("  as does the state the checks above are written against",
+          sorted(state_keys() - set(QUIET)), [])
+    check("so the real state a waiting window is in puts the prompt up",
+          "side" in C.showing(C.App._state(app)), True)
 
 
 # ---------------------------------------------------------------- the packer
@@ -209,6 +291,12 @@ def the_packer():
     check("  and leaves the rest up",
           tuple(name for what, name, how in log if what == "pack"),
           C.showing(state))
+
+    app, log = packer(with_(note=waiting_note()))
+    app._relayout()
+    packed = tuple(name for what, name, how in log if what == "pack")
+    check("the side prompt is packed straight under the note it answers",
+          packed[packed.index("note") + 1], "side")
 
 
 # ------------------------------------------------------- reading the widgets
@@ -464,14 +552,48 @@ def window_floor():
     raise Unreadable("App.__init__ sets no minsize")
 
 
-def drawer_rows():
-    """The drawer's rows, counted straight off the _drawer_row calls rather
-    than off build_rows' own bookkeeping, so a row build_rows stopped seeing
-    would show up as a row that never got measured."""
+def labelled_rows():
+    """The rows built by _drawer_row, the drawer's four and the side prompt,
+    counted straight off the calls rather than off build_rows' own
+    bookkeeping, so a row build_rows stopped seeing would show up as a row
+    that never got measured."""
     tree = ast.parse(textwrap.dedent(inspect.getsource(C.App._build)))
     return [_const(node.args[1], {}) for node in ast.walk(tree)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
             and node.func.attr == "_drawer_row"]
+
+
+def _cfg_gets(method):
+    """Every self.cfg.get(...) call in a method, as nodes."""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(method)))
+    return [node for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get" and node.args
+            and isinstance(node.func.value, ast.Attribute)
+            and node.func.value.attr == "cfg"]
+
+
+def config_keys(method):
+    """The config.json keys a method reads back, or the ones it writes if it
+    is the one that writes the file. A key saved and never read again is a
+    setting that quietly stops being remembered, which is what this is for."""
+    if method is C.App._save_config:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(method)))
+        return {_const(key, {}) for node in ast.walk(tree)
+                if isinstance(node, ast.Dict)
+                for key in node.keys} - {None}
+    return {_const(node.args[0], {}) for node in _cfg_gets(method)} - {None}
+
+
+def switch_defaults():
+    """What each setting falls back to on a machine with no config.json, read
+    off the app rather than written down here."""
+    out = {}
+    for method in (C.App.__init__, C.App._build):
+        for node in _cfg_gets(method):
+            if len(node.args) == 2:
+                out[_const(node.args[0], {})] = _const(node.args[1], {})
+    return out
 
 
 def status_words():
@@ -501,12 +623,27 @@ class Blank:
 
     def __init__(self):
         self.text = ""
+        self.colour = None
 
     def configure(self, **kw):
         self.text = kw.get("text", self.text)
+        self.colour = kw.get("fg", self.colour)
 
     def cget(self, name):
         return self.text
+
+
+class Switch:
+    """A BooleanVar that remembers instead of talking to Tk."""
+
+    def __init__(self, value):
+        self.value = value
+
+    def get(self):
+        return self.value
+
+    def set(self, value):
+        self.value = value
 
 
 class Page:
@@ -651,6 +788,73 @@ def the_answer():
           ("", True))
 
 
+class Engine:
+    """A Coach that starts no process."""
+
+    def __init__(self, path, think_seconds=None):
+        self.path = path
+        self.think_seconds = think_seconds
+        self.started = False
+
+    def start(self):
+        self.started = True
+
+
+def switching_on(coach=None, asked=True, engine="stockfish"):
+    """App._toggle_coach with a stand-in engine behind it, or none at all.
+    Returns the app it ran against, so what it wrote can be read back off the
+    labels."""
+    app = types.SimpleNamespace(
+        coach=coach, note_until=0.0, coach_fen=None,
+        coach_on=Switch(True), lbl_coach=Blank(), lbl_detail=Blank(),
+        lbl_check=Blank())
+    app._save_config = lambda: None
+    app._hide_arrow = lambda: None
+    app._think_seconds = lambda: 1.0
+    was = C.CO.find_engine, C.CO.Coach
+    C.CO.find_engine, C.CO.Coach = (lambda: engine), Engine
+    try:
+        C.App._toggle_coach(app, asked=asked)
+    finally:
+        C.CO.find_engine, C.CO.Coach = was
+    return app
+
+
+def the_first_run():
+    print("\n-- coaching is on by default, so a first run is one -------")
+    saved = config_keys(C.App._save_config)
+    read = config_keys(C.App.__init__) | config_keys(C.App._build)
+    check("every setting written to config.json is read back out of it",
+          (sorted(saved - read), sorted(read - saved)), ([], []))
+    falls_back = switch_defaults()
+    print("      with no config.json: %s"
+          % "  ".join("%s %s" % pair for pair in sorted(falls_back.items())))
+    check("coaching is what a machine with no config.json starts with",
+          falls_back["coach"], True)
+    check("  and the arrow and the board copy are not, since both draw",
+          (falls_back["arrow"], falls_back["position"]), (False, False))
+
+    app = switching_on(asked=False, engine=None)
+    check("no Stockfish leaves the switch off and no engine behind it",
+          (app.coach, app.coach_on.get()), (None, False))
+    check("  the move line empty rather than holding the complaint",
+          (app.lbl_coach.text, app.lbl_detail.text), ("", ""))
+    check("  and the note saying why, muted, because nobody asked for it",
+          ("Stockfish" in app.lbl_check.text, app.lbl_check.colour),
+          (True, C.MUTED))
+    check("  where clicking it and finding none is still a warning",
+          switching_on(engine=None).lbl_check.colour, C.WARN)
+
+    app = switching_on(asked=False)
+    check("an engine that is there is started once, at the saved think time",
+          (app.coach.started, app.coach.think_seconds), (True, 1.0))
+    check("  with the move line left empty until it has an answer",
+          app.lbl_coach.text, "")
+    check("  where a tick is answered at once, since that is what it is for",
+          switching_on(coach=Engine("already running")).lbl_coach.text,
+          "thinking...")
+
+
 def the_filename():
     print("\n-- the filename is the way into the games folder ---------")
     # The path is joined rather than written out: basename splits on the
@@ -729,9 +933,9 @@ def widths():
           % (window_floor() + (room,)))
     rows = {name: widgets for name, widgets in build_rows().items()
             if name != "*stripes*" and len(widgets) > 1}
-    check("every row the drawer makes is one of the rows measured",
+    check("every row built with a label word is one of the rows measured",
           len([name for name in rows if name not in ("top", "hero")]),
-          len(drawer_rows()))
+          len(labelled_rows()))
     check("  along with the top row and the row the move sits on",
           sorted(set(rows) & {"top", "hero"}), ["hero", "top"])
     for label, dpi in DPI.items():
@@ -814,12 +1018,14 @@ def main():
           " imported.\n")
     nothing_opens()
     what_shows()
+    the_side_prompt()
     the_packer()
     try:
         every_stripe_is_built()
         the_pack_order()
         the_lines()
         the_answer()
+        the_first_run()
         the_filename()
         widths()
         the_status_line()
