@@ -583,21 +583,41 @@ def main():
                        with_hole(["b3", "f6", "b4", "f5"], []), 3, False) or []],
                    ["b2b4", "f7f5"]))
 
-    # Joining a game already under way. A knight move leaves the board's
-    # orientation ambiguous, because a rotated board is a legal game too; the
-    # first pawn move settles it.
+    # Which way up the board is, off the pieces alone. Both ends one-sided is
+    # the whole of the test: a colour holding one end of the board with none of
+    # the other standing there.
+    def facing(fen, flipped=False):
+        return W.facing(W.grid_of(chess.Board(fen), flipped))
+
+    r.append(check("the opening says which way up it is",
+                   (facing(chess.STARTING_FEN), facing(chess.STARTING_FEN, True)),
+                   (False, True)))
+    # The board of issue #55: three black pieces on the top two ranks and none
+    # of white's, two white on the bottom two and none of black's.
+    ISSUE_55 = "2b2r2/2p5/2p1p3/2NpP1k1/PP1P4/5PP1/8/R5K1"
+    r.append(check("a lopsided middlegame says it too",
+                   (facing(ISSUE_55), facing(ISSUE_55, True)), (False, True)))
+    r.append(check("a mixed end says nothing",
+                   facing("4k3/8/8/8/8/8/4K3/r6R"), None))
+    r.append(check("one piece an end is not lopsided, it is a king that walked",
+                   facing("4k3/8/8/8/8/8/8/4K3"), None))
+    r.append(check("an empty end says nothing",
+                   facing("8/8/2k5/8/8/2K5/8/8"), None))
+
+    # Joining a game already under way. Which way up comes off the pieces on
+    # the first frame; whose turn it is cannot, so one move is still wanted,
+    # and now any move at all will do rather than specifically a pawn move.
     cold = W.BoardTracker(directory=tempfile.mkdtemp(), reader=P.PieceReader())
     bd3 = chess.Board()
     for san in LINE:
         bd3.push_san(san)
     cold.check(render.render(bd3))
-    r.append(check("does not guess the orientation", cold.locked_on, False))
+    r.append(check("does not guess whose turn it is", cold.locked_on, False))
+    r.append(check("  and does not ask which way up either",
+                   "which way up" in cold.last_check, False))
     bd3.push_san("Nbd2")
     cold.check(render.render(bd3))
-    r.append(check("a piece move is still ambiguous", cold.locked_on, False))
-    bd3.push_san("a6")
-    cold.check(render.render(bd3))
-    r.append(check("a pawn move settles it", cold.locked_on, True))
+    r.append(check("a piece move now settles it", cold.locked_on, True))
     r.append(check("  and the position is right",
                    cold.board.board_fen(), bd3.board_fen()))
     r.append(check("  colour from orientation", cold.game.my_color, "white"))
