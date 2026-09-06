@@ -559,19 +559,22 @@ def the_lines():
 
 def the_filename():
     print("\n-- the filename is the way into the games folder ---------")
+    # The path is joined rather than written out: basename splits on the
+    # separator of whichever machine the test runs on, and CI is Linux.
+    name = "2026-09-05 1830 win.pgn"
+    saved = os.path.join("somewhere", "games", name)
     app = viewer()
-    app._render(frame(path="C:\\games\\2026-09-05 1830 win.pgn"))
+    app._render(frame(path=saved))
     check("a game being recorded shows its file",
-          app.lbl_file.text, "games\\2026-09-05 1830 win.pgn")
+          app.lbl_file.text, "games\\" + name)
 
-    game = types.SimpleNamespace(moves=["e4"], save=lambda: None,
-                                 path="C:\\games\\2026-09-05 1830 win.pgn")
+    game = types.SimpleNamespace(moves=["e4"], save=lambda: None, path=saved)
     app.worker = types.SimpleNamespace(
         stop_flag=types.SimpleNamespace(set=lambda: None),
         tracker=types.SimpleNamespace(game=game))
     app._stop()
     check("  and stopping leaves it written the same way, not as a sentence",
-          app.lbl_file.text, "games\\2026-09-05 1830 win.pgn")
+          app.lbl_file.text, "games\\" + name)
     check("  with the button back to Start", app.btn.text, "Start")
 
     source = inspect.getsource(C.App._build)
