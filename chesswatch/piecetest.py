@@ -116,6 +116,33 @@ def top_pick(reader, cases):
     return hit, total
 
 
+def refused_by_colour(reader, cases):
+    """(true piece, piece the shape picked) for every square whose shape match
+    cleared the floor and the margin and was then refused on colour.
+
+    The gate is spelled out here rather than borrowed from _judge, because a
+    row that asked _judge about both halves at once could not tell which half
+    answered.
+    """
+    out = []
+    for name, img in cases:
+        levels = P._levels(img)
+        feats = P._board_features(img, levels)
+        floor = reader._floor(feats, levels, img.size[0] / 8.0)
+        for (row, col, _), feat in zip(P.squares(img), feats):
+            if feat is None or feat.coverage < P.MIN_COVERAGE:
+                continue
+            ranked = P.ranking(feat, reader.templates)
+            score, best = ranked[0]
+            runner_up = next((s for s, sym in ranked[1:]
+                              if sym.lower() != best.lower()), 0.0)
+            if score < floor or score - runner_up < P.MIN_MARGIN:
+                continue
+            if P._judge(feat, reader.templates, floor)[0] is None:
+                out.append((TRUTH[name][row][col], best))
+    return out
+
+
 def shrunk(boards):
     """The same boards in a smaller browser window. Templates are stored at
     96px, so this is the resampling the reader has to survive."""
@@ -251,8 +278,66 @@ def main():
     got = named(own, six)
     print("      learned from 6.png, reading 6.png: %d named, %d refused, "
           "%d wrong" % (got[0], got[2], got[1]))
-    r.append(check("  and then reads 27 of its own 32 pieces, none wrong",
-                   (got[0] >= 27, got[1]), (True, 0)))
+    r.append(check("  and then reads all 32 of its own pieces, none wrong",
+                   (got[0], got[1]), (32, 0)))
+
+    # -- colour, decided against the templates and not against itself -----
+    # The last five of those 32. Colour used to be a bright-versus-dark pixel
+    # count on the square alone, which reads the piece set rather than the
+    # piece: 6.png draws a white rook as a white fill inside a thick black
+    # outline, so five of its eight white back-rank pieces hold more dark
+    # pixels than bright and were refused against their own correct template,
+    # every one of them an outright match clear of the next piece type by more
+    # than 0.66. check() wants all 64 squares, so a board taught by hand stayed
+    # "board unclear" on the very capture it was taught from, forever.
+    levels = P._levels(six[0][1])
+    outlined = []
+    for row, col, sq in P.squares(six[0][1]):
+        want = TRUTH["6"][row][col]
+        if not want.isupper():
+            continue
+        feat = P._features(sq, levels)
+        if feat.bright <= feat.dark:
+            outlined.append((want, P._judge(feat, own.templates)[0]))
+    r.append(check("a white piece drawn mostly in outline still reads white",
+                   outlined, [("R", "R"), ("B", "B"), ("Q", "Q"),
+                              ("B", "B"), ("R", "R")]))
+
+    # It is still a test, and this is what it catches. Two or three pixels of
+    # crop error on 6.png pulls a neighbouring square's ink in, and three of
+    # its white queens then match the BLACK queen template top of the ranking
+    # and clear of every other piece type. The shape gate has nothing to say
+    # about those; the ink share does, because the square holds 0.37 of its ink
+    # bright where the black queen template holds 0.16 and the white one 0.37.
+    r.append(check("a white queen matched to the black queen is refused",
+                   sorted(refused_by_colour(own, offset(six))),
+                   [("Q", "q")] * 3))
+    got = named(own, offset(six))
+    print("      6.png templates on misaligned crops of 6.png: %d named, "
+          "%d refused, %d wrong" % (got[0], got[2], got[1]))
+    r.append(check("  so a misaligned crop of 6.png names 211, none wrong",
+                   (got[0], got[1]), (211, 0)))
+
+    # And this is what it costs. Blur and contrast are the cases that erase a
+    # white piece's fill outright: at 2.5px the bright layer of 6.png's back
+    # rank empties completely, the square's ink then genuinely reads black, and
+    # 19 correct calls become "?" rather than staying named. That is the trade
+    # this file always makes, a refusal against a wrong piece, and it is priced
+    # here so it cannot grow quietly.
+    priced = refused_by_colour(own, distorted(six))
+    print("      and refuses %d correct calls on blurred or shifted 6.png"
+          % len(priced))
+    r.append(check("  costing 19 correct calls where the ink is smeared away",
+                   (len(priced), [x for x in priced if x[0] != x[1]]),
+                   (19, [])))
+
+    # None of it touches the set that never had the problem. chess.com draws a
+    # white piece as a pale fill with a hairline edge, so the old count and the
+    # new comparison agree on all 45 pieces of both reference boards however
+    # they are shrunk, misaligned or distorted, which is why this survived.
+    r.append(check("  and fires on no square of either chess.com fixture",
+                   refused_by_colour(reader, boards + shrunk(boards)
+                                     + offset(boards) + distorted(boards)), []))
 
     from fakeboard import Renderer
     render = Renderer(shot("1"), W.find_board(Image.open(shot("1")).convert("RGB")))

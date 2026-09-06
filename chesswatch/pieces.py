@@ -594,6 +594,28 @@ def ranking(feat, templates):
                    for symbol, variants in templates.items()), reverse=True)
 
 
+def _share(feat):
+    """How much of a square's ink is in the bright layer rather than the dark.
+
+    A number the piece set chooses, not the reader. chess.com draws a white
+    piece as a pale fill with a hairline edge and its white pieces come out
+    above 0.9; the flat set on 6.png draws one as a white fill inside a thick
+    black outline, and its white rook comes out at 0.465 and its white queen at
+    0.366. Both are still a long way from the same set's black rook at 0.098
+    and black queen at 0.163, which is what makes this worth comparing at all,
+    but only against that set's own templates and never against 0.5.
+    """
+    total = feat.bright + feat.dark
+    return feat.bright / total if total else 0.0
+
+
+def _nearest(feat, variants):
+    """How far this square's ink share sits from the nearest of these
+    templates. All of them, because a piece learned on a light square and the
+    same piece learned on a dark one are two renderings of one thing."""
+    return min(abs(_share(feat) - _share(t.feat)) for t in variants)
+
+
 def _judge(feat, templates, floor=MIN_OVERLAP):
     """The piece on one already reduced square. Returns (symbol, score), where
     symbol is a piece letter, "." for an empty square, or None when the pixels
@@ -617,7 +639,24 @@ def _judge(feat, templates, floor=MIN_OVERLAP):
                       if symbol.lower() != best.lower()), 0.0)
     if score < floor or score - runner_up < MIN_MARGIN:
         return None, score
-    if best.isupper() != (feat.bright > feat.dark):
+    # And the ink has to agree, measured against the two templates rather than
+    # against itself. This used to ask whether the square held more bright
+    # pixels than dark ones, which reads the piece set and not the piece:
+    # 6.png draws a white rook as 281 bright pixels inside 323 dark ones, so
+    # its rooks, bishops and queens all counted as black, were refused against
+    # their own correct template and left a taught board short of the 64
+    # squares check() needs. The templates were cut from that same set, so the
+    # ratio that makes a white rook look dark sits on both sides here and
+    # cancels.
+    #
+    # Nearer, rather than within a tolerance. A tolerance would have to be a
+    # number about outline thickness, which is the thing that differs between
+    # sets, and over 14390 squares of both fixtures no tolerance separates: the
+    # widest ink disagreement on a correct call is 0.525 and the narrowest on a
+    # wrong colour is 0.000.
+    flip = templates.get(best.swapcase())
+    if flip is not None and (_nearest(feat, templates[best])
+                             > _nearest(feat, flip)):
         return None, score
     return best, score
 
