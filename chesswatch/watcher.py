@@ -294,10 +294,11 @@ DEFAULT_HIGHLIGHT = (_wash(LIGHT_SQUARE), _wash(DARK_SQUARE))
 def highlight_squares(board_img, colours=DEFAULT_HIGHLIGHT):
     """Screen (row, col) of every square wearing the last-move highlight.
 
-    Samples the whole square less a 6% border, rather than read_occupancy's
+    Samples the whole square less a 3% border, rather than read_occupancy's
     middle 56%, because the piece sits in the middle and the highlight is what
     survives around it. The border keeps out the antialiased seam, which bleeds
-    about 1% of a square in from the neighbour.
+    about 1% of a square in from the neighbour. Wider costs separation and buys
+    nothing: at 6% the worst lit square measures 0.4439 rather than 0.5156.
     """
     small = board_img.resize((GRID, GRID), Image.NEAREST)
     mask = None
@@ -306,7 +307,7 @@ def highlight_squares(board_img, colours=DEFAULT_HIGHLIGHT):
         mask = hit if mask is None else ImageChops.lighter(mask, hit)
 
     step = GRID // 8
-    pad = max(1, int(step * 0.06))
+    pad = max(1, round(step * 0.03))
     inset = step - 2 * pad
     area = inset * inset
     floor = area * HIGHLIGHT_MIN
@@ -841,6 +842,20 @@ class BoardTracker:
         up piece in this same colour, a stray one if the board rectangle is off
         by more than about a percent, and two empty ones if a castle is drawn
         from the king square to the rook square. Every one of those refuses.
+
+        One picture is not covered and is not ruled out either. chess.com paints
+        the two squares of a queued premove, and if that uses this same wash
+        with no last-move highlight beside it, the square it came from still
+        holds your own piece, so this would name you as having moved when you
+        have not. No fixture here has a premove in it, so what colour it is
+        drawn in is unknown rather than safe. Settle that before trusting this
+        on a board that takes premoves.
+
+        Nothing in the app asks yet. The obvious caller wanted this to say the
+        tracker was out of step, and it does say that, but the piece check it
+        would have brought forward cannot repair a turn that is wrong on its
+        own: check() compares placement, so it answers "position confirmed" and
+        the disagreement stands. See the pull request that added this.
         """
         if self.board is None or self.over or board_img is None:
             return None
@@ -852,21 +867,6 @@ class BoardTracker:
             return None
         row, col = held[0]
         return occ[row][col] == "W"
-
-    def turn_disputed(self, occ, board_img):
-        """True when the screen says the side we think is to move is the side
-        that just moved.
-
-        This is the only opinion the tracker has that does not come from the
-        same occupancy it has already believed, which is the whole of why it is
-        worth reading. It changes nothing. A highlight is not good enough to
-        move a game on: it is absent at the start and in review, and a picked up
-        piece may well wear the same colour. All it says is that the piece level
-        check is worth running now rather than in four seconds, and being wrong
-        about that costs one check.
-        """
-        mover = self.last_mover(occ, board_img)
-        return mover is not None and mover == self.board.turn
 
     # -- the piece-level checker -------------------------------------
     # Four is where the search stops paying. Depth 4 recovers a four move

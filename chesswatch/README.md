@@ -173,8 +173,7 @@ Everything above only ever asks "white piece, black piece, or empty?". That is
 fast, but it cannot tell you what is on a square it has lost track of. So there
 is a second, slower reader that identifies the actual piece on all 64 squares,
 and it runs every few seconds, whenever the fast reader has been stuck for a
-while, whenever the last-move highlight says the wrong side is to move, and
-whenever you press **check the pieces now**.
+while, and whenever you press **check the pieces now**.
 
 It works the same way as everything else here: a square is reduced to a mask of
 its very bright and very dark pixels, which is the piece and nothing else, since
@@ -262,8 +261,7 @@ rather not wait, set **I play** to white or black and any move will do.
 chess.com paints the two squares of the move just played. The side that did NOT
 just move is the side to move, so those two squares are the one thing on screen
 that says whose turn it is without going back through the move history the
-tracker has already believed. That makes it worth reading as a second opinion,
-and it is the only second opinion there is.
+tracker has already believed. That makes it the only second opinion there is.
 
 Of the two lit squares exactly one holds a piece, and its colour is the side
 that just moved. That survives castling, which moves two pieces but both of
@@ -273,12 +271,26 @@ lit squares at all at the start of a game or in Game Review, there may well be
 three while a piece is picked up, and a castle drawn from the king square to the
 rook square lights two empty ones.
 
-It never moves a game on. A disagreement only means the piece checker runs now
-rather than in four seconds. Driven through the real worker at every phase of
-that timer, a tracker left with the wrong side to move waits a median of one
-frame for the check instead of eighteen, and while the two agree the timer is
-untouched. Over 400 games and 76,142 frames of clean play it never disagreed
-once, and the 50 frames it had no answer for were games already finished.
+One case is open. chess.com paints the two squares of a queued premove, and if
+that is the same wash with no last-move highlight beside it, the square it came
+from still holds your own piece and this would read you as having just moved.
+None of the fixtures has a premove in it, so that colour is unknown here rather
+than ruled out, and a caller has to settle it before trusting this on a board
+that takes premoves.
+
+**Nothing in the app asks it yet.** It was written to say that the tracker was
+out of step, and it does say that, but the piece check that would have been
+brought forward compares placement and not the turn, so on a turn that is wrong
+on its own it answers "position confirmed" and the disagreement stands. A signal
+that fires forever and fixes nothing is worse than the four second timer it was
+meant to beat: measured, it takes the checker from 5 checks in 200 frames to
+100. So the reading landed and the trigger did not. A caller has to be able to
+act on the answer, and this one could not.
+
+What it is good for, when something can act: over 400 games and 76,142 frames it
+named a mover 76,092 times and named the right one every time. The 50 frames it
+had no answer for were games it had already closed. `highlightrun.py` is that
+run, and it exits non-zero if the reader ever names the wrong colour.
 
 The colour is the square colour washed at half opacity with `#FFFF33`, so both
 shades come straight out of `LIGHT_SQUARE` and `DARK_SQUARE` rather than being
@@ -331,7 +343,7 @@ rectangle is in use.
 
 ## Checking it still works
 
-    python selftest.py     106 checks, including real screenshots
+    python selftest.py     104 checks, including real screenshots
     python piecetest.py     49 checks on the piece reader under a bad capture
     python positiontest.py  29 checks on the whole board solver, no pixels
     python enrolltest.py   119 checks on teaching the pieces and on the arrow
@@ -340,6 +352,12 @@ rectangle is in use.
     python settletest.py    move animation, with the screen on a clock
     python banktest.py      33 checks on choosing a piece set
     python livetest.py      full loop through the real capture worker
+    python highlightrun.py  the last-move highlight over 400 whole games
+
+`highlightrun.py` is a measurement rather than a suite and is not in CI: 400
+games takes about nine minutes, which is longer than everything above put
+together, and what it measures does not change move to move. Run it when the
+highlight reader changes. `--games` makes it shorter.
 
 None of these put anything on screen or screenshot your desktop. `livetest.py`
 and `overlaytest.py` render the board into a desktop sized image and point the

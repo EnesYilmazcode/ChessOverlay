@@ -499,23 +499,14 @@ def main():
     r.append(check("  and so is one, the other being under a dialog",
                    mover(bh, (chess.E4,)), None))
 
-    agree = lit_tracker(bh)
-    seen = render.render(bh, lit=(chess.E2, chess.E4), highlight=HL)
-    r.append(check("no dispute while the turn agrees with the screen",
-                   agree.turn_disputed(W.read_occupancy(seen), seen), False))
-    adrift = lit_tracker(bh)
-    adrift.board.turn = chess.WHITE      # where one missed move leaves it
-    r.append(check("  and a dispute the moment it does not",
-                   adrift.turn_disputed(W.read_occupancy(seen), seen), True))
     # chess.com drops you into Game Review the moment a game ends, and clicking
     # back through it lights the squares of moves that are no longer the last
-    # one. A finished game is read-only, so the highlight has nothing to say
-    # about it either.
+    # one. A finished game is read-only here, so there is no opinion to have.
+    seen = render.render(bh, lit=(chess.E2, chess.E4), highlight=HL)
     closed = lit_tracker(bh)
-    closed.board.turn = chess.WHITE      # the same disagreement as above
     closed.game.result = "1-0"
-    r.append(check("  and none at all once the game is closed",
-                   closed.turn_disputed(W.read_occupancy(seen), seen), False))
+    r.append(check("  and nothing at all once the game is closed",
+                   closed.last_mover(W.read_occupancy(seen), seen), None))
 
     # The colour is sampled off your own board rather than trusted, so that a
     # repaint can only ever switch the signal off, never make it lie.
