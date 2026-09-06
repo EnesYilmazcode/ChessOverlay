@@ -75,17 +75,25 @@ MIN_PIECES = 2
 # at all can still clear it. See select().
 MIN_CONFIDENCE = 0.05
 
-# The cutoffs the occupancy reader uses today, not a shared definition of a
-# piece pixel. pieces.py is moving to levels measured off the board in front of
-# it so that a board theme stops mattering, and after that this module is the
-# one still thresholding at a fixed 244 and 70.
+# The cutoffs the occupancy reader uses today, and this module is now the only
+# one still using them: pieces.py thresholds nothing at all, it normalises each
+# square by its own spread and correlates.
 #
-# That is a real cost and it is measured, not waved away: the 154 wrong picks
+# The two were left apart deliberately rather than merged. They answer
+# different questions. pieces.py asks which of twelve pieces is on a square and
+# has to survive one set drawn like another; this asks which of a handful of
+# whole sheets fits a board best, which is a much easier question and one that
+# a wrong answer is not caught downstream on, so it wants MIN_CONFIDENCE
+# refusing rather than the best available guess. Measured after the change:
+# banktest is unchanged, every set is still picked and the same 154 boards are
+# still refused.
+#
+# The cost is real and it is measured, not waved away: the 154 wrong picks
 # banktest.py finds are all boards captured at a brightness these cutoffs were
 # not set for. MIN_CONFIDENCE refuses every one of them, so the failure is a
-# refusal rather than a wrong sheet, which is why this is worth shipping ahead
-# of the fix. Taking the levels from the board is the fix, and it belongs here
-# too once pieces.py has it to share.
+# refusal rather than a wrong sheet. Taking the levels from the board is still
+# the fix and it is still worth doing here; what pieces.py has to share is now
+# _levels, which measures the two square colours and nothing else.
 from watcher import BRIGHT, DARK, MIN_COVERAGE, find_board
 
 # The masking below is deliberately duplicated from pieces.py rather than

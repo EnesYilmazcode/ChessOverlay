@@ -531,12 +531,14 @@ def main():
                 (n, order) for n, orders in state["fits"].items()
                 for order in orders}
             same.append(got == want_runs)
-    # The counts are here so this cannot pass on nothing. Eight of the thirteen
-    # boards have two positions fitting and have to be refused, five have one
-    # and have to come back with the same runs the reference found, and three
+    # The counts are here so this cannot pass on nothing. Eight of the twelve
+    # boards have two positions fitting and have to be refused, four have one
+    # and have to come back with the same runs the reference found, and four
     # frames are dropped because the belief filled the square and left no hole.
+    # One more frame is dropped than when this was written, because the reader
+    # under it refuses a different set of squares.
     r.append(check("the fast search finds what playing out every run finds",
-                   (len(same), same.count(True), alone), (13, 13, 5)))
+                   (len(same), same.count(True), alone), (12, 12, 4)))
 
     # Which of several right answers gets written down. Driven at a fixed
     # depth on rows built by hand, because what is under test is the search and
@@ -780,8 +782,8 @@ def main():
     # board worse than the bundled sheet does.
     tiny = W.BoardTracker(directory=tempfile.mkdtemp(), reader=P.PieceReader())
     tiny.feed(W.START_WHITE_VIEW)
-    tiny.learn_pieces(render.render(chess.Board()).resize((200, 200),
-                                                          Image.LANCZOS))
+    tiny.learn_pieces(render.render(chess.Board()).resize(
+        (P.MIN_LEARN_PX - 8, P.MIN_LEARN_PX - 8), Image.LANCZOS))
     tiny.board = chess.Board(ENDGAME)
     r.append(check("  but an undersized set is dropped rather than kept",
                    (tiny.relearn_pieces(render.render(tiny.board)),
