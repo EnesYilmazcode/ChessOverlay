@@ -36,6 +36,13 @@ import watcher as W
 
 SIZES = (824, 560, 400, 280)
 
+# The program draws its own arrow on the board it is reading. overlay.py picks a
+# colour that greys into the band read_occupancy ignores, so the shipped reader
+# cannot see it, and the docstring there states that as the safety argument. A
+# matcher that measures edges rather than levels is not protected by it at all,
+# so a bench without the arrow flatters exactly the designs that would break.
+ARROWS = (None, "e2e4", "g1f3")
+
 POSITIONS = {
     "opening": [],
     "developed": ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O",
@@ -73,7 +80,28 @@ def _real_sets():
     return out
 
 
-def corpus(sizes=SIZES, variants=setgen.VARIANTS, quick=False):
+def _draw_arrow(img, uci):
+    """The coach arrow, as the overlay paints it on the live board."""
+    import chess as _c
+    import overlay as OV
+    from PIL import ImageDraw
+    size = img.size[0]
+    region = (0, 0, size, size)
+    move = _c.Move.from_uci(uci)
+    pts = OV.path_points(region, move, False)
+    out = img.copy()
+    pen = ImageDraw.Draw(out)
+    width = max(2, int(round(size / 8.0 * 0.16)))
+    pen.line([c for p in pts for c in p], fill=OV.YOURS, width=width,
+             joint="curve")
+    radius = width / 2.0
+    for px, py in pts:
+        pen.ellipse([px - radius, py - radius, px + radius, py + radius],
+                    fill=OV.YOURS)
+    return out
+
+
+def corpus(sizes=SIZES, variants=setgen.VARIANTS, quick=False, arrows=ARROWS):
     """Every (set name, orientation, position, variant, size) board to score,
     with the position that drew it.
 
@@ -91,6 +119,7 @@ def corpus(sizes=SIZES, variants=setgen.VARIANTS, quick=False):
             for size in sizes:
                 for kind in variants:
                     for name in names:
+                      for arrow in arrows:
                         if name in real:
                             img = real[name].render(board, flipped)
                             if img.size[0] != size:
@@ -99,8 +128,10 @@ def corpus(sizes=SIZES, variants=setgen.VARIANTS, quick=False):
                             font = next(f for f in fonts
                                         if os.path.basename(f).startswith(name))
                             img = setgen.render(board, font, size, flipped)
-                        yield name, flipped, pos, kind, size, \
-                            setgen.variants(img, kind), board
+                        img = setgen.variants(img, kind)
+                        if arrow:
+                            img = _draw_arrow(img, arrow)
+                        yield name, flipped, pos, kind, size, img, board, arrow
 
 
 def teach(entrant, name, flipped, sizes=SIZES):
@@ -129,7 +160,8 @@ def score(entrant_factory, quick=False, verbose=True, colours=False):
     by = {}
     taught = {}
     started = time.time()
-    for name, flipped, pos, kind, size, img, board in corpus(quick=quick):
+    frames = {"clean": 0, "refused": 0, "wrong": 0}
+    for name, flipped, pos, kind, size, img, board, arrow in corpus(quick=quick):
         key = (name, flipped)
         if key not in taught:
             e = entrant_factory()
@@ -145,15 +177,27 @@ def score(entrant_factory, quick=False, verbose=True, colours=False):
             totals["crashed"] += 1
             continue
         cell = by.setdefault((name, flipped, kind), [0, 0, 0])
+        blank = bad = 0
         for r in range(8):
             for c in range(8):
                 got = rows[r][c]
                 if got == "?":
-                    totals["unknown"] += 1; cell[2] += 1
+                    totals["unknown"] += 1; cell[2] += 1; blank += 1
                 elif got == want[r][c]:
                     totals["right"] += 1; cell[0] += 1
                 else:
-                    totals["wrong"] += 1; cell[1] += 1
+                    totals["wrong"] += 1; cell[1] += 1; bad += 1
+        # watcher.check() takes a frame all or nothing: any "?" and the whole
+        # board is thrown away, otherwise every square is believed. So a wrong
+        # square only reaches a game record on a board with no blanks, and per
+        # square figures hide how often that happens.
+        if blank:
+            frames["refused"] += 1
+        elif bad:
+            frames["wrong"] += 1
+        else:
+            frames["clean"] += 1
+    totals["frames"] = frames
     totals["seconds"] = round(time.time() - started, 1)
     if verbose:
         report(totals, by)
@@ -166,6 +210,12 @@ def report(totals, by):
           % (n, totals["seconds"], 100.0 * totals["right"] / max(n, 1),
              100.0 * totals["wrong"] / max(n, 1),
              100.0 * totals["unknown"] / max(n, 1)))
+    f = totals.get("frames")
+    if f:
+        n = f["clean"] + f["refused"] + f["wrong"]
+        print("boards: %.1f%% read whole, %.1f%% refused, %.2f%% ACCEPTED WRONG"
+              % (100.0 * f["clean"] / max(n, 1), 100.0 * f["refused"] / max(n, 1),
+                 100.0 * f["wrong"] / max(n, 1)))
     if totals["crashed"]:
         print("   %d boards crashed the entrant" % totals["crashed"])
     print("\n  set          side   variant      right  wrong  unknown")
