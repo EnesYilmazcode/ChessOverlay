@@ -383,18 +383,24 @@ class Worker(threading.Thread):
 
 # ------------------------------------------------------------------ layout
 
-# The window is a stack of stripes, in this order. Which of them are up is
+# The window is a stack of stripes, and this is the order they are PACKED in,
+# which is not quite the order they appear in. Which of them are up is
 # showing()'s decision, taken on plain values so it can be checked without
 # opening a window. An empty label still costs a line of height, so a stripe
 # with nothing to say is not packed at all rather than packed blank.
 #
+# Order matters because pack leaves undrawn whatever it reached last and had
+# no room for. "foot" and "position" are packed from the bottom before the
+# move list is packed at all, so a window too short for everything takes it
+# out of the move list, which shrinks visibly, rather than out of the footer,
+# which would just be missing. The footer is the only way into the games
+# folder now, so it is not allowed to be the one that goes.
+#
 # "clear" and "advice" are the two halves of the hero row rather than stripes
-# of their own. They are in this list because pack leaves undrawn whatever it
-# reached last and had no room for, so the order that row is packed in decides
-# which of the two survives a 400px window, and that belongs here with the
-# rest of the order.
+# of their own, and they are here for the same reason: the order that row is
+# packed in decides which of the two survives a 400px window.
 STRIPES = ("top", "setup", "hero", "clear", "advice", "detail", "note",
-           "result", "moves", "position", "foot")
+           "result", "foot", "position", "moves")
 
 
 def showing(state):
@@ -510,9 +516,11 @@ class App:
         self._switch(show, "Arrow", self.arrow_on, self._toggle_arrow)
         # Off by default now. The board this is a copy of is already on screen
         # beside the window, and eight lines of text repeating it was the
-        # biggest thing here that nobody had asked for.
-        self.show_board = tk.BooleanVar(value=False)
-        self._switch(show, "Position", self.show_board, self._relayout)
+        # biggest thing here that nobody had asked for. Remembered like the
+        # other two, or anyone who does want it re-ticks it every launch.
+        self.show_board = tk.BooleanVar(value=bool(self.cfg.get("position",
+                                                                False)))
+        self._switch(show, "Position", self.show_board, self._toggle_position)
 
         board = self._drawer_row(setup, "Board")
         for word, command in (("Pick", self._pick),
@@ -557,7 +565,7 @@ class App:
 
         self.moves_box = tk.Text(self.root, bg=PANEL, fg=FG, relief="flat",
                                  font=("Consolas", 12), state="disabled",
-                                 padx=12, pady=10, height=14)
+                                 padx=12, pady=10, height=14, wrap="word")
         pack["moves"] = (self.moves_box, dict(fill="both", expand=True,
                                               padx=12, pady=6))
         self.moves_box.tag_configure("num", foreground=MUTED)
@@ -572,10 +580,12 @@ class App:
         self.board_box = tk.Text(self.root, bg="#1e1c1a", fg=MUTED, relief="flat",
                                  font=("Consolas", 10), height=8, padx=10, pady=6,
                                  state="disabled")
-        pack["position"] = (self.board_box, dict(fill="x", padx=12, pady=(0, 6)))
+        pack["position"] = (self.board_box, dict(side="bottom", fill="x",
+                                                 padx=12, pady=(0, 6)))
 
         foot = tk.Frame(self.root, bg=BG)
-        pack["foot"] = (foot, dict(fill="x", padx=12, pady=(0, 10)))
+        pack["foot"] = (foot, dict(side="bottom", fill="x", padx=12,
+                                   pady=(0, 10)))
         # The filename is the way into the folder, so there is no button for
         # one. Underlined, on a hand cursor, is what says it can be clicked.
         self.lbl_file = tk.Label(foot, text="games", bg=BG, fg=MUTED, anchor="w",
@@ -643,6 +653,10 @@ class App:
         self.setup_open = not self.setup_open
         self._relayout()
 
+    def _toggle_position(self):
+        self._save_config()
+        self._relayout()
+
     # -- actions -----------------------------------------------------
     def _apply_saved_switches(self):
         """Idempotent: whichever of the two is already running is left alone."""
@@ -685,7 +699,10 @@ class App:
         game = self.worker.tracker.game
         if game and game.moves:
             game.save()
-            self.lbl_file.configure(text="saved " + os.path.basename(game.path))
+            # Still the same path, and still the way into the folder, so it is
+            # written the same way it is written while a game is running.
+            self.lbl_file.configure(
+                text="games\\" + os.path.basename(game.path))
         self.worker = None
         self.btn.configure(text="Start", bg=ACCENT,
                            activebackground="#6d9245")
@@ -716,8 +733,13 @@ class App:
         if self.coach is None:
             path = CO.find_engine()
             if path is None:
+                # On the note line rather than in the move slot. It is a
+                # sentence, the move slot is 14pt bold, and nothing would ever
+                # clear it again: the switch has just turned itself back off,
+                # so no later frame comes past to take it down.
                 self.coach_on.set(False)
-                self.lbl_coach.configure(
+                self.note_until = time.time() + NOTE_SECONDS
+                self.lbl_check.configure(
                     text="no Stockfish found. See the README.", fg=WARN)
                 return
             self.coach = CO.Coach(path)
@@ -891,7 +913,9 @@ class App:
                 kind, payload = self.coach.out.get_nowait()
                 if kind == "engine":
                     if payload != "ready":
-                        self.lbl_coach.configure(text=payload[:70], fg=WARN)
+                        self.note_until = time.time() + NOTE_SECONDS
+                        self.lbl_check.configure(text=payload[:70], fg=WARN)
+                        self.lbl_coach.configure(text="")
                         self.lbl_detail.configure(text="")
                         self.coach_on.set(False)
                 elif kind == "advice" and self.coach_on.get():
@@ -947,23 +971,23 @@ class App:
         box.configure(state="normal")
         box.delete("1.0", "end")
         if not f["locked"]:
-            box.insert("end", "waiting for a game\n\n", "hint")
-            box.insert("end",
-                       "Open a game on chess.com. Recording begins\n"
-                       "from the opening position, so start a new\n"
-                       "game rather than joining one midway.", "hint")
+            # One line, and no line breaks in it. This is the first thing seen
+            # on launch and the largest text on screen while it is up, and it
+            # was three lines of prose hand-wrapped to 41 characters, which
+            # soft-wrapped again at 150% scaling. The box wraps by word.
+            box.insert("end", "Open a game. Recording starts from the opening "
+                              "position.", "hint")
         elif not f["rows"]:
-            box.insert("end", "game found, playing as %s\n\n" % f["color"], "hint")
-            box.insert("end", "no moves yet", "hint")
+            box.insert("end", "playing as %s, no moves yet" % f["color"], "hint")
         else:
             mine_is_white = f["color"] == "white"
             if f.get("joined"):
                 # Numbers cannot line up with chess.com here: nothing in the
                 # picture says how many moves were played before we looked.
                 box.insert("end",
-                           "picked this game up part way through, so\n"
-                           "these are counted from where watching\n"
-                           "started, not from chess.com's numbers\n\n", "warn")
+                           "picked this game up part way through, so these are"
+                           " counted from where watching started, not from"
+                           " chess.com's numbers\n\n", "warn")
             for num, white, black in f["rows"]:
                 label = ("+%d." % num) if f.get("joined") else ("%d." % num)
                 box.insert("end", "%5s " % label, "num")
@@ -1052,6 +1076,7 @@ class App:
                        "colour": self.colour_choice.get(),
                        "coach": bool(self.coach_on.get()),
                        "arrow": bool(self.arrow_on.get()),
+                       "position": bool(self.show_board.get()),
                        "sheet": self.taught_sheet}, fh, indent=2)
         os.replace(tmp, CONFIG_PATH)
 

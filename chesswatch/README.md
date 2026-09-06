@@ -195,8 +195,7 @@ means a game you watched from the first move. A game joined part way through on
 a piece set the bundled sheet has never seen has no way to get there, and reads
 almost nothing. **Setup > Board > Pieces** is the way out: it shows the board
 cut into its 64 squares with what the reader currently believes about each one,
-and you
-click a square and say what is on it. Twelve labels is the whole job, and it
+and you click a square and say what is on it. Twelve labels is the whole job, and it
 starts from the reader's own answer, so on a set it already half reads you only
 correct what is wrong. What it writes is a template sheet, kept in `taught.png`
 and loaded again next time you start.
@@ -309,8 +308,8 @@ rectangle is in use.
     python selftest.py      87 checks, including real screenshots
     python piecetest.py     49 checks on the piece reader under a bad capture
     python positiontest.py  29 checks on the whole board solver, no pixels
-    python enrolltest.py   119 checks on teaching the pieces and on the arrow
-    python layouttest.py    46 checks on what the window shows and how wide
+    python enrolltest.py   115 checks on teaching the pieces and on the arrow
+    python layouttest.py    62 checks on what the window shows and how wide
     python coachtest.py     18 checks on the engine wrapper and its label
     python overlaytest.py   17 checks that the arrow cannot corrupt a reading
     python settletest.py    move animation, with the screen on a clock
@@ -341,10 +340,13 @@ in the only legal order.
 
 `layouttest.py` opens no window either, and proves it rather than saying so: it
 replaces `tkinter.Tk` and `tkinter.Toplevel` with functions that raise before it
-imports the app. What it can check without one is the decision about
-which parts of the window are up, the packing that carries that decision out,
-and the width of each row measured against the real Segoe UI at both 100% and
-150% display scaling. How any of it looks is not checked and cannot be.
+imports the app. What it can check without one is the decision about which parts
+of the window are up, the packing that carries that decision out, and the width
+of each row measured against the real Segoe UI at both 100% and 150% display
+scaling. The rows are read off `_build`'s syntax tree rather than listed in the
+test, so a widget added to a full row is measured rather than missed, and one
+written in a shape the reader cannot account for fails the run instead of being
+skipped. How any of it looks is not checked and cannot be.
 
 `enrolltest.py` opens no window at all. The arrow rule and the enrollment
 bookkeeping are written as plain functions so they can be checked without one,

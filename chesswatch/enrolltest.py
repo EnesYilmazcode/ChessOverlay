@@ -25,7 +25,8 @@ could reach. Anything that can be driven is driven.
 
 What is NOT checked here: every widget in enroll.py, the arrow really appearing
 on screen, and Windows click-through. The first needs a desktop, and the last
-two are already what overlaytest.py measures.
+two are already what overlaytest.py measures. The window's own layout, and how
+wide each of its rows comes out, are layouttest.py's.
 """
 
 import ast
@@ -621,6 +622,7 @@ def stub_app(reader):
         colour_choice=types.SimpleNamespace(get=lambda: "auto"),
         coach_on=types.SimpleNamespace(get=lambda: False),
         arrow_on=types.SimpleNamespace(get=lambda: True),
+        show_board=types.SimpleNamespace(get=lambda: False),
         taught_sheet=None,
         lbl_check=Blank(),
         worker=types.SimpleNamespace(reader=reader))
@@ -679,67 +681,6 @@ def persistence():
     finally:
         CW.CONFIG_PATH = was
         shutil.rmtree(tmp, ignore_errors=True)
-
-
-# ---------------------------------------------------------------- the layout
-
-# Tk turns a positive point size into pixels through `tk scaling`, which on
-# Windows is the display dpi over 72. The app calls SetProcessDpiAwareness(2),
-# so the font grows with the display scaling while minsize does not.
-PX = {"100%": round(8 * 96 / 72), "150%": round(8 * 144 / 72)}
-
-# Chrome drawn round the text, low and high. This is bounded rather than
-# measured: it cannot be measured without a window. Only the high end is
-# load bearing, since that is the one that has to fit.
-CHROME = {"btn": (10, 24), "lbl": (0, 6), "check": (18, 30), "radio": (18, 30)}
-
-ROWS = {
-    "tools": [("btn", "check the pieces now"), ("lbl", "I play:"),
-              ("radio", "auto"), ("radio", "white"), ("radio", "black")],
-    "switches": [("lbl", "coaching:"), ("check", "best move"),
-                 ("check", "arrow on board")],
-    "extras": [("btn", "clear arrows"), ("btn", "teach the pieces")],
-}
-
-# minsize is 400 and the rows are packed with padx=12 a side.
-AVAILABLE = 400 - 24
-FONT_PATH = "C:/Windows/Fonts/segoeui.ttf"
-
-
-def row_px(items, px):
-    from PIL import ImageFont
-    font = ImageFont.truetype(FONT_PATH, px)
-    scale = px / PX["100%"]
-    low = high = 0
-    for kind, text in items:
-        box = font.getbbox(text)
-        width = box[2] - box[0]
-        low += width + CHROME[kind][0] * scale
-        high += width + CHROME[kind][1] * scale
-    return round(low), round(high)
-
-
-def layout():
-    print("\n-- the new buttons fit the window ------------------------")
-    if not os.path.exists(FONT_PATH):
-        print("SKIP  no Segoe UI on this machine, cannot measure the rows")
-        return
-    for label, px in PX.items():
-        for name, items in ROWS.items():
-            low, high = row_px(items, px)
-            print("      %-9s at %s: %d to %d px of %d"
-                  % (name, label, low, high, AVAILABLE))
-    check("the row the two new buttons sit on fits at 100% scaling",
-          row_px(ROWS["extras"], PX["100%"])[1] <= AVAILABLE, True)
-    check("  and at 150%, where the font grows and minsize does not",
-          row_px(ROWS["extras"], PX["150%"])[1] <= AVAILABLE, True)
-    check("the coaching switches still fit at both",
-          [row_px(ROWS["switches"], px)[1] <= AVAILABLE for px in PX.values()],
-          [True, True])
-    # The tools row was already full before any of this. Nothing was added to
-    # it, and this holds it at what it was: fitting at 100% and not at 150%.
-    check("nothing was added to the row that was already full",
-          row_px(ROWS["tools"], PX["100%"])[1] <= AVAILABLE, True)
 
 
 # ---------------------------------------------------------------- the wiring
@@ -808,7 +749,6 @@ def main():
     clear_across_games()
     board_goes_away()
     persistence()
-    layout()
     wiring()
     print("\n%d/%d passed" % (sum(bool(x) for x in R), len(R)))
     return 0 if all(R) else 1
