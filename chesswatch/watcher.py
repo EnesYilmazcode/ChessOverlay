@@ -881,12 +881,23 @@ class BoardTracker:
         Returns a short human-readable status, and is safe to call as often as
         you like. This is what recovers a game after missed moves, and what
         lets a game already in progress be picked up.
+
+        Still all 64 squares or nothing. What changed is how many boards can
+        answer all 64: the position already in hand is handed to the reader, so
+        a square the scores refuse can be put back as a yes or no question
+        about the piece believed to be standing on it, which is a question a
+        pointer or a popup does not spoil. Nothing here reasons about a square
+        that stays unreadable, and one is still the whole pass.
+
+        There is nothing to confirm against before a position is locked on, so
+        a cold join is left exactly as it was.
         """
         if not self.reader or not self.reader.ready:
             self.last_check = "no piece templates"
             return self.last_check
 
-        rows, _ = self.reader.classify(board_img)
+        believed = grid_of(self.board, self.flipped) if self.board else None
+        rows, _ = self.reader.classify(board_img, believed)
         if any("?" in row for row in rows):
             self.last_check = "board unclear"
             return self.last_check

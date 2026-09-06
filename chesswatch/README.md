@@ -305,6 +305,14 @@ completely. If a frame is missed at that moment, both readings fit, and neither
 can ever be told apart afterwards, so it records nothing rather than a coin
 flip.
 
+*Any square it cannot name.* Still all 64 squares or nothing: one square the
+checker cannot read and it says so and waits. What changed is how many boards
+can answer all 64. A square whose shape scores are too close to call is put
+back to the reader as a yes or no question about the piece already believed to
+be standing there, which a mouse pointer does not spoil, so a cursor sitting on
+a piece no longer costs the pass. A cursor on an empty square, or a popup wide
+enough to take the piece away, still does.
+
 *Joining a game before it knows which way the board faces.* A board rotated
 half a turn is itself a legal game, so a knight or queen move explains the
 screen equally well both ways up. A pawn move does not, because pawns only move
