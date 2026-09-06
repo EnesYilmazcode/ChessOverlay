@@ -233,20 +233,69 @@ def sheet():
               flat[0] >= 58 and flat[1] <= 1, True)
 
         # A slot left black is not a sheet with a hole in it, it is a template
-        # that matches every square, so it has to be refused before it is
-        # written rather than found later.
+        # that matches every square. A piece nobody taught gets the slot it
+        # already had rather than a black one, and rather than the refusal that
+        # used to stop the whole save.
         short = dict(slots_from(TRUTH_1))
         short.pop("q")
         short.pop("K")
+        part = E.write_sheet(b1, short, os.path.join(tmp, "c.png"))
+        check("a sheet missing a piece is written, not refused",
+              Image.open(part).size,
+              (P.TEMPLATE_PX * P.PAIRED_SLOTS, P.TEMPLATE_PX))
+        check("  and the ordinary reader loads it",
+              P.PieceReader(part).ready, True)
+
+        # Which slots came from where. The bundled sheet is twelve wide and
+        # says nothing about square colour, so the piece it stands in for is
+        # the same crop in both halves.
+        part_img, bundled_img = Image.open(part), Image.open(P.TEMPLATE_SHEET)
+        for symbol in ("K", "q"):
+            check("  %s is left on the sheet it was already read from" % symbol,
+                  [ImageChops.difference(
+                      slot(part_img, symbol, light),
+                      bundled_img.crop((P.ORDER.index(symbol) * P.TEMPLATE_PX, 0,
+                                        (P.ORDER.index(symbol) + 1)
+                                        * P.TEMPLATE_PX, P.TEMPLATE_PX))
+                   ).getbbox() for light in (True, False)], [None, None])
+        # The other half of that claim, and the one that fails if write_sheet
+        # ever fills a slot it was taught: a piece that was taught has to be
+        # this board, not the bundled sheet.
+        check("  while a piece that was taught is cut from the board",
+              ImageChops.difference(
+                  slot(part_img, "Q", True),
+                  bundled_img.crop((P.ORDER.index("Q") * P.TEMPLATE_PX, 0,
+                                    (P.ORDER.index("Q") + 1) * P.TEMPLATE_PX,
+                                    P.TEMPLATE_PX))).getbbox() is not None,
+              True)
+
+        # Teaching nothing is not a partial save, it is a copy of the sheet
+        # already in use written out under a name that claims otherwise.
         failed = ""
         try:
-            E.write_sheet(b1, short, os.path.join(tmp, "c.png"))
+            E.write_sheet(b1, {}, os.path.join(tmp, "none.png"))
         except ValueError as exc:
             failed = str(exc)
-        check("a sheet missing a piece is refused, not written",
-              failed, "nothing taught for K q")
+        check("teaching nothing at all is still refused", failed,
+              "nothing taught yet")
         check("  and no file is left behind",
-              os.path.exists(os.path.join(tmp, "c.png")), False)
+              os.path.exists(os.path.join(tmp, "none.png")), False)
+
+        # And with nothing loadable to leave them on there is no sheet to
+        # write, so the old refusal is what is left.
+        gone = os.path.join(tmp, "no-such.png")
+        real = P.TEMPLATE_SHEET
+        P.TEMPLATE_SHEET = gone
+        try:
+            failed = ""
+            try:
+                E.write_sheet(b1, short, os.path.join(tmp, "f.png"), gone)
+            except ValueError as exc:
+                failed = str(exc)
+        finally:
+            P.TEMPLATE_SHEET = real
+        check("with no sheet to leave them on it is refused as before",
+              failed, "nothing taught for K q, and no sheet to leave them on")
 
         # The bundled sheet is still twelve slots and has to keep loading
         # exactly as it did, with no colour claimed for anything.
@@ -296,6 +345,99 @@ def sheet():
             failed = str(exc)
         check("teaching every piece off one square colour is refused",
               failed, "every square taught is the same colour")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# -------------------------------------- a game joined part way through
+
+# Positions with pieces already off the board, drawn in the set of 6.png,
+# which is the set the bundled sheet cannot read. The first is the case issue
+# #50 reports: queens and bishops gone, so four of the twelve types cannot be
+# pointed at however long you look. The other two are one sitting each, with a
+# different pair of types missing, for teaching that accumulates.
+MID = "r2nk2r/ppp2ppp/8/8/8/8/PPP2PPP/R2NK2R w - - 0 1"
+NO_QUEENS = "r1b1k2r/pppp1ppp/2n2n2/4p3/2B1P3/2N2N2/PPPP1PPP/R1B1K2R w - - 0 1"
+NO_KNIGHTS = "r1bqk2r/pppp1ppp/8/4p3/2B1P3/8/PPPP1PPP/R1BQK2R w - - 0 1"
+
+
+def rendered(ren, fen):
+    """A position drawn in some fixture's piece set, with the letters it ought
+    to read as."""
+    board = chess.Board(fen)
+    return ren.render(board), ["".join(row) for row in W.grid_of(board, False)]
+
+
+def same_slots(one, two, symbol):
+    """Whether two written sheets hold the same picture of one piece, on each
+    square colour. Both halves, because the dark one is the half a sheet
+    copied out of another can land in the wrong place."""
+    return [ImageChops.difference(slot(Image.open(one), symbol, light),
+                                  slot(Image.open(two), symbol, light)
+                                  ).getbbox() is None
+            for light in (True, False)]
+
+
+def partial():
+    print("\n-- a game joined part way through ------------------------")
+    ren = renderer("6")
+    tmp = tempfile.mkdtemp()
+    try:
+        mid, truth = rendered(ren, MID)
+        slots = slots_from(truth)
+        gone = [s for s in P.ORDER if s not in slots]
+        check("a board with pieces already traded cannot teach all twelve",
+              gone, ["Q", "B", "q", "b"])
+
+        # The measurement the issue is about. The honest baseline is teaching
+        # nothing at all, because that is what refusing the save left behind.
+        base = tally(P.PieceReader(), mid, truth)
+        path = E.write_sheet(mid, slots, os.path.join(tmp, "mid.png"))
+        got = tally(P.PieceReader(path), mid, truth)
+        print("      a mid game board on the set of 6.png, 64 squares:")
+        print("        taught nothing   correct %d  wrong %d  unknown %d" % base)
+        print("        taught the 8 on it   correct %d  wrong %d  unknown %d"
+              % got)
+        check("teaching the eight types that are there reads the whole board",
+              got, (64, 0, 0))
+        check("  which is better than the %d squares teaching nothing read"
+              % base[0], got[0] > base[0], True)
+        check("  and names nothing wrong doing it", got[1], 0)
+
+        # Same claim one step out: the board is not read at the size it was
+        # taught at, which is where a template that was never really cut from
+        # this set shows up.
+        smaller = mid.resize((400, 400), Image.LANCZOS)
+        print("        in a 400px window   taught nothing %d/%d/%d,"
+              " taught %d/%d/%d"
+              % (tally(P.PieceReader(), smaller, truth)
+                 + tally(P.PieceReader(path), smaller, truth)))
+        check("  and holds up at a size it was not taught at",
+              tally(P.PieceReader(path), smaller, truth)[1], 0)
+
+        # Teaching accumulates, because the sheet a piece is left on is the
+        # one the reader is reading with, and after a save that is the taught
+        # sheet. Two sittings, a different pair of types missing in each.
+        first, truth1 = rendered(ren, NO_QUEENS)
+        second, truth2 = rendered(ren, NO_KNIGHTS)
+        one = E.write_sheet(first, slots_from(truth1),
+                            os.path.join(tmp, "sitting1.png"))
+        two = E.write_sheet(second, slots_from(truth2),
+                            os.path.join(tmp, "sitting2.png"), one)
+        check("a second sitting keeps the pieces the first taught, both colours",
+              same_slots(one, two, "n"), [True, True])
+        check("  and teaches the ones the first could not",
+              same_slots(one, two, "q"), [False, False])
+        # Without which the second sitting would be the bundled sheet's
+        # knights, which is what leaving held at its default gives.
+        alone = E.write_sheet(second, slots_from(truth2),
+                              os.path.join(tmp, "alone.png"))
+        check("  where starting over would have gone back to the bundled ones",
+              same_slots(one, alone, "n"), [False, False])
+        both = tally(P.PieceReader(two), mid, truth)
+        print("        two sittings read the first board  %d/%d/%d" % both)
+        check("  and the two sittings together read the board neither saw",
+              both[1], 0)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -1286,6 +1428,7 @@ def wiring():
 def main():
     no_windows()
     sheet()
+    partial()
     averaging()
     opening()
     shuffled()

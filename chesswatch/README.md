@@ -288,6 +288,21 @@ the pieces of 6.png from single squares and its h8 rook scores 0.518 as a pawn
 against 0.413 as a rook and is read as a pawn. With both colours the same rook
 scores 0.749 and every one of the 64 squares that is read at all is read right.
 
+Not every piece has to be on the board. A game joined after the queens came off
+has no queen to point at, and refusing the save over it left the case this tool
+exists for as the case it could not finish. Whatever you taught is cut from the
+board in front of you and the rest keep the slots they already had, on the sheet
+being read with or on the bundled one, and the window says which is which.
+Teaching then accumulates: teach eleven pieces today and the twelfth tomorrow
+and the sheet holds both sittings.
+
+Teach every piece that is on the board, not some of them. A piece taught off
+your screen beats one still on the bundled sheet, so a piece you skipped can be
+read as one you taught where it used to be read as nothing at all. On the set of
+6.png, in a position holding eight of the twelve types, teaching all eight reads
+all 64 squares with nothing wrong; teaching two of them reads 56 with 3 wrong,
+against 50 read and 14 unread for teaching nothing.
+
 It runs on its own too, against a screenshot rather than the screen:
 
     python enroll.py board.png
@@ -442,7 +457,7 @@ rectangle is in use.
     python selftest.py     121 checks, including real screenshots
     python piecetest.py     62 checks on the piece reader under a bad capture
     python positiontest.py  29 checks on the whole board solver, no pixels
-    python enrolltest.py   176 checks on teaching the pieces and on the arrow
+    python enrolltest.py   191 checks on teaching the pieces and on the arrow
     python layouttest.py    98 checks on what the window shows and how wide
     python coachtest.py     53 checks on the engine wrapper and its label,
                             43 without a display and 31 without Stockfish
