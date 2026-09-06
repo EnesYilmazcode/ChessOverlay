@@ -186,6 +186,45 @@ EMPTY_GROUND_F = 0.15
 # ink reaches, which are whatever the capture did to the picture.
 SHARE_F = 0.25
 
+# A site draws on the squares of the board it is showing: a dot on every legal
+# destination, a ring on a capture, a mark where a premove will go. A dot on an
+# empty square is board plus ink, so it is neither a piece nor an empty square,
+# and one of them anywhere refuses the whole frame. It is what left the board of
+# issue #52 unreadable on a crop that was otherwise perfect.
+#
+# The program's own arrow is recognised from the colours overlay paints it in.
+# A site's mark is drawn in a colour this program does not own and cannot know,
+# so shape is all there is, and the test below is deliberately narrow: only a
+# small centred blob on an otherwise bare square is read through. A ring, a
+# glow, or anything reaching across the square is still refused, which is the
+# safe answer.
+
+# What counts as ink at all here, as a fraction of the board's contrast.
+# Tighter than SHARE_F on purpose. Every cell that is not part of the mark has
+# to sit inside this band, and that is the whole safety argument: it is what
+# says the rest of the square is bare board rather than a piece the mark
+# happens to sit on. An empty square holds its own colour to within 0.020 of
+# the span, so this clears the noise threefold.
+MARK_INK_F = 0.06
+
+# How far across the square the mark may reach, as a fraction of the reduction.
+# A piece is drawn inside 0.78 of its square and the crop keeps 0.76 of it, so
+# a piece reaches nearly edge to edge of the grid and a mark does not: over the
+# 5568 pieces bench.py draws from four sets at two window sizes the smallest
+# reaches 0.750, and a dot drawn at 0.36 of a square, half again the size of
+# the one on the board of issue #52, reaches 0.562.
+#
+# How much of the square the mark COVERS is not tested, and that is measured
+# rather than forgotten. Area does not separate the two: the thinnest
+# font-drawn pawn in that corpus covers 0.305 of the grid and that same dot
+# covers 0.366, so there is no bar between them to set. Reach is the only
+# measurement here that has a gap in it.
+MARK_SPAN = 0.65
+
+# And how far off centre the mark may sit, in cells. A site centres these; a
+# piece small enough to pass the test above would have no reason to.
+MARK_OFF = 2.0
+
 # Extra renderings of each learned piece, so the bank covers a set that draws
 # its outline heavier or lighter than the one it was taught from. A closing
 # swallows a hairline dark edge and an opening eats a thin light body, which is
@@ -592,7 +631,7 @@ class _Square:
     """
 
     __slots__ = ("cells", "rough", "spread", "reach", "weights", "lost",
-                 "levels", "_unit", "_shares", "_ground")
+                 "levels", "_unit", "_shares", "_ground", "_marked")
 
     def __init__(self, cells, reach, rough=None, weights=None, lost=0.0,
                  levels=DEFAULT_LEVELS, shares=None):
@@ -605,6 +644,7 @@ class _Square:
         self._unit = None
         self._shares = shares
         self._ground = None
+        self._marked = None
         if weights is None:
             self.spread = _stats(cells)[1]
         else:
@@ -649,6 +689,15 @@ class _Square:
         return self.ground < lo - bar or self.ground > hi + bar
 
     @property
+    def marked(self):
+        """True when the only thing drawn here is a site's move hint. See
+        _is_mark. Worked out once and only when something asks, which is
+        squares that showed contrast and are not under the arrow."""
+        if self._marked is None:
+            self._marked = _is_mark(self.cells, self.span)
+        return self._marked
+
+    @property
     def bright(self):
         return self.shares[0]
 
@@ -672,6 +721,42 @@ class _Square:
         ink.
         """
         return sum(self.shares) / max(1, len(self.cells))
+
+
+def _is_mark(cells, span):
+    """True when everything drawn on this square is one small centred blob and
+    the rest of the square is its own bare colour.
+
+    That is a move hint a site drew on an empty square, and not a piece.
+
+    What makes it safe is that the ink is ALL of the ink. A mark sitting on a
+    piece does not pass: the piece's own ink is outside the band too, so the
+    blob measured is the piece and the piece reaches across its square. So
+    everything outside the blob is the square's own colour to within
+    MARK_INK_F, which is what says there is nothing here to name.
+
+    Measured on the reduction, which the caller already has, and every number
+    is a fraction of it, so nothing here is a board size or a board theme.
+    """
+    mid = sorted(cells)[len(cells) // 2]
+    bar = MARK_INK_F * span
+    ink = [i for i, v in enumerate(cells) if abs(v - mid) > bar]
+    if not ink:
+        return False
+    # One side of the square's own colour and not both. A piece is a body
+    # inside an outline and draws on both sides of the square under it; a flat
+    # mark draws on one.
+    darker = cells[ink[0]] < mid
+    if any((cells[i] < mid) != darker for i in ink):
+        return False
+    rows = [(_IDX[i] if _IDX else i) // RES for i in ink]
+    cols = [(_IDX[i] if _IDX else i) % RES for i in ink]
+    top, low, left, right = min(rows), max(rows), min(cols), max(cols)
+    if (low - top + 1 > MARK_SPAN * RES) or (right - left + 1 > MARK_SPAN * RES):
+        return False
+    half = (RES - 1) / 2.0
+    return (abs((top + low) / 2.0 - half) <= MARK_OFF
+            and abs((left + right) / 2.0 - half) <= MARK_OFF)
 
 
 def _shares(cells, span):
@@ -1183,6 +1268,13 @@ def _judge(feat, templates, floor=FLOOR, margin=MARGIN):
         # board paints squares with. Both are refusals; neither is a ".".
         if feat.reach is None or feat.painted:
             return None, 0.0
+        return ".", 1.0
+    if feat.weights is None and not feat.painted and feat.marked:
+        # Contrast, but all of it in one small centred blob with bare board
+        # around it, which is a site's move hint and not a piece. Nothing here
+        # to name, so the square is empty. Squares under the program's own
+        # arrow are left to the arrow's own path, which already weights the
+        # covered cells out and holds what is left to a higher bar.
         return ".", 1.0
     if feat.weights is not None:
         floor, margin = max(floor, ARROW_FLOOR), max(margin, ARROW_MARGIN)
