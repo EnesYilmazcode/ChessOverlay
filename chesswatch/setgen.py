@@ -72,7 +72,7 @@ def fonts(limit=None):
 
 
 def render(board, font_path, size=824, flipped=False,
-           light=LIGHT, dark=DARK):
+           light=LIGHT, dark=DARK, decoration="none", lit=()):
     """One position drawn in one font, as a board image.
 
     The glyph is fitted to the square by its own ink box rather than by the
@@ -115,6 +115,10 @@ def render(board, font_path, size=824, flipped=False,
                 pen.text((x, y), edge, font=face, fill=(0, 0, 0))
             else:
                 pen.text((x, y), solid, font=face, fill=(0, 0, 0))
+    if decoration in ("highlight", "both") and lit:
+        img = highlight(img, lit)
+    if decoration in ("labels", "both"):
+        img = labels(img, light, dark)
     return img
 
 
@@ -131,6 +135,74 @@ def readable(font_path, size=824):
     import watcher as W
     img = render(chess.Board(), font_path, size)
     return W.grid_score(img, 0, 0, img.size[0]) >= 0.95
+
+
+THEMES = {
+    "green": ((235, 236, 208), (115, 149, 82)),      # chess.com's own
+    "brown": ((240, 217, 181), (181, 136, 99)),      # lichess default
+    "blue":  ((222, 227, 230), (140, 162, 173)),
+    "grey":  ((220, 220, 220), (150, 150, 150)),     # low contrast on purpose
+}
+
+HIGHLIGHT = (246, 246, 105)
+
+
+def highlight(img, squares, light=LIGHT, dark=DARK, tol=40):
+    """Paint the last-move wash over some squares, under the pieces.
+
+    Worth carrying because it is a silent failure rather than a loud one: the
+    shipped reader names a WRONG piece on almost every highlighted square that
+    holds one, and marks nothing unreadable while doing it. A bench that never
+    draws the wash cannot see that, and this one did not.
+
+    Only pixels that are board colour are replaced, which is what the site
+    does: the wash goes under the piece rather than over it. Matched against
+    the two square colours by distance rather than by a brightness band,
+    because a band tuned to a green board misses a brown one.
+    """
+    from PIL import Image as _I
+    step = img.size[0] // 8
+    out = img.copy()
+    wash = _I.new("RGB", (step, step), HIGHLIGHT)
+    for row, col in squares:
+        left, top = col * step, row * step
+        square = out.crop((left, top, left + step, top + step))
+        px = square.load()
+        mask = _I.new("L", square.size, 0)
+        mp = mask.load()
+        for y in range(square.size[1]):
+            for x in range(square.size[0]):
+                r, g, b = px[x, y][:3]
+                for want in (light, dark):
+                    if (abs(r - want[0]) <= tol and abs(g - want[1]) <= tol
+                            and abs(b - want[2]) <= tol):
+                        mp[x, y] = 255
+                        break
+        square.paste(wash, (0, 0), mask)
+        out.paste(square, (left, top))
+    return out
+
+
+def labels(img, light, dark):
+    """Rank and file coordinates in the square corners, the way a real board
+    draws them. Free for a matcher that thresholds and expensive for one that
+    normalises, so leaving them out favours one design over the other."""
+    from PIL import ImageDraw, ImageFont
+    step = img.size[0] // 8
+    out = img.copy()
+    pen = ImageDraw.Draw(out)
+    try:
+        face = ImageFont.truetype("arialbd.ttf", max(9, step // 7))
+    except Exception:
+        face = ImageFont.load_default()
+    for row in range(8):
+        pen.text((3, row * step + 2), str(8 - row), font=face,
+                 fill=dark if row % 2 == 0 else light)
+    for col in range(8):
+        pen.text((col * step + step - step // 6, 8 * step - step // 4),
+                 "abcdefgh"[col], font=face,
+                 fill=dark if (7 + col) % 2 == 0 else light)
+    return out
 
 
 def variants(img, kind):
@@ -166,3 +238,6 @@ def variants(img, kind):
 
 VARIANTS = ("plain", "thin", "heavy", "grey_body", "small",
             "blur", "contrast", "dim")
+
+# Drawn while the board is made rather than done to the picture afterwards.
+DECORATIONS = ("none", "highlight", "labels")
