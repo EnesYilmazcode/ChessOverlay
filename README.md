@@ -4,8 +4,9 @@ Two halves of one idea, for anyone building chess teaching tools. `chesswatch`
 watches a chess board on your screen, reads it, and writes the game to disk.
 Open **Setup** and tick **Coach**, and it runs Stockfish on the position it is
 reading and says, in words, what to play. Tick **Arrow** and it draws that move
-on the board itself, over whatever program is showing it. `holochess` is a full
-board you play against the engine, with the same arrow inside its own window.
+on the board itself, over whatever program is showing it, in one colour for
+your move and another for your opponent's. `holochess` is a full board you play
+against the engine, with the same arrow inside its own window.
 
 Nothing signs in, nothing touches an account, and nothing leaves the machine.
 
@@ -40,10 +41,10 @@ with **Setup > Board > Pick** and everything else carries on as normal.
 
 | Folder | What it is | State |
 | --- | --- | --- |
-| [`chesswatch/`](chesswatch/) | Screen recorder. Finds the board, reads it, saves PGN + JSON. | Finished. 78 headless checks plus two on-screen tests. |
+| [`chesswatch/`](chesswatch/) | Screen recorder. Finds the board, reads it, saves PGN + JSON. | Finished. 87 headless checks plus two on-screen tests. |
 | [`chesswatch/position.py`](chesswatch/position.py) | Picks all 64 squares as one legal position instead of one at a time. | Works. 29 checks. Nothing calls it yet. |
-| [`chesswatch/coach.py`](chesswatch/coach.py) | Stockfish on the position being watched, in plain words. | Works. 18 checks. Off by default. |
-| [`chesswatch/overlay.py`](chesswatch/overlay.py) | That move drawn on the real board, click-through. | Works. 16 checks, measured on screen. |
+| [`chesswatch/coach.py`](chesswatch/coach.py) | Stockfish on the position being watched, read while it thinks. | Works. 52 checks. Off by default. |
+| [`chesswatch/overlay.py`](chesswatch/overlay.py) | That move drawn on the real board, click-through, one colour per side. | Works. 21 checks, headless by default. |
 | [`holochess/`](holochess/) | Local board, Stockfish 18, best move as a hologram arrow. | Works. 17 checks. |
 
 Each folder has its own README with the long version.
@@ -82,14 +83,25 @@ It names the piece and both squares rather than only the notation, says what a
 capture takes and when a move gives check, and counts a forced mate in moves.
 That is aimed at a player who has not learned to read `Nxe5+` yet.
 
-The engine runs on its own thread with a 300 ms budget, so the reader never
-waits for it, and an answer to a position that has already been played past is
-thrown away rather than shown against the wrong board. The switch is remembered
-in `config.json`.
+The engine runs on its own thread and is read while it is still thinking, so
+the reader never waits for it and neither do you: a first answer is on the
+window in about a hundredth of a second and improves from there. One that is
+not the last word yet ends the small print under the move in `...`. An answer to
+a position that has already been played past is thrown away rather than shown
+against the wrong board.
+
+**Setup > Think** sets how long the engine gets on one position: 0.3, 1 or 2.5
+seconds. Because the first answer arrives at once either way, a longer think
+does not make you wait, it only searches deeper on a board you are still
+sitting in front of. It is bounded rather than open ended on purpose, since a search left
+running while you decide on a move would hold a whole core for as long as you
+took. Both switches and the think time are remembered in `config.json`.
 
 Tick **Arrow** as well and the move is drawn on the board itself, over
 whatever program is showing it. The window is click-through, so it does not get
-between you and the game.
+between you and the game. There is an arrow for every position, not only for
+your own turn, because the engine's answer to your opponent's position is what
+they are threatening. Cyan is your move, violet is theirs.
 
 You supply Stockfish, the same binary the other half uses. See below.
 
@@ -101,24 +113,31 @@ thing that could quietly ruin a game file.
 `read_occupancy` converts the board to grey and counts only pixels brighter than
 244 or darker than 70. Everything between those is already discarded, which is
 how the last-move highlight, the coordinate labels and the check marker are
-ignored. The arrow is drawn in a colour that lands in that gap: cyan greys to
-165, and blended at 85 per cent over pure white or pure black it stays inside
-the band. The reader cannot see it.
+ignored. Both arrow colours land in that gap: cyan greys to 165 and violet to
+123, and blended at 85 per cent over pure white or pure black each stays inside
+the band on its own account rather than on the other's. The reader cannot see
+either of them.
 
-Coverage can still hide a piece, making an occupied square read empty. That
-position matches no legal move, so the frame is ignored and the recorder waits,
-which is what it already does for a piece in mid animation. It cannot write down
-a move that did not happen.
+Coverage can still change what a square reads as: a white pawn with the shaft
+painted down its file can lose enough bright pixels to come back as a black
+piece. That position matches no legal move, so the frame is ignored and the
+recorder waits, which is what it already does for a piece in mid animation. It
+cannot write down a move that did not happen.
 
 `overlaytest.py` measures that rather than claiming it: sixteen arrows across
-the crowded ranks and onto pieces, at 664px and again at 240px, every one
-confirmed to be on the board, none of them changing a single square, and every
-pixel any of them touched confirmed to have landed between the two cutoffs.
-Then it plays a whole game with an arrow up for every frame. The check that the
-arrow is really there is the load-bearing one, because without it an overlay
-that drew nothing would pass everything else.
+the crowded ranks and onto pieces, at 664px and again at 240px, in both
+colours, every one confirmed to be on the board, none of them changing a single
+square, and every pixel any of them touched confirmed to have landed between
+the two cutoffs. Cyan's land on greys 142 to 179 and violet's on 106 to 143.
+Then it plays a whole game with an arrow up for every frame, changing colour
+every half move.
 
-By default the arrow is modelled in PIL, which settles the colour and the
+The check that the arrow is really there is the load-bearing one, because
+without it an overlay that drew nothing would pass everything else. It runs
+once per colour, and the two captures of the same move are diffed against each
+other, so a colour that never got painted cannot hide behind the one that did.
+
+By default the arrows are modelled in PIL, which settles the colours and the
 geometry and costs no screen space. `--on-screen` puts the real overlay window
 over a real board and captures it through mss, which is the only run that
 touches the transparency key, the stacking order and click-through.
@@ -186,9 +205,9 @@ happens to allow.
 
 ```
 cd chesswatch
-python selftest.py      78 headless checks, including real screenshots
-python coachtest.py     18 checks on the engine wrapper and its label
-python overlaytest.py   17 checks that the arrow cannot corrupt a reading
+python selftest.py     116 headless checks, including real screenshots
+python coachtest.py     52 checks on the engine wrapper and its label
+python overlaytest.py   21 checks that the arrows cannot corrupt a reading
 python settletest.py    move animation, driven off a real clock
 python livetest.py      plays whole games past the real capture worker
 

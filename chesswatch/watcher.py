@@ -27,6 +27,22 @@ LIGHT_SQUARE = (235, 236, 208)
 DARK_SQUARE = (115, 149, 82)
 SQUARE_TOL = 18
 
+# The last-move highlight. chess.com washes the square underneath in half
+# opacity #FFFF33, so both highlighted shades fall straight out of the two
+# square colours rather than needing constants of their own. Measured off real
+# captures at two board sizes: (245, 246, 130) on light and (185, 202, 67) on
+# dark, and the blend below reproduces both to the byte. Tighter than
+# SQUARE_TOL because the wash is flat and exact, and the tighter it is the
+# further an arrow drawn over the square has to be from counting.
+HIGHLIGHT_WASH = (255, 255, 51)
+HIGHLIGHT_TOL = 12
+
+# Over the four fixtures at board sizes 824 down to 130, a highlighted square
+# covers 0.18 to 1.00 of its window and every other square covers 0.0000, so
+# where in that gap the line sits does not matter. The low end is a square
+# mostly under the game-over dialog; one in the clear never went below 0.51.
+HIGHLIGHT_MIN = 0.05
+
 # Square classification. Piece fills sit far outside the square colours, so the
 # margin is enormous: measured on real screenshots, empty squares score exactly
 # 0.0000 even under the last-move highlight, the coordinate labels and the check
@@ -266,6 +282,45 @@ def read_occupancy(board_img):
                 line.append("W" if bf > df else "B")
         rows.append("".join(line))
     return rows
+
+
+def _wash(square):
+    return tuple((v + w + 1) // 2 for v, w in zip(square, HIGHLIGHT_WASH))
+
+
+DEFAULT_HIGHLIGHT = (_wash(LIGHT_SQUARE), _wash(DARK_SQUARE))
+
+
+def highlight_squares(board_img, colours=DEFAULT_HIGHLIGHT):
+    """Screen (row, col) of every square wearing the last-move highlight.
+
+    Samples the whole square less a 3% border, rather than read_occupancy's
+    middle 56%, because the piece sits in the middle and the highlight is what
+    survives around it. The border keeps out the antialiased seam, which bleeds
+    about 1% of a square in from the neighbour. Wider costs separation and buys
+    nothing: at 6% the worst lit square measures 0.4439 rather than 0.5156.
+    """
+    small = board_img.resize((GRID, GRID), Image.NEAREST)
+    mask = None
+    for colour in colours:
+        hit = _colour_mask(small, colour, HIGHLIGHT_TOL)
+        mask = hit if mask is None else ImageChops.lighter(mask, hit)
+
+    step = GRID // 8
+    pad = max(1, round(step * 0.03))
+    inset = step - 2 * pad
+    area = inset * inset
+    floor = area * HIGHLIGHT_MIN
+    out = []
+    for r in range(8):
+        top = r * step + pad
+        band = mask.crop((0, top, GRID, top + inset)).transpose(
+            Image.TRANSPOSE).tobytes()
+        for c in range(8):
+            at = (c * step + pad) * inset
+            if band.count(255, at, at + area) >= floor:
+                out.append((r, c))
+    return out
 
 
 def occupancy_of(board, flipped=False):
@@ -520,6 +575,10 @@ class BoardTracker:
         self.preferred_flipped = None   # set when you tell it which colour you are
         self._last_unmatched = None
         self._pending = None       # a position seen but not yet explained
+        # Highlight colour per shade, light then dark, sampled off your own
+        # board. A shade stays None until a move has shown us one, and the
+        # reader falls back to the derived colour for any that has not.
+        self.highlight = [None, None]
 
     @property
     def locked_on(self):
@@ -590,6 +649,7 @@ class BoardTracker:
             move = self._confirm_promotion(move, board_img)
             self.game.moves.append(self.board.san(move))
             self.board.push(move)
+        self._learn_highlight(moves[-1], board_img)
         self.game.note_outcome(self.board)
         return "finished" if self.game.result != "*" else "moves"
 
@@ -721,6 +781,93 @@ class BoardTracker:
         """
         return self._solve(occ, 2, colour_only=True)
 
+    # -- the last-move highlight -------------------------------------
+    def _highlight_colours(self):
+        return tuple(seen or derived for seen, derived
+                     in zip(self.highlight, DEFAULT_HIGHLIGHT))
+
+    def _learn_highlight(self, move, board_img):
+        """Sample the highlight colour off a square we know is wearing it.
+
+        The square a move just left is both lit and empty, so it shows the
+        colour flat. Sampling beats trusting the derived default because a bad
+        sample can only ever switch this signal off, while a repaint chess.com
+        ships one day would switch it off silently and for good.
+
+        A sample is kept only if reading the whole board back with it lights
+        exactly the two squares this move touched, which is what stops a dialog,
+        an arrow or a misexplained frame teaching it a colour that is not the
+        highlight at all.
+        """
+        if board_img is None:
+            return
+        row, col = self._square_on_screen(move.from_square)
+        shade = (row + col) % 2          # top left square is light, either way up
+        if self.highlight[shade] is not None:
+            return
+
+        step = board_img.size[0] / 8.0
+        pad = step * 0.06
+        window = board_img.crop((int(col * step + pad), int(row * step + pad),
+                                 int((col + 1) * step - pad),
+                                 int((row + 1) * step - pad)))
+        pixels = window.size[0] * window.size[1]
+        counts = window.getcolors(pixels)
+        if not counts:
+            return
+        n, colour = max(counts)
+        if n < 0.75 * pixels:
+            return                       # something is over it, so not a sample
+
+        trial = list(self.highlight)
+        trial[shade] = colour
+        lit = highlight_squares(board_img, tuple(
+            seen or derived for seen, derived in zip(trial, DEFAULT_HIGHLIGHT)))
+        if set(lit) == set([(row, col), self._square_on_screen(move.to_square)]):
+            self.highlight = trial
+
+    def last_mover(self, occ, board_img):
+        """Which colour the last-move highlight says just moved, or None where
+        the picture does not say plainly.
+
+        After any legal move the square left behind is empty and the square
+        arrived at holds a piece of the mover's colour. That survives castling,
+        which moves two pieces but both of them the mover's, and it survives en
+        passant and promotion, where the captured pawn and the promoted piece
+        change nothing about the two lit squares. So of the two exactly one is
+        occupied, and its colour is the answer.
+
+        What it cannot survive is any other number of lit squares: none at the
+        start of a game and in Game Review, three if chess.com lights a picked
+        up piece in this same colour, a stray one if the board rectangle is off
+        by more than about a percent, and two empty ones if a castle is drawn
+        from the king square to the rook square. Every one of those refuses.
+
+        One picture is not covered and is not ruled out either. chess.com paints
+        the two squares of a queued premove, and if that uses this same wash
+        with no last-move highlight beside it, the square it came from still
+        holds your own piece, so this would name you as having moved when you
+        have not. No fixture here has a premove in it, so what colour it is
+        drawn in is unknown rather than safe. Settle that before trusting this
+        on a board that takes premoves.
+
+        Nothing in the app asks yet. The obvious caller wanted this to say the
+        tracker was out of step, and it does say that, but the piece check it
+        would have brought forward cannot repair a turn that is wrong on its
+        own: check() compares placement, so it answers "position confirmed" and
+        the disagreement stands. See the pull request that added this.
+        """
+        if self.board is None or self.over or board_img is None:
+            return None
+        lit = highlight_squares(board_img, self._highlight_colours())
+        if len(lit) != 2:
+            return None
+        held = [(r, c) for r, c in lit if occ[r][c] != "."]
+        if len(held) != 1:
+            return None
+        row, col = held[0]
+        return occ[row][col] == "W"
+
     # -- the piece-level checker -------------------------------------
     # Four is where the search stops paying. Depth 4 recovers a four move
     # skip in about a fifth of a second; depth 5 costs seconds and recovers
@@ -734,12 +881,23 @@ class BoardTracker:
         Returns a short human-readable status, and is safe to call as often as
         you like. This is what recovers a game after missed moves, and what
         lets a game already in progress be picked up.
+
+        Still all 64 squares or nothing. What changed is how many boards can
+        answer all 64: the position already in hand is handed to the reader, so
+        a square the scores refuse can be put back as a yes or no question
+        about the piece believed to be standing on it, which is a question a
+        pointer or a popup does not spoil. Nothing here reasons about a square
+        that stays unreadable, and one is still the whole pass.
+
+        There is nothing to confirm against before a position is locked on, so
+        a cold join is left exactly as it was.
         """
         if not self.reader or not self.reader.ready:
             self.last_check = "no piece templates"
             return self.last_check
 
-        rows, _ = self.reader.classify(board_img)
+        believed = grid_of(self.board, self.flipped) if self.board else None
+        rows, _ = self.reader.classify(board_img, believed)
         if any("?" in row for row in rows):
             self.last_check = "board unclear"
             return self.last_check

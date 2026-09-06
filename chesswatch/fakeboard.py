@@ -13,7 +13,7 @@ class render one position in several piece sets and compare them.
 """
 
 import chess
-from PIL import Image
+from PIL import Image, ImageDraw
 
 # Fallback square colours, used only if a reference square is too busy to
 # measure. chess.com's default green, as captured.
@@ -151,17 +151,32 @@ class Renderer:
     def can_render(self, board):
         return {p.symbol() for p in board.piece_map().values()} <= self.pieces
 
-    def render(self, board, flipped=False, size=None):
+    def render(self, board, flipped=False, size=None, lit=(), highlight=None):
         """Draw a position. size resizes the finished board, which is the same
-        resampling a smaller browser window puts the reader through."""
+        resampling a smaller browser window puts the reader through.
+
+        lit names board squares to paint with the last-move highlight, in the
+        (light, dark) pair of colours given. Those are filled flat, for the same
+        reason the empty squares are: the reference screenshot has no
+        highlighted square to cut from, and chess.com draws a flat wash anyway.
+        """
+        # A single colour instead of a pair paints one shade over both and
+        # still renders, which would be a fixture quietly disagreeing with the
+        # board it claims to be. Cheaper to stop here than to find it later.
+        if lit and (highlight is None or len(highlight) != 2):
+            raise ValueError("lit squares need a (light, dark) pair of colours")
         out = Image.new("RGB", (self.size, self.size))
         ranks = range(8) if flipped else range(7, -1, -1)
         for row, rank in enumerate(ranks):
             files = range(7, -1, -1) if flipped else range(8)
             for col, file in enumerate(files):
                 pos = (col * self.step, row * self.step)
-                out.paste(self.sprites["light" if (row + col) % 2 == 0 else "dark"],
-                          pos)
+                shade = (row + col) % 2
+                if chess.square(file, rank) in lit:
+                    out.paste(Image.new("RGB", (self.step, self.step),
+                                        highlight[shade]), pos)
+                else:
+                    out.paste(self.sprites["light" if shade == 0 else "dark"], pos)
                 piece = board.piece_at(chess.square(file, rank))
                 if piece:
                     key = piece.symbol()
@@ -171,3 +186,67 @@ class Renderer:
         if size and size != self.size:
             out = out.resize((size, size), Image.LANCZOS)
         return out
+
+
+# ------------------------------------------------- things drawn on top
+
+def with_pointer(board_img, row, col, size=1.0):
+    """A copy of the board with a mouse arrow standing in one square.
+
+    White fill and black outline, which is the case worth drawing: the piece
+    mask counts very bright and very dark pixels, so a cursor lands in both
+    layers at once. Measured against the square rather than in pixels, since a
+    smaller board on the same screen gets a proportionally bigger cursor.
+    """
+    out = board_img.copy()
+    draw = ImageDraw.Draw(out)
+    step = board_img.size[0] / 8.0
+    x, y = (col + 0.55) * step, (row + 0.45) * step
+    tall = 0.40 * step * size
+    wide = tall * 12.0 / 19.0
+    draw.polygon([(x, y), (x, y + tall), (x + 0.30 * wide, y + 0.72 * tall),
+                  (x + 0.50 * wide, y + 1.05 * tall),
+                  (x + 0.72 * wide, y + 0.96 * tall),
+                  (x + 0.52 * wide, y + 0.64 * tall), (x + wide, y + 0.60 * tall)],
+                 fill=(255, 255, 255), outline=(0, 0, 0))
+    return out
+
+
+def with_panel(board_img, row, col, across=1, down=1, dark=True):
+    """A copy of the board with a popup drawn over a block of squares.
+
+    A hover tooltip, an evaluation label, a browser autocomplete. Inset inside
+    the block rather than filling it, and carrying a line of text, because both
+    are what a real popup does to the mask: it adds ink of its own at both ends
+    of the cutoffs instead of replacing a square with one flat colour. A panel
+    that does cover squares outright is a different case, see cover().
+    """
+    out = board_img.copy()
+    draw = ImageDraw.Draw(out)
+    step = board_img.size[0] / 8.0
+    left, top = (col + 0.10) * step, (row + 0.30) * step
+    right = min((col + across) * step, board_img.size[0] - 1)
+    bottom = min((row + down - 0.15) * step, board_img.size[0] - 1)
+    draw.rounded_rectangle([left, top, right, bottom], radius=0.12 * step,
+                           fill=(38, 37, 34) if dark else (250, 250, 248))
+    ink = (240, 240, 236) if dark else (30, 30, 28)
+    word = left + 0.15 * step
+    while word + 0.18 * step < right:
+        draw.rectangle([word, top + 0.20 * step, word + 0.18 * step,
+                        top + 0.35 * step], fill=ink)
+        word += 0.30 * step
+    return out
+
+
+def cover(board_img, row, col, across=1, down=1):
+    """A copy of the board with whole squares painted over, edge to edge.
+
+    Nothing can see through this and nothing should claim to. It is here to be
+    refused.
+    """
+    out = board_img.copy()
+    step = board_img.size[0] / 8.0
+    ImageDraw.Draw(out).rectangle(
+        [col * step, row * step, (col + across) * step - 1,
+         (row + down) * step - 1], fill=(38, 37, 34))
+    return out

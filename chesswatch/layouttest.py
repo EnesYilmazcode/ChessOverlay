@@ -30,6 +30,7 @@ move is large enough to read across a room. Those need a screen and a person.
 import ast
 import inspect
 import os
+import queue
 import sys
 import textwrap
 import time
@@ -249,11 +250,34 @@ class Unreadable(Exception):
 
 
 def _const(node, env):
+    """The value of an expression in _build, or None if it is not one this can
+    work out. Between them these are the shapes _build writes: a literal, a
+    loop variable or one bound from one, a value reached through an import
+    alias, and a % format of any of those. Anything else comes back None and
+    the caller refuses rather than guessing.
+    """
     if isinstance(node, ast.Constant):
         return node.value
-    if isinstance(node, ast.Name) and node.id in env:
-        return env[node.id]
+    if isinstance(node, ast.Name):
+        return env.get(node.id)
+    if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+            and node.value.id in vars(C)):
+        return getattr(vars(C)[node.value.id], node.attr, None)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        left, right = _const(node.left, env), _const(node.right, env)
+        if isinstance(left, str) and right is not None:
+            return left % right
     return None
+
+
+def _for_values(node, env):
+    """The elements a for loop in _build runs over, as nodes."""
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return list(node.elts)
+    values = _const(node, env)
+    if isinstance(values, (tuple, list)):
+        return [ast.Constant(value=value) for value in values]
+    raise Unreadable("a loop over something this cannot read")
 
 
 def _kw(call, name):
@@ -345,7 +369,7 @@ def build_rows():
 
     def statement(node, env):
         if isinstance(node, ast.For):
-            for element in node.iter.elts:
+            for element in _for_values(node.iter, env):
                 names = ([node.target] if isinstance(node.target, ast.Name)
                          else node.target.elts)
                 values = ([element] if not isinstance(element, ast.Tuple)
@@ -386,6 +410,12 @@ def build_rows():
                     if made is not None and name:
                         attrs[name] = made
                     return
+            # A plain local, so a label worked out once and used twice reads
+            # the same as one written out at the widget.
+            if isinstance(target, ast.Name):
+                got = _const(value, env)
+                if got is not None:
+                    env[target.id] = got
             return
 
         if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
@@ -432,6 +462,16 @@ def window_floor():
                 and node.func.attr == "minsize"):
             return tuple(_const(arg, {}) for arg in node.args)
     raise Unreadable("App.__init__ sets no minsize")
+
+
+def drawer_rows():
+    """The drawer's rows, counted straight off the _drawer_row calls rather
+    than off build_rows' own bookkeeping, so a row build_rows stopped seeing
+    would show up as a row that never got measured."""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(C.App._build)))
+    return [_const(node.args[1], {}) for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_drawer_row"]
 
 
 def status_words():
@@ -557,6 +597,60 @@ def the_lines():
           app.lbl_board.text, "no board on screen")
 
 
+def coached(turn="white", final=True, over=False):
+    """App._drain_coach with one answer waiting on the queue. Returns the app
+    and the arrow it asked for, if it asked for one."""
+    app = viewer()
+    app.coach = types.SimpleNamespace(out=queue.Queue())
+    app.coach_on = types.SimpleNamespace(get=lambda: True)
+    app.coach_fen = "the position"
+    app.my_colour = "white"
+    drawn = []
+    app._show_arrow = lambda uci, fen, mine: drawn.append((uci, fen, mine))
+    app.coach.out.put(("advice", {
+        "fen": "the position", "over": over, "final": final, "turn": turn,
+        "san": "Ra8#", "uci": "a1a8", "text": "rook: a1 to a8, with check",
+        "score": "mate in 1"}))
+    C.App._drain_coach(app)
+    return app, drawn
+
+
+def the_answer():
+    print("\n-- the answer is a headline and its small print ----------")
+    app, drawn = coached()
+    check("the move line is whose move it is and what to play, and no more",
+          app.lbl_coach.text, "your move  Ra8#")
+    check("  the naming of the squares and the score are under it",
+          app.lbl_detail.text, "rook: a1 to a8, with check   mate in 1")
+    check("  and the arrow is asked for in your colour",
+          drawn, [("a1a8", "the position", True)])
+
+    app, drawn = coached(turn="black")
+    check("their best move is drawn too, in the other colour",
+          (app.lbl_coach.text, drawn),
+          ("their move  Ra8#", [("a1a8", "the position", False)]))
+
+    app, drawn = coached(final=False)
+    check("an answer the engine has not finished with is marked",
+          app.lbl_detail.text.endswith("   ..."), True)
+    check("  on the small print, leaving the move line the width it was",
+          app.lbl_coach.text, "your move  Ra8#")
+
+    app, drawn = coached(over=True)
+    check("a finished game says so and shows no small print",
+          (app.lbl_coach.text, app.lbl_detail.text, drawn),
+          ("the game is over", "", []))
+
+    app = viewer()
+    app.coach = types.SimpleNamespace(out=queue.Queue())
+    app.coach_on = types.SimpleNamespace(get=lambda: True, set=lambda v: None)
+    app.coach.out.put(("engine", "Stockfish would not start: no such file"))
+    C.App._drain_coach(app)
+    check("an engine that will not start is a note, not a headline",
+          (app.lbl_coach.text, app.lbl_check.text.startswith("Stockfish")),
+          ("", True))
+
+
 def the_filename():
     print("\n-- the filename is the way into the games folder ---------")
     # The path is joined rather than written out: basename splits on the
@@ -635,8 +729,11 @@ def widths():
           % (window_floor() + (room,)))
     rows = {name: widgets for name, widgets in build_rows().items()
             if name != "*stripes*" and len(widgets) > 1}
-    check("the rows read out of _build are the ones with a widget beside them",
-          sorted(rows), sorted(["board", "hero", "show", "side", "top"]))
+    check("every row the drawer makes is one of the rows measured",
+          len([name for name in rows if name not in ("top", "hero")]),
+          len(drawer_rows()))
+    check("  along with the top row and the row the move sits on",
+          sorted(set(rows) & {"top", "hero"}), ["hero", "top"])
     for label, dpi in DPI.items():
         for name in sorted(rows):
             low, high = row_px(rows[name], dpi)
@@ -722,6 +819,7 @@ def main():
         every_stripe_is_built()
         the_pack_order()
         the_lines()
+        the_answer()
         the_filename()
         widths()
         the_status_line()

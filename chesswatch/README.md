@@ -48,10 +48,23 @@ squares is the small print under it.
 
 Piece and squares in words rather than only the notation, what a capture takes,
 when a move gives check, and a forced mate counted in moves. `coach.py` holds
-that, and it runs on its own thread with a 300 ms budget so the reader never
-waits on it. Only the newest question is answered, and an answer that arrives
-after the position has changed is dropped rather than shown against the wrong
-board.
+that, and it runs on its own thread so the reader never waits on it. Only the
+newest question is answered, and an answer that arrives after the position has
+changed is dropped rather than shown against the wrong board.
+
+The engine is read while it is still thinking rather than only once it has
+finished. The first answer is up in about a hundredth of a second and improves
+from there, and one the engine has not finished with ends the small print under
+the move in `...`, so a move that is about to be replaced does not read as the
+verdict.
+
+**Setup > Think** is how long it gets on one position: 0.3, 1 or 2.5 seconds,
+saved as `think_seconds`. Since the first answer arrives at once whichever is
+picked, a longer think costs you no waiting; it only searches deeper on a board
+you are still in front of. It is a short list rather than a box you type into
+because a search nobody bounded holds a core for as long as you take over a
+move, and a number edited into `config.json` by hand is pulled back to the
+nearest offered one for the same reason.
 
 You supply the engine. `coach.py` looks at `$STOCKFISH_PATH`, then
 `chesswatch\engine\stockfish`, then the sibling `holochess\engine\stockfish`,
@@ -73,34 +86,45 @@ move and then stops on its own.
 
 ![the arrow over a board](../docs/arrow.png)
 
+There is an arrow for every position, not only for your own turn. The engine's
+answer to your opponent's position is what they are threatening, which is worth
+seeing, so the two are told apart by colour: cyan is your move, violet is
+theirs. The label underneath still says which one it is.
+
 The awkward part is that the recorder is reading the same pixels the arrow is
 painting on, and it must not be able to corrupt a game.
 
 `read_occupancy` converts the board to grey and counts only pixels brighter
 than 244 or darker than 70. Everything in between is already thrown away, which
-is how highlights, coordinate labels and the check marker are ignored. So the
-arrow is drawn in a colour that lands in that gap. Cyan greys to 165, and even
-blended at 85 per cent over pure white or pure black it stays inside the band.
-The reader cannot see it.
+is how highlights, coordinate labels and the check marker are ignored. So both
+arrow colours land in that gap. Cyan greys to 165 and violet to 123, and
+blended at 85 per cent over pure white or pure black each one stays inside the
+band on its own account, not on the other's. The reader cannot see either.
 
-The one thing arrow coverage can still do is hide a piece, which would make an
-occupied square read empty. That position matches no legal move, so the frame
-is ignored and the recorder waits, exactly as it does for a piece in mid
+The one thing arrow coverage can still do is change what a square reads as: a
+white pawn with the shaft painted down its file can lose enough bright pixels
+to come back as a black piece. That position matches no legal move, so the
+frame is ignored and the recorder waits, exactly as it does for a piece in mid
 animation. It cannot write down a move that did not happen.
 
 `overlaytest.py` measures this rather than asserting it. Sixteen arrows across
-the crowded ranks, arrows landing on pieces, at 664px and again at 240px: every
-one of them is confirmed to be on the board, not one of them changed a single
-square, and every pixel any of them touched is confirmed to have landed between
-the two cutoffs. Then it plays a whole game with an arrow up for every frame and
-checks the moves came out right.
+the crowded ranks, arrows landing on pieces, at 664px and again at 240px, in
+both colours: every one of them is confirmed to be on the board, not one of
+them changed a single square, and every pixel any of them touched is confirmed
+to have landed between the two cutoffs, cyan on greys 142 to 179 and violet on
+106 to 143. Then it plays a whole game with an arrow up for every frame,
+changing colour every half move, and checks the moves came out right.
 
 The check that the arrow is really there is the important one. Without it an
-overlay that drew nothing at all would pass every other check in the file.
+overlay that drew nothing at all would pass every other check in the file. It
+runs once per colour, and the two captures of the same move are diffed against
+each other, so a colour that never got painted cannot hide behind the one that
+did.
 
 By default the arrow is modelled in PIL: the same path from `overlay.py`, the
-same colour, the same width, composited the way a layered window at `ALPHA`
-composites. That settles the colour and the geometry and costs no screen space.
+same colours, the same width, composited the way a layered window at `ALPHA`
+composites. That settles the colours and the geometry and costs no screen
+space.
 `--on-screen` puts the real overlay window over a real board and captures it
 through mss, which is the only run that touches the transparency key, the
 stacking order and click-through.
@@ -195,13 +219,46 @@ means a game you watched from the first move. A game joined part way through on
 a piece set the bundled sheet has never seen has no way to get there, and reads
 almost nothing. **Setup > Board > Pieces** is the way out: it shows the board
 cut into its 64 squares with what the reader currently believes about each one,
-and you click a square and say what is on it. Twelve labels is the whole job, and it
+and you click a square and say what is on it. Twelve labels is the whole job,
+and it
 starts from the reader's own answer, so on a set it already half reads you only
 correct what is wrong. What it writes is a template sheet, kept in `taught.png`
 and loaded again next time you start.
 
-It keeps one square of each colour per piece where it can, and clicking a second
-square of the other colour is what buys the better read. Board colour is not
+If the board is sitting in the opening, **it is the opening** is the whole job
+in one press: it takes all thirty two pieces at once, four samples of each pawn
+among them. Twelve templates taught off the wrong position is the most
+expensive thing this program can be told, since the reader then names squares
+confidently from them, so three things about the picture are checked before any
+of it is taken, and each refusal says which one stopped it:
+
+- **Nothing has moved.** Every square of the outer two ranks is covered and the
+  middle four are empty. On a board with all thirty two pieces still on it that
+  proves no pawn has moved. It proves nothing about the pieces behind them.
+- **The ends of each back rank match.** The opening puts rooks on a and h,
+  knights on b and g, bishops on c and f, so each of the three squares at one
+  end has to be a better match for the square it mirrors than for either of the
+  others. This is what refuses a chess960 game, which keeps all thirty two
+  pieces on the outer ranks and so passes the first check exactly. Over all 960
+  positions drawn in both fixture sets, at capture size and at 400 pixels, 948
+  of the 959 non-standard ones are refused in three of those four and 942 in
+  the fourth.
+- **The two halves are inked apart**, which is what says which way round the
+  board is drawn.
+
+None of that knows which piece is which, and the button says "it is the
+opening" rather than claiming the program checked it. Three arrangements get
+through: a back rank that mirrors the opening's outside the king and queen, 11
+of the 959, a king and queen swapped, and the knights swapped for each other's
+colour, which is reachable in a legal game. The window draws a letter on every
+square it is about to cut from, and looking at them before saving is what
+catches those.
+
+Every square you click is kept. One of each colour per piece is what buys the
+better read, and more squares of the same colour are averaged into that piece's
+slot, the way the reader averages the frames it folds in while a game runs.
+Clicking a taught square again takes it back, which is how a mis-click is
+undone now that a second click no longer replaces the first. Board colour is not
 thrown away by the mask, so a rook cut from a light square is being compared
 against a dark square rook on the square colour as much as on the shape: teach
 the pieces of 6.png from single squares and its h8 rook scores 0.518 as a pawn
@@ -255,11 +312,62 @@ completely. If a frame is missed at that moment, both readings fit, and neither
 can ever be told apart afterwards, so it records nothing rather than a coin
 flip.
 
+*Any square it cannot name.* Still all 64 squares or nothing: one square the
+checker cannot read and it says so and waits. What changed is how many boards
+can answer all 64. A square whose shape scores are too close to call is put
+back to the reader as a yes or no question about the piece already believed to
+be standing there, which a mouse pointer does not spoil, so a cursor sitting on
+a piece no longer costs the pass. A cursor on an empty square, or a popup wide
+enough to take the piece away, still does.
+
 *Joining a game before it knows which way the board faces.* A board rotated
 half a turn is itself a legal game, so a knight or queen move explains the
 screen equally well both ways up. A pawn move does not, because pawns only move
 one way, so the first pawn move settles it, usually within seconds. If you would
 rather not wait, set **Setup > Side** to white or black and any move will do.
+
+## The last-move highlight
+
+chess.com paints the two squares of the move just played. The side that did NOT
+just move is the side to move, so those two squares are the one thing on screen
+that says whose turn it is without going back through the move history the
+tracker has already believed. That makes it the only second opinion there is.
+
+Of the two lit squares exactly one holds a piece, and its colour is the side
+that just moved. That survives castling, which moves two pieces but both of
+them the mover's, and en passant and promotion, which change nothing about the
+two lit squares. Anything else is refused rather than guessed at: there are no
+lit squares at all at the start of a game or in Game Review, there may well be
+three while a piece is picked up, and a castle drawn from the king square to the
+rook square lights two empty ones.
+
+One case is open. chess.com paints the two squares of a queued premove, and if
+that is the same wash with no last-move highlight beside it, the square it came
+from still holds your own piece and this would read you as having just moved.
+None of the fixtures has a premove in it, so that colour is unknown here rather
+than ruled out, and a caller has to settle it before trusting this on a board
+that takes premoves.
+
+**Nothing in the app asks it yet.** It was written to say that the tracker was
+out of step, and it does say that, but the piece check that would have been
+brought forward compares placement and not the turn, so on a turn that is wrong
+on its own it answers "position confirmed" and the disagreement stands. A signal
+that fires forever and fixes nothing is worse than the four second timer it was
+meant to beat: measured, it takes the checker from 5 checks in 200 frames to
+100. So the reading landed and the trigger did not. A caller has to be able to
+act on the answer, and this one could not.
+
+What it is good for, when something can act: over 400 games and 76,142 frames it
+named a mover 76,092 times and named the right one every time. The 50 frames it
+had no answer for were games it had already closed. `highlightrun.py` is that
+run, and it exits non-zero if the reader ever names the wrong colour.
+
+The colour is the square colour washed at half opacity with `#FFFF33`, so both
+shades come straight out of `LIGHT_SQUARE` and `DARK_SQUARE` rather than being
+constants of their own. The first move on each shade then samples the real
+colour off your own board, in case your theme paints it differently, and a
+sample is only kept if reading the board back with it lights exactly the two
+squares that move touched.
 
 ## Things it copes with
 
@@ -305,16 +413,23 @@ rectangle is in use.
 
 ## Checking it still works
 
-    python selftest.py      87 checks, including real screenshots
-    python piecetest.py     49 checks on the piece reader under a bad capture
+    python selftest.py     116 checks, including real screenshots
+    python piecetest.py     62 checks on the piece reader under a bad capture
     python positiontest.py  29 checks on the whole board solver, no pixels
-    python enrolltest.py   115 checks on teaching the pieces and on the arrow
-    python layouttest.py    62 checks on what the window shows and how wide
-    python coachtest.py     18 checks on the engine wrapper and its label
-    python overlaytest.py   17 checks that the arrow cannot corrupt a reading
+    python enrolltest.py   176 checks on teaching the pieces and on the arrow
+    python layouttest.py    73 checks on what the window shows and how wide
+    python coachtest.py     52 checks on the engine wrapper and its label,
+                            44 without a display and 31 without Stockfish
+    python overlaytest.py   21 checks that the arrows cannot corrupt a reading
     python settletest.py    move animation, with the screen on a clock
     python banktest.py      33 checks on choosing a piece set
     python livetest.py      full loop through the real capture worker
+    python highlightrun.py  the last-move highlight over 400 whole games
+
+`highlightrun.py` is a measurement rather than a suite and is not in CI: 400
+games took 300 seconds here, which is longer than everything above put together,
+and what it measures does not change move to move. Run it when the
+highlight reader changes. `--games` makes it shorter.
 
 None of these put anything on screen or screenshot your desktop. `livetest.py`
 and `overlaytest.py` render the board into a desktop sized image and point the
@@ -338,21 +453,21 @@ disk. The second game is deliberately a small board on the second monitor, and a
 third run skips three moves with no frames in between and checks they come back
 in the only legal order.
 
-`layouttest.py` opens no window either, and proves it rather than saying so: it
-replaces `tkinter.Tk` and `tkinter.Toplevel` with functions that raise before it
-imports the app. What it can check without one is the decision about which parts
-of the window are up, the packing that carries that decision out, and the width
-of each row measured against the real Segoe UI at both 100% and 150% display
-scaling. The rows are read off `_build`'s syntax tree rather than listed in the
-test, so a widget added to a full row is measured rather than missed, and one
-written in a shape the reader cannot account for fails the run instead of being
-skipped. How any of it looks is not checked and cannot be.
+`layouttest.py` opens no window either, and enforces that the same way. What it
+can check without one is the decision about which parts of the window are up,
+the packing that carries that decision out, and the width of each row measured
+against the real Segoe UI at both 100% and 150% display scaling. The rows are
+read off `_build`'s syntax tree rather than listed in the test, so a widget
+added to a full row is measured rather than missed, and one written in a shape
+the reader cannot account for fails the run instead of being skipped. How any of
+it looks is not checked and cannot be.
 
-`enrolltest.py` opens no window at all. The arrow rule and the enrollment
-bookkeeping are written as plain functions so they can be checked without one,
-and the case where the board disappears drives the real capture worker against
-a rendered desktop, because that one is worker behaviour and no rule on its own
-can prove the worker reports it.
+`enrolltest.py` opens no window at all, and enforces it by replacing Tk's two
+window classes with a refusal before any check runs. The arrow rule and the
+enrollment bookkeeping are written as plain functions so they can be checked
+without one, and the case where the board disappears drives the real capture
+worker against a rendered desktop, because that one is worker behaviour and no
+rule on its own can prove the worker reports it.
 
 `settletest.py` replaces the screen with a clock-driven script, so the
 animation has a real duration rather than a frame count. It covers pawn pushes,

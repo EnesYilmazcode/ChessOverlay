@@ -46,6 +46,14 @@ REFIND_IDLE = 8
 REFIND_CHECK = 6
 STILL_A_BOARD = 0.7
 
+# How long to wait between hunts while no board is on screen at all, widening
+# with each miss. A hunt grabs the whole desktop and searches it, 120 ms on a
+# 3840x1080 screen, and the tick below only ever sleeps its 50 ms floor after
+# one. Back to back that is 71% of a core for as long as chess.com is closed.
+# Nobody needs a board found inside a tenth of a second of it appearing, so the
+# last step is the one that matters and a second is plenty.
+IDLE_BACKOFF = (0.0, 0.2, 0.5, 1.0, 1.0, 2.0)
+
 # How often the slower piece-by-piece check runs, in frames. While the fast
 # reader is stuck it runs far sooner, because that is exactly when a gap is
 # still small enough to be bridged.
@@ -86,23 +94,62 @@ MUTED = "#8b8987"
 WARN = "#d08a70"
 
 _MSS = getattr(mss, "MSS", None) or mss.mss
+_local = threading.local()
 
 
 # ------------------------------------------------------------------ capture
 
+def _sct():
+    """One screen grabber per thread, kept alive between shots.
+
+    Per thread rather than one shared, because mss is not thread safe and both
+    the capture worker and the Tk thread take screenshots. Kept alive because
+    building one allocates a device context and a bitmap, and the settle loop
+    takes several shots per move.
+    """
+    sct = getattr(_local, "sct", None)
+    if sct is None:
+        sct = _local.sct = _MSS()
+    return sct
+
+
+def close_sct():
+    """Drop this thread's grabber. A worker that has stopped should not keep a
+    device context open for a screen nobody is reading."""
+    sct = getattr(_local, "sct", None)
+    if sct is not None:
+        _local.sct = None
+        try:
+            sct.close()
+        except Exception:
+            pass
+
+
 def grab(region):
     """Screenshot one region. region is (left, top, width, height)."""
     left, top, width, height = region
-    with _MSS() as sct:
-        shot = sct.grab({"left": left, "top": top, "width": width, "height": height})
-        return Image.frombytes("RGB", (shot.width, shot.height), shot.bgra,
-                               "raw", "BGRX")
+    try:
+        shot = _sct().grab({"left": left, "top": top,
+                            "width": width, "height": height})
+    except Exception:
+        # A grabber that has gone bad stays bad. It holds a device context, and
+        # unplugging a monitor or changing the resolution invalidates that, so
+        # every later shot through the same instance fails the same way.
+        # Building one per shot used to heal that for free; dropping it here is
+        # what holding on to one costs. The next call builds a fresh one.
+        close_sct()
+        raise
+    return Image.frombytes("RGB", (shot.width, shot.height), shot.bgra,
+                           "raw", "BGRX")
 
 
 def virtual_screen():
-    with _MSS() as sct:
-        m = sct.monitors[0]
-        return m["left"], m["top"], m["width"], m["height"]
+    try:
+        m = _sct().monitors[0]
+    except Exception:
+        close_sct()                # same reason as in grab
+        raise
+    return m["left"], m["top"], m["width"], m["height"]
 
 
 def find_board_on_screen():
@@ -206,26 +253,41 @@ class Worker(threading.Thread):
         self._frames = 0
         self._since_check = 0
         self._accepted = None      # the last reading we acted on
+        self._misses = 0           # hunts in a row that found no board
+        self._last_hunt = 0.0
+        self._searching = False    # whether the app has been told there is none
         self._board_px = None      # board width the templates were last fitted to
         self.settle_stats = [0, 0]  # readings taken, readings acted on
 
     def run(self):
-        while not self.stop_flag.is_set():
-            started = time.time()
-            try:
-                self._tick()
-            except Exception as exc:
-                self.out.put(("error", "%s: %s" % (type(exc).__name__, exc)))
-            time.sleep(max(0.05, POLL_SECONDS - (time.time() - started)))
+        try:
+            while not self.stop_flag.is_set():
+                started = time.time()
+                try:
+                    self._tick()
+                except Exception as exc:
+                    self.out.put(("error", "%s: %s" % (type(exc).__name__, exc)))
+                time.sleep(max(0.05, POLL_SECONDS - (time.time() - started)))
+        finally:
+            close_sct()
 
     def _tick(self):
         self._frames += 1
-        if self.region is None or self._should_refind():
+        if self._should_refind():
+            self._last_hunt = time.time()
             found = find_board_on_screen()
             if found:
                 self.region = found
                 self._quiet = 0
-            elif self.region is None or self.lost:
+                self._misses = 0
+            elif self.region is None:
+                # Only a hunt with no region to fall back on counts towards the
+                # backoff. The routine re-hunt runs with one held and comes back
+                # empty whenever the board has not moved, and counting those
+                # left the first hunt after the region was finally given up
+                # waiting the longest gap in the table rather than firing.
+                self._misses += 1
+            elif self.lost:
                 # The rectangle we were watching has stopped holding a board
                 # and the hunt found no other one, so let it go. Keeping it
                 # went on reading a position off pixels that are no longer a
@@ -233,8 +295,16 @@ class Worker(threading.Thread):
                 # the app ran, which is what left the coaching arrow drawn over
                 # whatever took the board's place.
                 self.region = None
+        if self.region is None:
+            # Said once on the way in, not eight times a second for as long as
+            # nothing is on screen. The app answers this by reconfiguring two
+            # labels and re-syncing the arrow, and none of that changes while
+            # the answer stays "still looking".
+            if not self._searching:
+                self._searching = True
                 self.out.put(("searching", None))
-                return
+            return
+        self._searching = False
 
         shot, occ, settled = self._read_settled()
         if not settled:
@@ -366,8 +436,20 @@ class Worker(threading.Thread):
         region that has stopped holding a board both ask for the same search,
         but only the second is a reason to give the region up when the search
         comes back empty, and _tick needs to tell them apart.
+
+        While no region is held at all the gap between hunts widens with each
+        miss. This used to be the caller's job and the caller got it wrong: it
+        asked `self.region is None or self._should_refind()`, and the left half
+        is true for as long as no board is found, so the backoff on the right
+        never got a say and the hunt ran every tick.
         """
         self.lost = False
+        if self.region is None:
+            # Nothing to lose, so self.lost stays false and the wait is the
+            # only question.
+            waited = time.time() - self._last_hunt
+            return waited >= IDLE_BACKOFF[min(self._misses,
+                                              len(IDLE_BACKOFF) - 1)]
         if not self.tracker.locked_on and not self.manual:
             return self._frames % REFIND_IDLE == 0
         if not self._quiet or self._quiet % REFIND_CHECK:
@@ -445,6 +527,7 @@ class App:
         self.arrow = None            # the on-screen arrow, built on demand
         self.arrow_uci = None        # the move the engine last named
         self.arrow_fen = None        # the position it named it for
+        self.arrow_mine = True       # and whose move it was, which is the colour
         self.arrow_cleared = None    # a position whose arrow was cleared by hand
         self.arrow_drawn = False     # whether one is on the board right now
         self.teacher = None          # the teach-the-pieces window, if it is open
@@ -521,6 +604,20 @@ class App:
         self.show_board = tk.BooleanVar(value=bool(self.cfg.get("position",
                                                                 False)))
         self._switch(show, "Position", self.show_board, self._toggle_position)
+
+        # How long the engine gets. Three values on one line, the same shape
+        # as Side above, rather than a drop-down: a menu is two clicks and a
+        # block of styling to buy nothing back at three choices.
+        think = self._drawer_row(setup, "Think")
+        self.think_choice = tk.StringVar(
+            value="%gs" % CO.nearest_think(self.cfg.get("think_seconds")))
+        for seconds in CO.THINK_CHOICES:
+            word = "%gs" % seconds
+            tk.Radiobutton(think, text=word, value=word,
+                           variable=self.think_choice, command=self._set_think,
+                           bg=BG, fg=MUTED, selectcolor=BG, activebackground=BG,
+                           activeforeground=FG, font=("Segoe UI", 8),
+                           cursor="hand2").pack(side="left")
 
         board = self._drawer_row(setup, "Board")
         for word, command in (("Pick", self._pick),
@@ -742,9 +839,22 @@ class App:
                 self.lbl_check.configure(
                     text="no Stockfish found. See the README.", fg=WARN)
                 return
-            self.coach = CO.Coach(path)
+            self.coach = CO.Coach(path, think_seconds=self._think_seconds())
             self.coach.start()
         self.lbl_coach.configure(text="thinking...", fg=MUTED)
+
+    def _think_seconds(self):
+        return float(self.think_choice.get()[:-1])
+
+    def _set_think(self):
+        """Write the new think time down and hand it to the engine thread.
+
+        Set on the running Coach rather than restarting it, because the next
+        search reads the attribute and the one in progress belongs to a
+        position you are about to move past anyway."""
+        self._save_config()
+        if self.coach is not None:
+            self.coach.think_seconds = self._think_seconds()
 
     def _toggle_arrow(self):
         """The arrow needs the coach, since it draws what the coach found."""
@@ -759,9 +869,10 @@ class App:
             self.arrow = OV.Arrow(self.root)
         self._sync_arrow()
 
-    def _show_arrow(self, uci, fen):
-        """Remember what the engine said and which position it said it about.
-        Whether that is still worth drawing is _sync_arrow's decision.
+    def _show_arrow(self, uci, fen, mine=True):
+        """Remember what the engine said, which position it said it about and
+        whose move it was. Whether that is still worth drawing is _sync_arrow's
+        decision, and mine is which of the two colours it gets.
 
         fen has no default on purpose. None is also the "nothing cleared"
         sentinel, so a call that forgot to pass one would suppress the arrow
@@ -769,6 +880,7 @@ class App:
         """
         self.arrow_uci = uci
         self.arrow_fen = fen
+        self.arrow_mine = mine
         self._sync_arrow()
 
     def _hide_arrow(self):
@@ -793,15 +905,15 @@ class App:
             return
         want = OV.wanted(self.arrow_on.get(), self.region, self.coach_fen,
                          self.arrow_fen, self.arrow_uci, self.arrow_cleared,
-                         self.flipped)
+                         self.flipped, self.arrow_mine)
         # The clear button is only on screen while there is something drawn
         # for it to take away, which is this.
         self.arrow_drawn = want is not None
         if want is None:
             self.arrow.hide()
             return
-        region, uci, flipped = want
-        self.arrow.show(region, chess.Move.from_uci(uci), flipped)
+        region, uci, flipped, mine = want
+        self.arrow.show(region, chess.Move.from_uci(uci), flipped, mine)
 
     def _clear_arrows(self):
         """Take down whatever is drawn on the board now, and keep the reply the
@@ -926,22 +1038,29 @@ class App:
                         self.lbl_detail.configure(text="")
                         self._hide_arrow()
                         continue
-                    whose = ("your move" if payload["turn"] == self.my_colour
-                             else "their move")
-                    # Only your own move is worth drawing on the board. Their
-                    # move is still shown in words.
-                    self._show_arrow(payload["uci"] if whose == "your move"
-                                     or self.my_colour is None else None,
-                                     payload["fen"])
+                    # Their best move is what they are threatening, so it is
+                    # drawn too, in the other colour. Until the orientation
+                    # settles my_colour is None and nothing is yours yet, which
+                    # puts the arrow in their colour and the label agrees.
+                    mine = payload["turn"] == self.my_colour
+                    whose = "your move" if mine else "their move"
+                    self._show_arrow(payload["uci"], payload["fen"], mine)
                     # Whose move it is and what to play, large, on their own.
-                    # The naming of the squares and the score are the small
-                    # print underneath: useful, but not what you looked up for.
+                    # The naming of the squares, the score, and the mark that
+                    # says the engine has not finished are the small print
+                    # under it. The mark goes there rather than on the move
+                    # because the move line is sized to hold the longest SAN
+                    # there is at 150% scaling in a 400px window, with 3px to
+                    # spare, and five more characters do not fit; and because
+                    # what an unfinished answer is hedging is the score, which
+                    # is already on that line.
                     self.lbl_coach.configure(
                         text="%s  %s" % (whose, payload["san"]),
-                        fg=ACCENT if whose == "your move" else MUTED)
+                        fg=ACCENT if mine else MUTED)
                     self.lbl_detail.configure(
-                        text="   ".join(part for part in (payload["text"],
-                                                          payload["score"])
+                        text="   ".join(part for part in
+                                        (payload["text"], payload["score"],
+                                         "" if payload.get("final") else "...")
                                         if part))
         except queue.Empty:
             pass
@@ -1075,6 +1194,7 @@ class App:
             json.dump({"board_region": self.board_region,
                        "colour": self.colour_choice.get(),
                        "coach": bool(self.coach_on.get()),
+                       "think_seconds": self._think_seconds(),
                        "arrow": bool(self.arrow_on.get()),
                        "position": bool(self.show_board.get()),
                        "sheet": self.taught_sheet}, fh, indent=2)

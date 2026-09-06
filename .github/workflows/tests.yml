@@ -16,6 +16,14 @@
 # suite never executed at all. The run reported a red mark for a suite that had
 # not been run. One step per suite, so a red mark always names what actually
 # broke.
+#
+# Stockfish is fetched rather than left out. Without a binary coachtest reports
+# `engine: not found`, skips every check that touches the engine and still says
+# it passed, so a green mark covered the wording helpers and nothing else. It
+# goes into chesswatch/engine/, which is one of the four places find_engine()
+# already looks, so the discovery path is exercised rather than bypassed with an
+# environment variable. Pinned to a tag: an unpinned engine would make a red run
+# ambiguous between this repository and a Stockfish release.
 
 name: tests
 
@@ -53,6 +61,14 @@ jobs:
       # requirements.txt is unpinned, so a green run here is evidence about
       # today's mss, pillow and chess rather than about a fixed set of them.
       - run: pip install -r requirements.txt
+      - name: stockfish
+        working-directory: .
+        run: |
+          curl -sSfL -o sf.tar.gz "$SF/stockfish-linux-x86-64-universal.tar.gz"
+          mkdir -p chesswatch/engine
+          tar -xzf sf.tar.gz -C chesswatch/engine
+        env:
+          SF: https://github.com/official-stockfish/Stockfish/releases/download/sf_19
       - name: selftest
         if: always()
         run: python -X utf8 selftest.py
@@ -80,16 +96,20 @@ jobs:
       - name: livetest
         if: always()
         run: python -X utf8 livetest.py
+      # No display on this runner, so the checks that build the real app are
+      # skipped here and run on the Windows job below, which has one.
       - name: coachtest
         if: always()
         run: python -X utf8 coachtest.py
+        env:
+          CHESSWATCH_NO_TK: "1"
 
   # The flag the coach starts Stockfish with, and the window it suppresses, only
-  # exist on Windows, so on the job above coachtest can only check that nothing
-  # Windows-only is asked for. This runs the half that is about the bug. Only
-  # coachtest is here: the other suites have never been looked at on a Windows
-  # runner, and a job that goes red for an unrelated reason is worse than one
-  # that does not run.
+  # exist on Windows, so that part of coachtest is about this job. It is also
+  # the only runner with a display, so the checks that build the real app and
+  # read its label run here and nowhere else. Only coachtest is here: the other
+  # suites have never been looked at on a Windows runner, and a job that goes
+  # red for an unrelated reason is worse than one that does not run.
   windows:
     name: windows, coachtest only
     runs-on: windows-latest
@@ -102,4 +122,13 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install -r requirements.txt
+      - name: stockfish
+        working-directory: .
+        shell: bash
+        run: |
+          curl -sSfL -o sf.zip "$SF/stockfish-windows-x86-64-universal.zip"
+          mkdir -p chesswatch/engine
+          unzip -q sf.zip -d chesswatch/engine
+        env:
+          SF: https://github.com/official-stockfish/Stockfish/releases/download/sf_19
       - run: python -X utf8 coachtest.py
