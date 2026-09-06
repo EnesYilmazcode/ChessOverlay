@@ -2,10 +2,10 @@
 
 Two halves of one idea, for anyone building chess teaching tools. `chesswatch`
 watches a chess board on your screen, reads it, and writes the game to disk.
-Tick **best move** and it runs Stockfish on the position it is reading and says,
-in words, what to play. Tick **arrow on board** and it draws that move on the
-board itself, over whatever program is showing it. `holochess` is a full board
-you play against the engine, with the same arrow inside its own window.
+Open **Setup** and tick **Coach**, and it runs Stockfish on the position it is
+reading and says, in words, what to play. Tick **Arrow** and it draws that move
+on the board itself, over whatever program is showing it. `holochess` is a full
+board you play against the engine, with the same arrow inside its own window.
 
 Nothing signs in, nothing touches an account, and nothing leaves the machine.
 
@@ -34,7 +34,7 @@ That is a real position twenty-two plies in, not an opening: the arrow is worth 
 
 It works off pixels alone, so it does not care which site, app or board theme is
 showing the game. If the board is not chess.com green, drag a box around it once
-with **pick board manually** and everything else carries on as normal.
+with **Setup > Board > Pick** and everything else carries on as normal.
 
 ## What is in here
 
@@ -70,11 +70,12 @@ Games land in `chesswatch/games/` as a matched pair:
 
 ## Ask it what to play
 
-Tick **best move**. Stockfish is started the first time you do, not before, and
-the label under the board reads something like:
+Tick **Coach**, under **Setup**. Stockfish is started the first time you do, not
+before, and the line above the moves reads something like:
 
 ```
-your move  Nf3  (knight: g1 to f3)  +0.4
+your move  Nf3
+knight: g1 to f3   +0.4
 ```
 
 It names the piece and both squares rather than only the notation, says what a
@@ -86,7 +87,7 @@ waits for it, and an answer to a position that has already been played past is
 thrown away rather than shown against the wrong board. The switch is remembered
 in `config.json`.
 
-Tick **arrow on board** as well and the move is drawn on the board itself, over
+Tick **Arrow** as well and the move is drawn on the board itself, over
 whatever program is showing it. The window is click-through, so it does not get
 between you and the game.
 
