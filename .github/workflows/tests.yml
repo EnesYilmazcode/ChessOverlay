@@ -80,3 +80,23 @@ jobs:
       - name: coachtest
         if: always()
         run: python -X utf8 coachtest.py
+
+  # The flag the coach starts Stockfish with, and the window it suppresses, only
+  # exist on Windows, so on the job above coachtest can only check that nothing
+  # Windows-only is asked for. This runs the half that is about the bug. Only
+  # coachtest is here: the other suites have never been looked at on a Windows
+  # runner, and a job that goes red for an unrelated reason is worse than one
+  # that does not run.
+  windows:
+    name: windows, coachtest only
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: chesswatch
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - run: python -X utf8 coachtest.py
