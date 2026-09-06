@@ -355,8 +355,8 @@ rectangle is in use.
     python highlightrun.py  the last-move highlight over 400 whole games
 
 `highlightrun.py` is a measurement rather than a suite and is not in CI: 400
-games takes about nine minutes, which is longer than everything above put
-together, and what it measures does not change move to move. Run it when the
+games took 300 seconds here, which is longer than everything above put together,
+and what it measures does not change move to move. Run it when the
 highlight reader changes. `--games` makes it shorter.
 
 None of these put anything on screen or screenshot your desktop. `livetest.py`

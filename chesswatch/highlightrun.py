@@ -2,9 +2,9 @@
 
 This is the evidence behind the numbers in README.md for `last_mover`, kept
 here so they can be re-run rather than taken on trust. It is not in the suite
-and not in CI: 400 games is about nine minutes, which is far longer than every
-other suite put together, and the thing it measures does not change move to
-move. selftest.py holds the cases that have to pass on every commit.
+and not in CI: 400 games took 300 seconds on the machine it was written on,
+longer than every other suite put together, and the thing it measures does not
+change move to move. selftest.py holds the cases that have to pass on every commit.
 
 Every frame is a rendered board with the two squares of the move just played
 lit in the colour chess.com paints, which is the picture the reader is for. It
