@@ -507,6 +507,15 @@ def main():
     adrift.board.turn = chess.WHITE      # where one missed move leaves it
     r.append(check("  and a dispute the moment it does not",
                    adrift.turn_disputed(W.read_occupancy(seen), seen), True))
+    # chess.com drops you into Game Review the moment a game ends, and clicking
+    # back through it lights the squares of moves that are no longer the last
+    # one. A finished game is read-only, so the highlight has nothing to say
+    # about it either.
+    closed = lit_tracker(bh)
+    closed.board.turn = chess.WHITE      # the same disagreement as above
+    closed.game.result = "1-0"
+    r.append(check("  and none at all once the game is closed",
+                   closed.turn_disputed(W.read_occupancy(seen), seen), False))
 
     # The colour is sampled off your own board rather than trusted, so that a
     # repaint can only ever switch the signal off, never make it lie.
@@ -677,10 +686,19 @@ def main():
             # recorded, and inventing a position would be worse than nothing.
             if rect:
                 x, y, size = rect
-                occ = W.read_occupancy(img.crop((x, y, x + size, y + size)))
+                board_img = img.crop((x, y, x + size, y + size))
+                occ = W.read_occupancy(board_img)
                 tt = W.BoardTracker(directory=tempfile.mkdtemp())
                 tt.feed(W.START_WHITE_VIEW)
                 got = tt.feed(occ)
+                # The dialog covers one of the two lit squares. That is the
+                # refusal the rendered checks above make up, here on real
+                # pixels, and it costs something: the tracker is locked on, so
+                # last_mover is refusing the picture rather than refusing for
+                # want of a board to compare it against.
+                r.append(check("  one lit square is not an answer in " + name,
+                               (len(W.highlight_squares(board_img)),
+                                tt.last_mover(occ, board_img)), (1, None)))
             else:
                 got = None
             r.append(check("  invents nothing from the covered board in " + name,

@@ -37,8 +37,10 @@ SQUARE_TOL = 18
 HIGHLIGHT_WASH = (255, 255, 51)
 HIGHLIGHT_TOL = 12
 
-# On real captures a highlighted square covers 0.15 to 1.00 of its window and a
-# plain one covers 0.0000, so where in that gap the line sits does not matter.
+# Over the four fixtures at board sizes 824 down to 130, a highlighted square
+# covers 0.18 to 1.00 of its window and every other square covers 0.0000, so
+# where in that gap the line sits does not matter. The low end is a square
+# mostly under the game-over dialog; one in the clear never went below 0.51.
 HIGHLIGHT_MIN = 0.05
 
 # Square classification. Piece fills sit far outside the square colours, so the

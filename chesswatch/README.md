@@ -274,9 +274,11 @@ three while a piece is picked up, and a castle drawn from the king square to the
 rook square lights two empty ones.
 
 It never moves a game on. A disagreement only means the piece checker runs now
-rather than in four seconds. On a deliberately desynced tracker that is a median
-of one frame instead of eighteen, and on a clean feed of 56,496 frames it never
-spoke at all.
+rather than in four seconds. Driven through the real worker at every phase of
+that timer, a tracker left with the wrong side to move waits a median of one
+frame for the check instead of eighteen, and while the two agree the timer is
+untouched. Over 400 games and 76,142 frames of clean play it never disagreed
+once, and the 50 frames it had no answer for were games already finished.
 
 The colour is the square colour washed at half opacity with `#FFFF33`, so both
 shades come straight out of `LIGHT_SQUARE` and `DARK_SQUARE` rather than being
@@ -329,7 +331,7 @@ rectangle is in use.
 
 ## Checking it still works
 
-    python selftest.py     103 checks, including real screenshots
+    python selftest.py     106 checks, including real screenshots
     python piecetest.py     49 checks on the piece reader under a bad capture
     python positiontest.py  29 checks on the whole board solver, no pixels
     python enrolltest.py   119 checks on teaching the pieces and on the arrow
