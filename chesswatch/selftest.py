@@ -393,22 +393,11 @@ def main():
     import wildcardbench as _B
 
     two_missed = render.render(tracked(8)[1])
-    survived = []
     for spot in ((0, 0), (0, 2), (2, 2), (3, 2), (5, 5)):
         seen = tracked(6)[0]
         seen.check(_F.with_pointer(two_missed, spot[0], spot[1], size=1.8))
-        if seen.game.moves == LINE[:8]:
-            survived.append(spot)
-    # Four of the five, and the fifth is priced rather than dropped. The
-    # correlation reader refuses a square by a different measure than the mask
-    # reader it replaced: it divides by the square's own spread, which a
-    # pointer moves, so a big cursor over d5 takes that square below the bar
-    # where the mask reader still had it. On main all five pass and thirty
-    # eight squares of the same obstructed corpus come back as the WRONG piece;
-    # here none does. Pinned as the exact set, so losing another one fails and
-    # so does silently gaining one back.
-    r.append(check("a pointer costs a check pass on one of five squares",
-                   survived, [(0, 0), (0, 2), (2, 2), (5, 5)]))
+        r.append(check("a pointer at %s does not stop the check pass" % (spot,),
+                       seen.game.moves, LINE[:8]))
 
     # A square painted over edge to edge fills a whole layer of the mask, so
     # nothing can be confirmed on it and the belief cannot put it back. That
@@ -542,12 +531,14 @@ def main():
                 (n, order) for n, orders in state["fits"].items()
                 for order in orders}
             same.append(got == want_runs)
-    # The counts are here so this cannot pass on nothing. Eight of the thirteen
-    # boards have two positions fitting and have to be refused, five have one
-    # and have to come back with the same runs the reference found, and three
+    # The counts are here so this cannot pass on nothing. Eight of the twelve
+    # boards have two positions fitting and have to be refused, four have one
+    # and have to come back with the same runs the reference found, and four
     # frames are dropped because the belief filled the square and left no hole.
+    # One more frame is dropped than when this was written, because the reader
+    # under it refuses a different set of squares.
     r.append(check("the fast search finds what playing out every run finds",
-                   (len(same), same.count(True), alone), (13, 13, 5)))
+                   (len(same), same.count(True), alone), (12, 12, 4)))
 
     # Which of several right answers gets written down. Driven at a fixed
     # depth on rows built by hand, because what is under test is the search and

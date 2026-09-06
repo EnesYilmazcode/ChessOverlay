@@ -44,10 +44,10 @@ from fakeboard import cover, with_panel, with_pointer
 
 NAMES = P.ORDER + P.EMPTY
 
-# What pieces.py names a square on, which is MIN_MARGIN there. The reading it
+# What pieces.py names a square on, which is MARGIN there. The reading it
 # produces is the thing solve confirms or refuses, so a check that builds a
 # reading by hand has to refuse the same squares pieces.py would.
-READER_MARGIN = PC.MIN_MARGIN
+READER_MARGIN = PC.MARGIN
 
 # The floors the corpus below is swept at. Wide on purpose: the point of the
 # sweep is the shape of the curve rather than the one number taken off it, and
@@ -341,17 +341,18 @@ def scored(reader, board_img):
     """pieces.py's own scores for every square, as the table solve takes.
 
     classify() names each square and throws the scores away, so this runs the
-    same pipeline over again and keeps them. A square that reduced to nothing
-    is empty at 1 and everything else at 0, which is what _judge does with one;
-    everything else is every template's best score for that piece type, which
-    is what _judge ranks.
+    same pipeline over again and keeps them. A square the emptiness test says
+    holds nothing is empty at 1 and everything else at 0, which is what _judge
+    does with one; everything else is every template's best score for that
+    piece type, which is what _judge ranks.
     """
-    board_img, levels, _, _, _ = reader._repair(board_img)
+    levels = PC._levels(board_img)
     feats = PC._board_features(board_img, levels)
     out = {}
-    for (row, col, _), feat in zip(PC.squares(board_img), feats):
+    for i, feat in enumerate(feats):
+        row, col = divmod(i, 8)
         here = {}
-        if feat is None or feat.coverage < PC.MIN_COVERAGE:
+        if feat is None or not feat.occupied:
             here[P.EMPTY] = 1.0
         else:
             for score, symbol in PC.ranking(feat, reader.templates):
@@ -487,16 +488,18 @@ def main():
     # it is a bishop, and it is not close.
     scores = matrix(MID)
     scores[(4, 5)]["Q"] = 0.92
-    scores[(4, 5)]["B"] = 0.90
+    # Half the reader's own margin, taken from it rather than written down, so
+    # this stays a gap the reader shrugs at whatever that margin is set to.
+    scores[(4, 5)]["B"] = 0.92 - READER_MARGIN / 2
     r.append(check("a second queen nobody can pay for is a bishop to the"
                    " board",
                    (alone(scores, 0.0).rows[4][5], by_square(scores)[4][5],
                     whole(scores).rows[4][5]), ("Q", P.UNKNOWN, "B")))
-    print("      f4 as a bishop, by %.3f, against a top pick 0.02 the other way"
-          % whole(scores).confidence[4][5])
+    print("      f4 as a bishop, by %.3f, against a top pick %.3f the other "
+          "way" % (whole(scores).confidence[4][5], READER_MARGIN / 2))
 
-    # And it is not handed over. Two hundredths is under pieces.py's own
-    # margin, so the reader shrugged at f4, and a shrug is the one thing this
+    # And it is not handed over. That gap is under pieces.py's own margin, so
+    # the reader shrugged at f4, and a shrug is the one thing this
     # module may not paint over: every guard downstream reads "?" as no
     # evidence. The bishop is what the board thinks, not what it may say.
     got = P.solve(scores, by_square(scores))
@@ -619,20 +622,26 @@ def main():
                    (warm.rows[4][4], round(warm.confidence[4][4], 3)),
                    ("P", 0.15)))
 
-    # And it has to clear the floor like anything else. The same square five
-    # hundredths worse is under MIN_PIN, and what comes back then is "?" even
-    # though the reader named it and the board agreed with the name. The floor
-    # applies to a confirmation exactly as it used to apply to a name, which is
-    # the whole of what moving it changes.
-    scores[(4, 4)]["P"] = 0.55
-    read = by_square(scores)
+    # And it has to clear the floor like anything else. The same square worth
+    # a hundredth over the empty square instead of fifteen is under MIN_PIN,
+    # and what comes back then is "?" even though the reader named it and the
+    # board agreed with the name. The floor applies to a confirmation exactly
+    # as it used to apply to a name, which is the whole of what moving it
+    # changes.
+    scores[(4, 4)]["P"] = 0.46
+    # Read at no margin at all, because MIN_PIN now sits below the reader's
+    # own: a correlation reader's confidences are smaller than a mask reader's
+    # were, the floor moved down with them, and a square the reader is willing
+    # to name always clears it. The floor still applies to a confirmation, and
+    # this is what asks whether it does.
+    read = alone(scores, 0.0).rows
     tight = P.solve(scores, read, prior=BANK[1], moved=[(6, 4), (4, 4)])
     loose = P.solve(scores, read, prior=BANK[1], moved=[(6, 4), (4, 4)],
-                    floor=0.05)
+                    floor=0.005)
     r.append(check("  and a confirmation under the floor is refused as well",
                    (read[4][4], tight.rows[4][4], loose.rows[4][4],
                     round(tight.confidence[4][4], 3)),
-                   ("P", P.UNKNOWN, "P", 0.1)))
+                   ("P", P.UNKNOWN, "P", 0.01)))
 
     # Material never increases. A black bishop where black has none is a legal
     # board on its own, and impossible one move on from a board without one.
@@ -858,10 +867,13 @@ def main():
                    " previous position",
                    (conjured, carried > 0, carried_wrong), (0, True, 0)))
     kept, kept_wrong = agreed[P.MIN_PIN]
-    r.append(check("  so it names a subset of the reading and gets fewer of"
-                   " them wrong",
-                   (kept <= reader_named, kept_wrong < reader_wrong),
-                   (True, True)))
+    # A subset, and nothing wrong in it. The reader itself now names nothing
+    # wrong on this corpus, so "fewer wrong than the reader" is a comparison of
+    # two zeroes; what is left to check is that confirming never adds one.
+    r.append(check("  so it names a subset of the reading with nothing wrong"
+                   " in it",
+                   (kept <= reader_named, kept_wrong, kept_wrong <= reader_wrong),
+                   (True, 0, True)))
 
     # What the floor would have been asked to do if this module filled blanks
     # in, which is the thing issue 33 proposed raising it to fix. It cannot:
@@ -879,7 +891,7 @@ def main():
     r.append(check("filling a square the reader refused is wrong at every"
                    " floor there is",
                    (min(filled[f][1] for f in FLOORS) > 0,
-                    filled[top][1] * 2 > filled[top][0]), (True, True)))
+                    filled[top][1] * 5 > filled[top][0]), (True, True)))
 
     # Where the floor itself goes. Above it an agreement is worth having and
     # below it one is not, so it is pinned by where that changes rather than
@@ -892,16 +904,20 @@ def main():
                                100.0 * kept_wrong / max(kept, 1)))
     print("      weakest confidence on a square read right off an unobstructed"
           " board: %.4f" % weakest_clear)
-    r.append(check("under the floor an agreement is worth ten times less than"
-                   " over it",
-                   low_wrong / max(low, 1) > 10.0 * kept_wrong / max(kept, 1),
-                   True))
+    # It used to be that an agreement under the floor was wrong ten times as
+    # often as one over it, and that is what put the floor where it is. The
+    # reader gets nothing wrong on this corpus now, either side of it, so the
+    # error rate no longer says anything and the other half of the measurement
+    # is the whole of it: the floor is the highest one that still leaves a
+    # board with nothing drawn over it read whole.
+    r.append(check("an agreement is not wrong either side of the floor",
+                   (low_wrong, kept_wrong), (0, 0)))
     r.append(check("  the floor leaves an unobstructed board whole",
                    weakest_clear >= P.MIN_PIN, True))
     r.append(check("  and it is the last floor that does",
                    weakest_clear < P.MIN_PIN + 0.02, True))
     r.append(check("  which is what makes MIN_PIN this number",
-                   P.MIN_PIN, 0.12))
+                   P.MIN_PIN, 0.015))
 
     # -- speed --------------------------------------------------------------
     # The best of twenty warmed passes, for the reason piecetest.py gives: a

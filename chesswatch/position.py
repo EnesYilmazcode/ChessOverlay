@@ -102,19 +102,26 @@ KING_PUSH = 100 * SCALE
 # the same corpus every run.
 #
 # Pinned from above rather than chosen. The weakest confidence on a correctly
-# read square of a board with nothing drawn over it is 0.1262, so 0.12 is the
-# last floor that leaves an unobstructed board whole and 0.14 already refuses
-# squares that were right. Taking the last free step is worth it because the
-# squares below it are not worth keeping: the agreements this floor gives up
-# are wrong 19% of the time against 0.5% for the ones it keeps, so it costs 69
-# right squares of the 44612 it would otherwise confirm and catches 16 wrong
-# ones.
+# read square of a board with nothing drawn over it is what decides how high it
+# may go, since a floor above that refuses squares that were right.
+#
+# It was 0.12, measured against a reader that told the pieces apart by mask
+# overlap. That reader is gone and this number moved with it: correlation
+# scores sit in a narrower band and the gap between two piece types is smaller,
+# so a confidence measured on those scores is smaller too, and the weakest one
+# on an unobstructed board is now 0.0153 rather than 0.1262. 0.015 is the last
+# floor that leaves such a board whole.
+#
+# What used to justify taking the last free step was that the agreements below
+# it were wrong 19% of the time against 0.5% above. That is not measurable any
+# more: over the same 768 boards the reader now names 47899 squares with none
+# of them wrong, so neither side of the floor has an error rate to compare.
+# The floor is kept for what it still does, which is refuse an agreement the
+# board barely preferred, and it is pinned by the one measurement that is left.
 #
 # Still a rate and not a promise, and the residue is not the floor's to fix.
-# The wrong answers left above it are squares the reader read wrong and the
-# counting rules agreed with, most of them at a confidence of 1. What this
-# module promises is that it never adds one of its own.
-MIN_PIN = 0.12
+# What this module promises is that it never adds a wrong answer of its own.
+MIN_PIN = 0.015
 
 
 # ------------------------------------------------------------------ network
