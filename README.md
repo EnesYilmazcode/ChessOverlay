@@ -150,8 +150,9 @@ they live behind their own test suites and command lines:
 
 ### The four invariants
 
-Each of these exists because of a specific way the program was once caught
-breaking, and each has a test whose only job is to hold it.
+Four things this program is not allowed to do. Each one is held by a test rather
+than by care, and the last two are there because the program was caught doing
+exactly what they now forbid.
 
 **1. The arrow cannot corrupt a recording.** This is the sharp one: the recorder
 is reading the same pixels the arrow paints on.
