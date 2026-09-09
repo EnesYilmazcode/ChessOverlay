@@ -80,8 +80,9 @@ def _real_sets():
     return out
 
 
-def _draw_arrow(img, uci):
-    """The coach arrow, as the overlay paints it on the live board."""
+def _draw_arrow(img, uci, bad=False):
+    """A coach arrow, as the overlay paints it on the live board. bad picks the
+    move to avoid rather than the move to play, which is the other colour."""
     import chess as _c
     import overlay as OV
     from PIL import ImageDraw
@@ -91,13 +92,16 @@ def _draw_arrow(img, uci):
     pts = OV.path_points(region, move, False)
     out = img.copy()
     pen = ImageDraw.Draw(out)
-    width = max(2, int(round(size / 8.0 * 0.16)))
-    pen.line([c for p in pts for c in p], fill=OV.YOURS, width=width,
+    # bad picks the move-to-avoid arrow, which is the other colour and thinner.
+    colour = OV.colour_for(bad)
+    width = max(2, int(round(size / 8.0 * (OV.BAD_WEIGHT if bad
+                                           else OV.WEIGHT))))
+    pen.line([c for p in pts for c in p], fill=colour, width=width,
              joint="curve")
     radius = width / 2.0
     for px, py in pts:
         pen.ellipse([px - radius, py - radius, px + radius, py + radius],
-                    fill=OV.YOURS)
+                    fill=colour)
     return out
 
 

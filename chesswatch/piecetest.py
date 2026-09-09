@@ -509,17 +509,26 @@ def main():
                    P.ARROW_COLOURS,
                    tuple(tuple(int(name.lstrip("#")[i:i + 2], 16)
                                for i in (0, 2, 4))
-                         for name in (_OV.YOURS, _OV.THEIRS))))
+                         for name in (_OV.PLAY, _OV.AVOID))))
     r.append(check("  at the alpha overlay actually paints with",
                    P.ARROW_ALPHA, _OV.ALPHA))
 
     withdrawn = added = altered = 0
     drawn_on = boards + six + [(n, b.resize((400, 400), Image.LANCZOS))
                                for n, b in boards + six]
+
+    def painted(img):
+        """Every arrow picture this program can put on a board: the move to
+        play on its own, the move to avoid on its own, and the pair, which is
+        what is really on the board once the coach has both answers."""
+        play = _bench._draw_arrow(img, "e2e4")
+        avoid = _bench._draw_arrow(img, "g1f3", bad=True)
+        return [play, avoid, _bench._draw_arrow(play, "g1f3", bad=True)]
+
     for name, img in drawn_on:
         plain_rows, _ = reader.classify(img)
-        for uci in ("e2e4", "g1f3"):
-            arrow_rows, _ = reader.classify(_bench._draw_arrow(img, uci))
+        for drawn in painted(img):
+            arrow_rows, _ = reader.classify(drawn)
             for row in range(8):
                 for col in range(8):
                     was, now = plain_rows[row][col], arrow_rows[row][col]
@@ -531,9 +540,9 @@ def main():
                         added += 1
                     else:
                         altered += 1
-    print("      with the coach arrow drawn: %d answers withdrawn, %d added, "
+    print("      with the coach arrows drawn: %d answers withdrawn, %d added, "
           "%d altered" % (withdrawn, added, altered))
-    r.append(check("the coach arrow can cost an answer and cannot change one",
+    r.append(check("a coach arrow can cost an answer and cannot change one",
                    (added, altered), (0, 0)))
 
     # The mutation. A covered cell contributes nothing to the weighted
@@ -556,8 +565,8 @@ def main():
         mutated = 0
         for name, img in drawn_on:
             plain_rows, _ = reader.classify(img)
-            for uci in ("e2e4", "g1f3"):
-                arrow_rows, _ = reader.classify(_bench._draw_arrow(img, uci))
+            for drawn in painted(img):
+                arrow_rows, _ = reader.classify(drawn)
                 mutated += sum(1 for row in range(8) for col in range(8)
                                if plain_rows[row][col] != arrow_rows[row][col]
                                and "?" not in (plain_rows[row][col],

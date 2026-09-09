@@ -1,8 +1,9 @@
-"""An arrow drawn on the real board, over whatever program is showing it.
+"""Arrows drawn on the real board, over whatever program is showing it.
 
 A click-through, always on top, colour-keyed window sitting exactly on the
-board rectangle the watcher found. It draws one arrow: the move the coach
-suggests, from square to square, on the actual pixels you are looking at.
+board rectangle the watcher found. It draws two arrows, both about the move you
+are the one who gets to make: the move to play, and the move you might play
+instead that is worse.
 
 The awkward part is that the recorder is reading the same pixels this paints
 on. It cannot be allowed to corrupt a game. read_occupancy() converts the board
@@ -12,12 +13,25 @@ therefore invisible to the reader. Even blended against pure white or pure
 black underneath it stays inside the band, which overlaytest.py measures rather
 than assumes.
 
-There are two arrow colours, because the coach answers for whoever is to move
-and you need to see at a glance whether you are looking at your plan or theirs.
-Yours is cyan and greys to 165, theirs is violet and greys to 123. Neither is
-safe on account of the other. Each one has to sit inside the band on its own,
-blended over anything, which is why overlaytest.py puts both of them over pure
-black and over pure white and reads the greys back off the screen.
+There are two arrow colours, one per arrow: cyan for the move to play, which
+greys to 165, and red for the move to avoid, which greys to 113. Neither is safe
+on account of the other. Each one has to sit inside the band on its own, blended
+over anything, which is why overlaytest.py puts both of them over pure black and
+over pure white and reads the greys back off the screen.
+
+That band is why the red is not as dark as a warning colour wants to be. The
+reader counts a pixel as part of a piece below grey 70, and at the window's
+alpha that puts a floor of grey 83 on any colour drawn here. A proper dark red
+is under it: #8B0000 greys to 42 and pure #FF0000 to 76, and either of them
+would be read as a black piece wherever the arrow crossed a square. #E04242 is
+about as deep as a red can be and still be invisible to the reader, and it
+clears the floor by 26 greys.
+
+There used to be a third colour, violet, for the engine's answer to the
+opponent's position while they were thinking. It is gone. Both arrows are about
+moves you can make, because a threat you cannot do anything about yet is not
+what you asked the board for, and one of the two arrows meaning something
+completely different from the other was the confusing part.
 
 The worst that arrow coverage can do is change what a square reads as: a white
 pawn with the shaft painted down its file loses more bright pixels than dark
@@ -32,10 +46,16 @@ import tkinter as tk
 
 import chess
 
-YOURS = "#00E8FF"         # greys to 165, between the reader's 70 and 244
-THEIRS = "#A64BFF"        # greys to 123, in the same band
+PLAY = "#00E8FF"          # greys to 165, between the reader's 70 and 244
+AVOID = "#E04242"         # greys to 113, and see the note above about red
 KEY = "#010101"           # becomes transparent; never drawn
 ALPHA = 0.85
+
+# The shaft, as a share of a square. The move to avoid is drawn thinner: it is
+# the smaller of the two things being said, and two arrows cover more of the
+# board than one, which is coverage the reader has to survive.
+WEIGHT = 0.16
+BAD_WEIGHT = 0.11
 
 GWL_EXSTYLE = -20
 WS_EX_LAYERED = 0x00080000
@@ -44,16 +64,30 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_NOACTIVATE = 0x08000000
 
 
-def colour_for(mine):
-    """Which of the two colours a side gets.
+def colour_for(bad):
+    """Which colour an arrow gets: the move to play, or the move to avoid.
 
     A caller cannot hand in a colour of its own, because only these two have
-    been measured against the reader; see the module docstring before
-    inventing a third. It is a function rather than an expression inside
-    Arrow.show so that overlaytest, which paints a model of the arrow in PIL,
-    asks this rather than re-deriving it and then measuring its own answer.
+    been measured against the reader; see the module docstring before inventing
+    a third. It is a function rather than an expression inside Arrow.show so
+    that overlaytest, which paints a model of the arrow in PIL, asks this rather
+    than re-deriving it and then measuring its own answer.
     """
-    return YOURS if mine else THEIRS
+    return AVOID if bad else PLAY
+
+
+def plan_for(move, bad=None):
+    """The arrows to draw, back to front, as (move, colour, share of a square).
+
+    The move to avoid goes down first, so where the two cross it is the move to
+    play that is on top and unbroken.
+    """
+    plan = []
+    if bad is not None:
+        plan.append((bad, colour_for(True), BAD_WEIGHT))
+    if move is not None:
+        plan.append((move, colour_for(False), WEIGHT))
+    return plan
 
 
 def square_centre(region, square, flipped):
@@ -82,15 +116,15 @@ def path_points(region, move, flipped):
 
 
 def wanted(on, region, position, advice_for, advice_uci, cleared,
-           flipped=False, mine=True):
+           flipped=False, bad_uci=None, bad_for=None):
     """What the arrow should be showing right now, or None for nothing at all.
 
     The whole staleness question with no window in it, so it can be reasoned
     about and checked on its own. Every argument is state the app already
     holds: whether the switch is on, where the board is, the position now on
     screen, the position the last engine reply was about, the move it named, a
-    position whose arrow was cleared by hand, and whose move the reply was for,
-    which is the colour.
+    position whose arrow was cleared by hand, and the move to avoid with the
+    position that one is about.
 
     An arrow is only ever right about one position. The app used to draw it
     once, when advice arrived, and never look at it again, so it stayed on the
@@ -99,6 +133,12 @@ def wanted(on, region, position, advice_for, advice_uci, cleared,
     fresh from the current state is what fixes all three: what comes back is a
     complete description of the arrow, so a caller that redraws whenever this
     changes cannot leave a stale one behind.
+
+    The move to avoid arrives seconds after the move to play and is its own
+    answer about its own position, so it gets the same rule and its own fen to
+    be judged against. It is dropped rather than the whole picture when it is
+    the stale half, which is the ordinary case: for the second or so between
+    the two answers there is a move to play and nothing yet to avoid.
     """
     if not (on and region and advice_uci and position):
         return None            # nothing on screen to be advising about
@@ -106,7 +146,8 @@ def wanted(on, region, position, advice_for, advice_uci, cleared,
         return None            # the board has moved past this advice
     if cleared is not None and advice_for == cleared:
         return None            # taken down by hand, and not for one frame only
-    return tuple(region), advice_uci, bool(flipped), bool(mine)
+    bad = bad_uci if (bad_uci and bad_for == position) else None
+    return tuple(region), advice_uci, bool(flipped), bad
 
 
 def make_click_through(win):
@@ -158,22 +199,24 @@ class Arrow:
         self._shown = False
         self._last = None
 
-    def show(self, region, move, flipped=False, mine=True):
+    def show(self, region, move, flipped=False, bad=None):
         """region is the board on screen as (x, y, w, h), in absolute desktop
-        coordinates. move is a chess.Move. mine says whose move it is, which
-        is the colour."""
+        coordinates. move is a chess.Move, the one to play. bad is the move to
+        avoid, drawn in red, or None while the engine is still working out
+        whether there is one."""
         if region is None or move is None:
             self.hide()
             return
-        colour = colour_for(mine)
-        # The colour is part of the picture, so the same move for the other
-        # side has to count as a different one or it will not repaint.
-        key = (tuple(region), move.uci(), flipped, colour)
+        plan = plan_for(move, bad)
+        # The colours are part of the picture, so the same two moves the other
+        # way round have to count as a different one or it will not repaint.
+        key = (tuple(region), flipped,
+               tuple((drawn.uci(), colour) for drawn, colour, _ in plan))
         x, y, w, h = region
         if key != self._last:
             self._last = key
             self.win.geometry("%dx%d+%d+%d" % (w, h, x, y))
-            self._draw(region, move, flipped, colour)
+            self._draw(region, flipped, plan)
         if not self._shown:
             self.win.deiconify()
             self.win.update_idletasks()
@@ -188,19 +231,27 @@ class Arrow:
             self.win.lift()
             self._shown = True
 
-    def _draw(self, region, move, flipped, colour):
+    def _draw(self, region, flipped, plan):
+        """Both arrows on the one canvas, in the order plan_for put them.
+
+        One window rather than two, so nothing is ever drawn over an arrow that
+        is itself half transparent. Every colour here has been measured over the
+        board and over pure black and white at one coat of alpha; two coats is a
+        fourth colour nobody has measured.
+        """
         x, y, w, h = region
         step = w / 8.0
-        pts = path_points(region, move, flipped)
-        local = []
-        for px, py in pts:
-            local += [px - x, py - y]
+        head = (step * 0.42, step * 0.52, step * 0.30)
         self.canvas.delete("all")
         self.canvas.configure(width=w, height=h)
-        head = (step * 0.42, step * 0.52, step * 0.30)
-        self.canvas.create_line(*local, fill=colour, width=max(2, step * 0.16),
-                                arrow="last", arrowshape=head,
-                                capstyle="round", joinstyle="round")
+        for move, colour, weight in plan:
+            local = []
+            for px, py in path_points(region, move, flipped):
+                local += [px - x, py - y]
+            self.canvas.create_line(*local, fill=colour,
+                                    width=max(2, step * weight),
+                                    arrow="last", arrowshape=head,
+                                    capstyle="round", joinstyle="round")
 
     def hide(self):
         if self._shown:

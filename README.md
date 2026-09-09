@@ -4,9 +4,9 @@ Two halves of one idea, for anyone building chess teaching tools.
 
 **`chesswatch`** watches a chess board on your screen, reads it, and writes the
 game to disk as PGN and JSON. It runs Stockfish on the position it is reading
-and says, in words, what to play. Tick **Arrow** and it draws that move on the
-board itself, over whatever program is showing it, in one colour for your move
-and another for your opponent's.
+and says, in words, what to play. Tick **Arrow** and it draws two moves on the
+board itself, over whatever program is showing it: in cyan the move to play, and
+in red beside it the move you might reach for instead that is really worse.
 
 **`holochess`** is a full board you play against the engine, with the same arrow
 inside its own window.
@@ -15,10 +15,13 @@ It works off pixels alone, so it does not care which site, app or board theme is
 showing the game. Nothing signs in, nothing touches an account, and nothing
 leaves the machine.
 
-![the arrow over a middlegame board](docs/arrow.png)
+![both arrows over a middlegame board](docs/arrow.png)
 
-That is a real position twenty-two plies in, not an opening: the arrow is worth
-looking at when the board is busy enough that the move is not obvious.
+That is a real position twenty-two plies in, not an opening: the arrows are
+worth looking at when the board is busy enough that the move is not obvious.
+Cyan is the move to play, d5. Red is Nxe5, the pawn grab that is 3.5 worse and
+the move a player is far more likely to reach for. Both come out of the engine
+at the moment the picture is taken rather than being typed into the script.
 Regenerate it with `python mkshot.py` from `chesswatch/`.
 
 ## How it works
@@ -160,9 +163,15 @@ is reading the same pixels the arrow paints on.
 `read_occupancy` counts only pixels brighter than 244 or darker than 70 —
 everything between is already discarded, which is how the last-move highlight,
 the coordinate labels and the check marker get ignored. Both arrow colours are
-chosen to land in that gap: cyan greys to 165, violet to 123, and blended at 85
+chosen to land in that gap: cyan greys to 165 and red to 113, and blended at 85
 per cent over pure white *or* pure black each stays inside the band **on its own
 account rather than on the other's**. The reader cannot see either of them.
+
+That band is also why the red is not as dark as a warning colour wants to be.
+At the window's alpha the reader's dark cutoff puts a floor of grey 83 on
+anything drawn here, and a proper dark red is under it: `#8B0000` greys to 42
+and pure `#FF0000` to 76, either of which would read as a black piece wherever
+the arrow crossed a square.
 
 Coverage can still change what a square reads as — a white pawn with the shaft
 painted down its file loses enough bright pixels to come back black. That
@@ -171,13 +180,14 @@ exactly as it already does for a piece mid-animation. It cannot write down a
 move that did not happen.
 
 `overlaytest.py` measures this rather than claiming it: sixteen arrows across
-the crowded ranks and onto pieces, at 664px and again at 240px, in both colours,
-every one confirmed present, none changing a single square, every pixel any of
-them touched confirmed between the two cutoffs. The confirmed-present check is
-the load-bearing one — without it an overlay that drew nothing would pass
-everything else — so it runs once per colour and diffs the two captures of the
-same move against each other, and a colour that never got painted cannot hide
-behind the one that did.
+the crowded ranks and onto pieces, at 664px and again at 240px, first as the
+move to play alone and then as the pair, every one confirmed present, none
+changing a single square, every pixel any of them touched confirmed between the
+two cutoffs. The confirmed-present check is the load-bearing one — without it an
+overlay that drew nothing would pass everything else — so the second sweep is
+diffed against the first, and the red arrow, which is never on the board without
+the cyan one, is measured on the pixels it alone adds rather than hiding behind
+the arrow that did get painted.
 
 **2. Never guess a move.** Three missed moves can transpose: a double push then
 an en passant capture leaves the same picture as a single push then an ordinary
@@ -242,8 +252,8 @@ never imports the piece reader and can be tested without one.
 | [`chesswatch/chesswatch.py`](chesswatch/) | The window, the capture thread, the queues, the wiring. | Finished. |
 | [`chesswatch/watcher.py`](chesswatch/watcher.py) | Board-finding, occupancy, move inference, game files. No GUI on purpose, so it tests headless. | Finished. 87 headless checks + 2 on-screen. |
 | [`chesswatch/pieces.py`](chesswatch/pieces.py) | Which piece is on a square, by normalised shape matching. | Works. |
-| [`chesswatch/coach.py`](chesswatch/coach.py) | Stockfish on its own thread, read mid-search. | Works. 52 checks. On by default. |
-| [`chesswatch/overlay.py`](chesswatch/overlay.py) | The click-through arrow, in a colour the reader is blind to. | Works. 21 checks, headless by default. |
+| [`chesswatch/coach.py`](chesswatch/coach.py) | Stockfish on its own thread, read mid-search, then asked which move to avoid. | Works. 86 checks. On by default. |
+| [`chesswatch/overlay.py`](chesswatch/overlay.py) | Both click-through arrows, in colours the reader is blind to. | Works. 23 checks, headless by default. |
 | [`chesswatch/position.py`](chesswatch/position.py) | All 64 squares as one legal position, min-cost flow. | Works. 29 checks. Nothing calls it yet. |
 | [`chesswatch/piecebank.py`](chesswatch/piecebank.py) | Choosing the piece set when learning is impossible. | Works. Command line only so far. |
 | [`holochess/`](holochess/) | Local board, Stockfish 18, hint arrow confined to its window. | Works. 17 checks. |
@@ -281,10 +291,30 @@ the moves reads something like:
 ```
 your move  Nf3
 knight: g1 to f3   +0.4
+not Nxe5, 3.5 worse
 ```
 
 It names the piece and both squares rather than only the notation, says what a
 capture takes and when a move gives check, and counts a forced mate in moves.
+The red line is the second answer about the same position: the move you were
+probably about to play instead, which is the half a lesson is made of. It
+arrives about half a second after the first and the move to play never waits on
+it. Finding it runs a second Stockfish at Skill Level 0 alongside the real one,
+because a ranking sorts moves by strength and has no opinion about which of
+them is tempting, and the move a weak player picks is the definition of the
+move a weak player was tempted by. It shows on 82% of positions, and the line under it says which of three things
+it is: `not Nxe5, 3.5 worse` for a real mistake, `Nxe5 is 0.4 worse` for a move
+that is only weaker, and `Nxe5, 3.1 worse, winning anyway` in a game already
+decided. Only the first gets told *not*. The
+[chesswatch README](chesswatch/README.md#the-move-to-avoid) has the measured
+reason it is not all of them.
+
+Nothing is asked while it is your opponent's turn and the line reads
+`their turn` until it is yours again. A move you cannot make is not advice, and
+the engine going idle in between is most of what keeps this off your CPU. The
+same holds for a board whose orientation has not settled: until something says
+which way up it is, the app does not know which side is yours, so it advises
+nobody rather than guessing and being wrong half the time.
 That is aimed at a player who has not learned to read `Nxe5+` yet.
 
 A machine with no Stockfish on it says so once, in small text under the move
@@ -296,12 +326,20 @@ seconds. Both switches and the think time are remembered in `config.json`. See
 [Three threads and two queues](#three-threads-and-two-queues) for why a longer
 think never makes you wait.
 
-Tick **Arrow** as well and the move is drawn on the board itself, over whatever
-program is showing it. The window is click-through, so it does not get between
-you and the game. There is an arrow for every position, not only for your own
-turn, because the engine's answer to your opponent's position is what they are
-threatening. Cyan is your move, violet is theirs — and neither is visible to the
-recorder, which is [invariant 1](#the-four-invariants).
+Tick **Arrow** as well and both moves are drawn on the board itself, over
+whatever program is showing it. The window is click-through, so it does not get
+between you and the game. Cyan is the move to play and red is the move to avoid,
+drawn thinner and underneath where the two cross so the move to play is never
+the broken one. Both are about a move you are the one who gets to make, and
+neither is visible to the recorder, which is
+[invariant 1](#the-four-invariants).
+
+There used to be a third colour, violet, for the engine's answer to your
+opponent's position while they were thinking. It is gone, along with the search
+behind it. A threat you cannot do anything about yet is not what you asked the
+board for, and worse, red under their turn read as a move being recommended
+*at* you rather than against you, so the two arrows swapped meaning with the
+side to move.
 
 You supply Stockfish, the same binary the other half uses. See below.
 
@@ -325,9 +363,9 @@ hint is always computed at full strength no matter where that slider sits.
 
 ```
 cd chesswatch
-python selftest.py     116 headless checks, including real screenshots
-python coachtest.py     53 checks on the engine wrapper and its label
-python overlaytest.py   21 checks that the arrows cannot corrupt a reading
+python selftest.py     147 headless checks, including real screenshots
+python coachtest.py     86 checks on the engine wrapper and its label
+python overlaytest.py   23 checks that the arrows cannot corrupt a reading
 python settletest.py    move animation, driven off a real clock
 python livetest.py      plays whole games past the real capture worker
 

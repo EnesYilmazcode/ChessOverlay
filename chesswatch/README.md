@@ -36,15 +36,24 @@ loses nothing. Starting a new game closes out the old one automatically.
 ## Asking what to play
 
 Coaching is on by default, so Stockfish is started at launch, once, and asked
-about whatever position is on screen. The line above the moves reads:
+about the position on screen whenever it is your turn in it. The line above the
+moves reads:
 
 ```
 your move  Nf3
 knight: g1 to f3   +0.4
+not Nxe5, 3.5 worse
 ```
 
-Whose move it is and what to play is the large line, and the naming of the
-squares is the small print under it.
+What to play is the large line, the naming of the squares is the small print
+under it, and the red line is the move to avoid, which is the next section.
+
+Nothing is asked while it is your opponent's turn, and the line reads
+`their turn` until it is yours again. A move you cannot make is not advice, and
+the engine going idle in between is most of what keeps this off your CPU. The
+same goes for a board whose orientation has not settled: until something says
+which way up it is, the app does not know which side is yours, and the note
+line asks rather than guessing and being wrong half the time.
 
 Untick **Coach** to run as a recorder and start no engine. A machine with no
 Stockfish on it does that anyway, and says so once on the note line rather than
@@ -74,6 +83,106 @@ You supply the engine. `coach.py` looks at `$STOCKFISH_PATH`, then
 `chesswatch\engine\stockfish`, then the sibling `holochess\engine\stockfish`,
 then your `PATH`. Without one the switch says so and turns itself back off.
 
+## The move to avoid
+
+The move to play on its own tells you what a stronger player would do. The red
+line tells you what you were probably about to do instead, which is the half a
+lesson is made of. It reads `not Nxe5, 3.5 worse`, and like everything else
+here it is about a move you are the one who gets to make.
+
+It is a second answer about the same position and it arrives about half a
+second after the first. The move to play never waits on it.
+
+**Finding it is not the same problem as finding the best move**, and the
+obvious approach does not work. Asking Stockfish for its top five and taking
+the worst of them, measured over 40 positions from real recorded games, finds
+nothing worth warning about in more than half of them: the fifth best move is
+only 0.32 behind the best at the median. It also costs the move to play two to
+three plies of depth, because every extra line comes out of the same search.
+
+So the search that finds the move to play is left exactly as it was, and the
+move to avoid is a second pass afterwards over **every legal move**:
+
+| Pass | What it does | Why it is there |
+| --- | --- | --- |
+| nominate | every legal move scored roughly, at a fixed depth | the only way to see the moves that are bad enough to be worth showing at all |
+| tempt | a second engine, playing badly on purpose, is asked what it would play here | a ranking sorts by strength and has no opinion about temptation |
+| verify | the shortlist searched properly | two thirds of what nominate puts up does not survive it |
+| confirm | one move against the best move, on a longer clock | only for an extraordinary claim, and see below |
+
+Each pass is bounded by a **depth** rather than a time, because two lines
+searched to different depths cannot be compared with each other at all: a move
+that looks lost at depth 12, held up against a best move seen at depth 20, is
+an artefact of the two depths and not a mistake. There is still a wall-clock
+ceiling on each pass, and when it fires the answer is thrown away rather than
+shown, for the same reason.
+
+The shortlist is **captures and checks first**, because that is where a
+player's eye goes and a mistake nobody was tempted by teaches nothing. Of what
+survives, the move shown is the **smallest drop that still clears the bar**
+rather than the biggest: a move a pawn behind the best is one you are about to
+play, and the worst move on the board is one nobody was going to.
+
+The tempt pass is a **second Stockfish at Skill Level 0**, asked to play rather
+than to analyse and given a tenth of a second, because the question is which
+move it picks. Guessing at temptation from the board is what captures-first
+does; a move a weak player actually played is a better guess by definition. It
+is a candidate on top of the shortlist rather than in place of anything on it,
+so every gate below still applies, and if the second engine will not start the
+pass carries on without it.
+
+Its own move is a **bad** red arrow: two thirds of what it names is not a
+mistake at all, and 16 times in 60 it simply plays the best move, because
+Stockfish playing badly plays slightly off rather than tempted. Behind the
+gates it is worth **one position in sixty**, and that one was a 3.2 pawn
+blunder the shortlist missed while it was looking at captures. It looks worth
+seven times that until the gates are applied, but six of those seven are in
+positions already decided. **The blunders a weak engine finds are mostly in
+games that are already over.** `UCI_Elo` cannot go below 1320 and adds nothing
+over Skill Level 0, zero positions in sixty, so there is one weak engine and
+not two.
+
+A warning is one of **three things**, and the wording is what tells them apart.
+It used to be one thing and silence, and the silence was 45% of turns.
+
+| | when | reads |
+| --- | --- | --- |
+| mistake | 0.9+ behind, game still worth playing well | `not Nxe5, 3.5 worse` |
+| weaker | worse, but not by enough to be a mistake | `Nxe5 is 0.4 worse` |
+| decided | five pawns up or down either way | `Nxe5, 3.1 worse, winning anyway` |
+
+Only a real mistake gets told **not**. Saying it about a move half a pawn
+behind teaches that everything except the engine's first choice is wrong, and
+saying it in a game already won is what produced "not e8=N+, 3.1 worse" about
+two moves that both promote and both win. The arrow is drawn in all three
+cases, because the move really is the worse one and seeing it is the point;
+what changes is whether the line claims it matters.
+
+Below **0.2 pawns** nothing is drawn at all, because at that distance the two
+moves are the same move and an arrow would be inventing a difference.
+
+The confirm pass exists because of one measured failure. Without it, one red
+arrow in nine pointed at a move a longer search says is fine, and **every one
+of those was a shallow search inventing a forced mate that is not there**. So a
+drop that rests on a mate, or one too large to believe, is put to a longer
+search on those two moves alone before anything is drawn.
+
+What that adds up to, measured by driving the real `Coach` over 60 positions
+from games/: a red arrow on **82%** of them, made of 33 real mistakes, 15
+decided games and 1 merely weaker, at a median 1.47 pawns.
+
+The 33 is the number to watch, because it is the same 33 the pass found when it
+drew on 55% of turns and stayed silent the rest. **Widening it did not cost a
+single real mistake**; it only stopped throwing away the 16 positions where
+there was a worse move to show and no honest way to call it a blunder.
+
+The remaining 18% is positions where nothing on the shortlist is even 0.2
+behind the best move. Filling those in means nominating moves less than 0.7
+behind at rough depth, which is more search for arrows pointing at moves that
+are equal in every way that matters. The pass costs 0.35s at the
+median and 0.82s at the 90th percentile on top of the think time, and the
+**Think** dial drives how deep it goes, exactly as it drives everything else.
+
 ## The arrow on the board
 
 Tick **Arrow** as well and the suggestion is drawn on the board itself, on top
@@ -90,10 +199,16 @@ move and then stops on its own.
 
 ![the arrow over a board](../docs/arrow.png)
 
-There is an arrow for every position, not only for your own turn. The engine's
-answer to your opponent's position is what they are threatening, which is worth
-seeing, so the two are told apart by colour: cyan is your move, violet is
-theirs. The label underneath still says which one it is.
+Both arrows are about your own turn. The move to avoid is drawn beside the move
+to play in red, thinner, and underneath it where the two cross, so the move to
+play is never the broken one.
+
+There used to be a third colour, violet, for the engine's answer to the
+opponent's position while they were thinking. It is gone, and so is the answer
+behind it. A threat you cannot do anything about yet is not what you asked the
+board for, and one of the two arrows meaning something completely different
+from the other was the confusing part: red under the opponent's turn read as a
+move being recommended against you rather than to you.
 
 The awkward part is that the recorder is reading the same pixels the arrow is
 painting on, and it must not be able to corrupt a game.
@@ -101,9 +216,16 @@ painting on, and it must not be able to corrupt a game.
 `read_occupancy` converts the board to grey and counts only pixels brighter
 than 244 or darker than 70. Everything in between is already thrown away, which
 is how highlights, coordinate labels and the check marker are ignored. So both
-arrow colours land in that gap. Cyan greys to 165 and violet to 123, and
+arrow colours land in that gap. Cyan greys to 165 and the red to 113, and
 blended at 85 per cent over pure white or pure black each one stays inside the
-band on its own account, not on the other's. The reader cannot see either.
+band on its own account and not on the other's. The reader cannot see either.
+
+That band is also why the red is not as dark as a warning colour wants to be.
+The window's alpha puts a floor of grey 83 on anything drawn here, and a proper
+dark red is under it: `#8B0000` greys to 42 and even pure `#FF0000` to 76, so
+either of them would be read as a black piece wherever the arrow crossed a
+square. `#E04242` is about as deep as a red can go and still be invisible to
+the reader, and it clears the floor by 26 greys.
 
 The one thing arrow coverage can still do is change what a square reads as: a
 white pawn with the shaft painted down its file can lose enough bright pixels
@@ -112,12 +234,20 @@ frame is ignored and the recorder waits, exactly as it does for a piece in mid
 animation. It cannot write down a move that did not happen.
 
 `overlaytest.py` measures this rather than asserting it. Sixteen arrows across
-the crowded ranks, arrows landing on pieces, at 664px and again at 240px, in
-both colours: every one of them is confirmed to be on the board, not one of
-them changed a single square, and every pixel any of them touched is confirmed
-to have landed between the two cutoffs, cyan on greys 142 to 179 and violet on
-106 to 143. Then it plays a whole game with an arrow up for every frame,
-changing colour every half move, and checks the moves came out right.
+the crowded ranks, arrows landing on pieces, at 664px and again at 240px: every
+one is confirmed to be on the board, not one changed a single square, and every
+pixel any of them touched landed between the two cutoffs, on greys 142 to 179.
+
+Then all of it again with **two arrows up at once**, which is what is on the
+board for most of a game and which the sweep above does not cover: a square the
+move to play only clips can be crossed by the move to avoid as well, and what
+the reader has to survive is the pair. Sixteen pairs, on the big board and the
+small one, none of them changed a square, and the pair lands on greys 99 to
+179. The red is measured on its own by differencing the pair against the
+capture with only the first arrow on it, which is where it really lives: the
+app never draws it without the blue one, so a sweep of it alone would be a
+sweep of a state that cannot happen. Then it plays a whole game with both
+arrows up for every frame and checks the moves came out right.
 
 The check that the arrow is really there is the important one. Without it an
 overlay that drew nothing at all would pass every other check in the file. It
@@ -497,13 +627,15 @@ rectangle is in use.
 ## Checking it still works
 
     python selftest.py     147 checks, including real screenshots
-    python piecetest.py     62 checks on the piece reader under a bad capture
-    python positiontest.py  29 checks on the whole board solver, no pixels
-    python enrolltest.py   212 checks on teaching the pieces and on the arrow
-    python layouttest.py    98 checks on what the window shows and how wide
-    python coachtest.py     53 checks on the engine wrapper and its label,
-                            43 without a display and 31 without Stockfish
-    python overlaytest.py   21 checks that the arrows cannot corrupt a reading
+    python piecetest.py     66 checks on the piece reader under a bad capture
+    python positiontest.py  39 checks on the whole board solver, no pixels
+    python enrolltest.py   220 checks on teaching the pieces and on the arrows
+    python layouttest.py   126 checks on what the window shows and how wide
+    python coachtest.py     86 checks on the engine wrapper and the lines it
+                            feeds, 77 without a display and 56 without
+                            Stockfish
+    python overlaytest.py   23 checks that the arrows cannot corrupt a reading,
+                            25 with --on-screen
     python settletest.py    move animation, with the screen on a clock
     python banktest.py      33 checks on choosing a piece set
     python livetest.py      full loop through the real capture worker
