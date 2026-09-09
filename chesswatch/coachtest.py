@@ -1,4 +1,4 @@
-"""Checks for the coaching half: the engine wrapper and the label it feeds.
+"""Checks for the coaching half: the engine wrapper and the labels it feeds.
 
 Run:  python coachtest.py
 
@@ -18,6 +18,7 @@ import tempfile
 import time
 
 import chess
+import chess.engine
 
 import coach as CO
 
@@ -28,6 +29,11 @@ R = []
 BUSY = "r1bq1rk1/pp2ppbp/2np1np1/8/2BNP3/2N1B3/PPP2PPP/R2Q1RK1 w - - 0 1"
 MATE = "6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1"
 OVER = "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1"
+
+# Black's king is not on it. chess.Board builds this happily, and Stockfish
+# exits with an access violation the moment it is asked about it, taking the
+# whole coaching thread with it.
+NO_KING = "8/5ppp/8/8/8/6P1/5P1P/R5K1 w - - 0 1"
 
 
 def check(name, got, want):
@@ -220,6 +226,162 @@ def config_bounds():
     check("and nonsense falls back rather than raising before the window exists",
           [CO.nearest_think(v) for v in (None, "", "soon", [])],
           [CO.DEFAULT_THINK] * 4)
+
+
+# --------------------------------------------------- the move to avoid
+
+def line(cp, uci, depth=14):
+    return CO.Line(chess.engine.Cp(cp), chess.Move.from_uci(uci), depth)
+
+
+def mistake_rules():
+    """Which move gets the warning, with no engine anywhere near it.
+
+    Every rule here was written against a measurement over 45 positions from
+    real recorded games, and each one is a case where the shallow answer was
+    wrong about something. They are separate functions so they can be checked
+    against made-up scores, which is the only way to reach the cases that
+    matter: a mate that is not there, and a position already won.
+    """
+    print("\n-- which move the warning is about ------------------------")
+    board = after(["e4", "e5", "Nf3", "Nc6"])         # white to move
+    best = chess.Move.from_uci("f1c4")
+
+    rough = [line(30, "f1c4"), line(-20, "d2d3"), line(-90, "h2h3"),
+             line(-300, "f3g1"), line(-400, "f1a6")]
+    check("a move has to be far enough behind to be nominated at all",
+          CO.shortlist(board, best, rough, drop=100),
+          [chess.Move.from_uci(u) for u in ("h2h3", "f3g1", "f1a6")])
+    check("  and the move it is being compared against is never one of them,"
+          " however small the drop it is asked for",
+          best in CO.shortlist(board, best, rough, drop=0), False)
+    check("  the shortlist is capped, since every one of them is searched",
+          len(CO.shortlist(board, best, rough, drop=0, most=2)), 2)
+    check("nothing to nominate is not an error", CO.shortlist(board, best, []), [])
+
+    # Nxe5 is a capture and h4 is not, and the capture is the worse of the two.
+    # A player's eye goes to the capture, so that is the one worth warning
+    # about even though it is not the closest call.
+    eye = [line(30, "f1c4"), line(-120, "h2h4"), line(-260, "f3e5")]
+    check("a capture is preferred to a quiet move that is not as bad",
+          CO.shortlist(board, best, eye, drop=100)[0],
+          chess.Move.from_uci("f3e5"))
+
+    check("the warning is the closest call that still clears the bar",
+          CO.most_tempting([(400, chess.Move.from_uci("c6d4")),
+                            (150, chess.Move.from_uci("g8h6")),
+                            (40, chess.Move.from_uci("d7d6"))], bar=100),
+          (150, chess.Move.from_uci("g8h6")))
+    check("  and there is no warning when nothing clears it",
+          CO.most_tempting([(40, chess.Move.from_uci("d7d6"))], bar=100), None)
+    check("  nor when there was nothing to compare", CO.most_tempting([]), None)
+
+    check("lines searched to one depth are evidence about each other",
+          CO.comparable([line(30, "e2e4"), line(-100, "g1h3")]), True)
+    check("  and lines searched to different depths are not",
+          CO.comparable([line(30, "e2e4"), line(-100, "g1h3", depth=9)]), False)
+    check("  which nothing at all also is not", CO.comparable([]), False)
+
+    check("a position already won is no place for a warning",
+          CO.already_decided(chess.engine.Cp(900), chess.engine.Cp(700)), True)
+    check("  nor is one already lost",
+          CO.already_decided(chess.engine.Cp(-900), chess.engine.Cp(-1200)),
+          True)
+    check("  but losing the whole of an advantage is",
+          CO.already_decided(chess.engine.Cp(900), chess.engine.Cp(20)), False)
+    check("  and so is an ordinary position",
+          CO.already_decided(chess.engine.Cp(30), chess.engine.Cp(-90)), False)
+
+    check("a drop that rests on a mate is not believed on one search",
+          CO.needs_confirming(500, chess.engine.Mate(3), chess.engine.Cp(50)),
+          True)
+    check("  in either direction",
+          CO.needs_confirming(500, chess.engine.Cp(50), chess.engine.Mate(-3)),
+          True)
+    check("  nor is a drop too large to be true",
+          CO.needs_confirming(900, chess.engine.Cp(50), chess.engine.Cp(-850)),
+          True)
+    check("  while an ordinary mistake is taken at its word",
+          CO.needs_confirming(150, chess.engine.Cp(50), chess.engine.Cp(-100)),
+          False)
+
+    check("how much worse, in pawns",
+          CO.drop_words(chess.engine.Cp(40), chess.engine.Cp(-80)), "1.2 worse")
+    check("  except that mate is not a number of pawns",
+          CO.drop_words(chess.engine.Mate(3), chess.engine.Cp(120)),
+          "throws away mate in 3")
+    check("  in either direction",
+          CO.drop_words(chess.engine.Cp(120), chess.engine.Mate(-2)),
+          "walks into mate in 2")
+    check("the think time dial drives how deep this pass goes",
+          [CO.depths_for(t) for t in CO.THINK_CHOICES],
+          [CO.DEPTHS[t] for t in CO.THINK_CHOICES])
+    check("  including whatever a hand-edited config file asks for",
+          CO.depths_for(60), CO.DEPTHS[2.5])
+    check("  and every offered time has an answer",
+          sorted(CO.DEPTHS), sorted(CO.THINK_CHOICES))
+
+
+def mistake_engine_checks(path):
+    """The whole second pass against the real engine.
+
+    Which move it picks is not checked, and cannot be: at 0.3s the same
+    position gives Nxe5 one run and b4 the next, and both are real mistakes.
+    What is checked is everything that would be a bug whichever move it names.
+    """
+    print("\n-- the move to avoid, against the real engine -------------")
+    c, ready = start(path, 0.30)
+    check("the engine starts", ready, "ready")
+
+    def both(fen, seconds=30):
+        """The last word on a position, and the warning that follows it."""
+        c.ask(fen)
+        advice = warning = None
+        order = []
+        end = time.time() + seconds
+        while time.time() < end and warning is None:
+            try:
+                kind, payload = c.out.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if kind == "engine" and payload != "ready":
+                print("        engine said: %s" % payload)
+                break
+            if kind == "advice" and payload.get("final"):
+                advice, order = payload, order + ["advice"]
+            elif kind == "mistake":
+                warning, order = payload, order + ["mistake"]
+        return advice, warning, order
+
+    board = chess.Board(BUSY)
+    advice, warning, order = both(BUSY)
+    check("a position with a real mistake in it gets a warning",
+          warning is not None, True)
+    if advice is not None and warning is not None:
+        move = chess.Move.from_uci(warning["uci"])
+        print("      it named %s, %s" % (warning["san"], warning["worse"]))
+        check("  which is a legal move in the position it is about",
+              move in board.legal_moves, True)
+        check("  and not the move it has just told you to play",
+              warning["uci"] == advice["uci"], False)
+        check("  worth at least the bar it has to clear",
+              warning["drop"] >= CO.MIN_DROP, True)
+        check("  named the way the move to play is, and about the same board",
+              (warning["fen"], warning["turn"],
+               chess.square_name(move.from_square) in warning["text"],
+               chess.square_name(move.to_square) in warning["text"]),
+              (BUSY, "white", True, True))
+    check("the move to play is published first, so it never waits on this",
+          order, ["advice", "mistake"])
+
+    # The crash this guard is for takes the engine down for the rest of the
+    # session, so the check is that the position after it is still answered.
+    c.ask(NO_KING)
+    time.sleep(0.5)
+    advice, _, _ = both(MATE)
+    check("a position with a king missing does not take the engine down",
+          advice and advice["san"], "Ra8#")
+    c.stop()
 
 
 def engine_checks(path):
@@ -630,6 +792,7 @@ def main():
     print("      desktop is never screenshotted. They need Stockfish to run at"
           " all.\n")
     wording()
+    mistake_rules()
     capture_checks()
     config_bounds()
     launch_checks()
@@ -639,6 +802,7 @@ def main():
         print("SKIP  engine checks (set STOCKFISH_PATH or see the README)")
     else:
         engine_checks(path)
+        mistake_engine_checks(path)
         streaming_checks(path)
         if os.environ.get("CHESSWATCH_NO_TK"):
             print("SKIP  label checks (CHESSWATCH_NO_TK)")

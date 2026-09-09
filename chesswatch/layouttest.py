@@ -86,8 +86,9 @@ def nothing_opens():
 
 # ---------------------------------------------------------------- what shows
 
-QUIET = {"setup": False, "advice": "", "detail": "", "note": "",
-         "result": "", "arrow": False, "side": "auto", "position": False}
+QUIET = {"setup": False, "advice": "", "detail": "", "mistake": "",
+         "note": "", "result": "", "arrow": False, "side": "auto",
+         "position": False}
 
 
 def with_(**changes):
@@ -149,6 +150,20 @@ def what_shows():
           ("top", "hero", "advice", "detail", "foot", "moves"))
     check("  and the small print never on its own",
           "detail" in C.showing(with_(detail="knight: g1 to f3")), False)
+    check("the move to avoid comes up under the detail line",
+          C.showing(with_(advice="your move  Nf3", detail="knight: g1 to f3",
+                          mistake="not Nh3, 1.0 worse")),
+          ("top", "hero", "advice", "detail", "mistake", "foot", "moves"))
+    check("  and does not need the detail line to be up",
+          C.showing(with_(advice="your move  Nf3",
+                          mistake="not Nh3, 1.0 worse")),
+          ("top", "hero", "advice", "mistake", "foot", "moves"))
+    check("  but is nothing on its own either, since it is only a warning"
+          " beside the move it is a warning against",
+          "mistake" in C.showing(with_(mistake="not Nh3, 1.0 worse")), False)
+    check("  and it is only there for about half of positions, so the row"
+          " comes down when there is nothing to say",
+          "mistake" in C.showing(with_(advice="your move  Nf3")), False)
 
     check("the clear button waits for an arrow to clear",
           "clear" in C.showing(with_(advice="your move  Nf3")), False)
@@ -178,8 +193,8 @@ def what_shows():
           ("top", "foot", "position", "moves"))
 
     everything = with_(setup=True, advice="your move  Nf3", detail="knight",
-                       note="board unclear", result="You won", arrow=True,
-                       position=True)
+                       mistake="not Nh3, 1.0 worse", note="board unclear",
+                       result="You won", arrow=True, position=True)
     check("with the drawer open, nothing is missing and nothing is doubled",
           C.showing(everything),
           tuple(name for name in C.STRIPES if name != "side"))
@@ -212,7 +227,8 @@ def the_side_prompt():
 
     app = types.SimpleNamespace(
         setup_open=False, arrow_drawn=False, lbl_coach=Blank(),
-        lbl_detail=Blank(), lbl_check=Blank(), lbl_result=Blank(),
+        lbl_detail=Blank(), lbl_mistake=Blank(), lbl_check=Blank(),
+        lbl_result=Blank(),
         show_board=types.SimpleNamespace(get=lambda: False),
         colour_choice=types.SimpleNamespace(get=lambda: "auto"))
     app.lbl_check.configure(text=waiting)
@@ -671,9 +687,11 @@ def viewer():
     app = types.SimpleNamespace(
         my_colour=None, flipped=False, region=None, coach=None, worker=None,
         coach_fen=None, arrow_cleared=None, note_until=0.0,
+        arrow_bad_uci=None, arrow_bad_fen=None,
         lbl_status=Blank(), lbl_result=Blank(), lbl_board=Blank(),
         lbl_check=Blank(), lbl_coach=Blank(), lbl_detail=Blank(),
-        lbl_file=Blank(), btn=Blank(), moves_box=Page(), board_box=Page(),
+        lbl_mistake=Blank(), lbl_file=Blank(), btn=Blank(),
+        moves_box=Page(), board_box=Page(),
         show_board=types.SimpleNamespace(get=lambda: False),
         coach_on=types.SimpleNamespace(get=lambda: False))
     app._hide_arrow = lambda: None
@@ -744,6 +762,7 @@ def coached(turn="white", final=True, over=False):
     app.my_colour = "white"
     drawn = []
     app._show_arrow = lambda uci, fen, mine: drawn.append((uci, fen, mine))
+    app._show_mistake = lambda uci, fen: drawn.append((uci, fen))
     app.coach.out.put(("advice", {
         "fen": "the position", "over": over, "final": final, "turn": turn,
         "san": "Ra8#", "uci": "a1a8", "text": "rook: a1 to a8, with check",
@@ -778,6 +797,43 @@ def the_answer():
           (app.lbl_coach.text, app.lbl_detail.text, drawn),
           ("the game is over", "", []))
 
+    print("\n-- and the warning that lands after it --------------------")
+    # The second answer is about the same position and turns up a second or so
+    # later, so the row it fills has to come down again by itself. Nothing else
+    # would take it down: for half of all positions there is no second answer
+    # to replace it with.
+    app, _ = coached()
+    app.coach.out.put(("mistake", {
+        "fen": "the position", "turn": "white", "san": "Nh3",
+        "uci": "g1h3", "text": "knight: g1 to h3", "worse": "1.0 worse",
+        "drop": 100}))
+    C.App._drain_coach(app)
+    check("the warning is one line, in the words of the side it is for",
+          app.lbl_mistake.text, "not Nh3, 1.0 worse")
+    check("  and the move to play is untouched above it",
+          app.lbl_coach.text, "your move  Ra8#")
+
+    app.coach_fen = "the next position"
+    app.coach.out.put(("advice", {
+        "fen": "the next position", "over": False, "final": True,
+        "turn": "white", "san": "e4", "uci": "e2e4", "text": "pawn: e2 to e4",
+        "score": "+0.3"}))
+    C.App._drain_coach(app)
+    check("advice about the next position takes the old warning down with it",
+          (app.lbl_coach.text, app.lbl_mistake.text), ("your move  e4", ""))
+
+    app, _ = coached()
+    app.coach.out.put(("mistake", {
+        "fen": "some other position", "turn": "white", "san": "Nh3",
+        "uci": "g1h3", "text": "knight: g1 to h3", "worse": "1.0 worse",
+        "drop": 100}))
+    C.App._drain_coach(app)
+    check("a warning about a position already played past is not shown at all",
+          app.lbl_mistake.text, "")
+
+    app, _ = coached(over=True)
+    check("nor is one left up over a finished game", app.lbl_mistake.text, "")
+
     app = viewer()
     app.coach = types.SimpleNamespace(out=queue.Queue())
     app.coach_on = types.SimpleNamespace(get=lambda: True, set=lambda v: None)
@@ -807,7 +863,7 @@ def switching_on(coach=None, asked=True, engine="stockfish"):
     app = types.SimpleNamespace(
         coach=coach, note_until=0.0, coach_fen=None,
         coach_on=Switch(True), lbl_coach=Blank(), lbl_detail=Blank(),
-        lbl_check=Blank())
+        lbl_mistake=Blank(), lbl_check=Blank())
     app._save_config = lambda: None
     app._hide_arrow = lambda: None
     app._think_seconds = lambda: 1.0

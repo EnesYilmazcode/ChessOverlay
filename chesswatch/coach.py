@@ -11,6 +11,11 @@ finished, so a first answer is on screen in a few hundredths of a second and
 improves from there. Every answer says whether it is the last word on that
 position: one with "final" false is the engine still looking, and may change.
 
+Once that answer is settled the same position is asked a second question: which
+move you might play instead that is really worse. That answer arrives on its
+own, as a "mistake" message, because it takes longer and the move to play must
+not wait for it.
+
 Stockfish is not in this repository. It is found at $STOCKFISH_PATH, in the
 sibling holochess/engine/stockfish folder, in chesswatch/engine, or on PATH.
 """
@@ -22,6 +27,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import namedtuple
 from pathlib import Path
 
 import chess
@@ -103,6 +109,150 @@ def read_score(score, turn):
     if cp is None:
         return ""
     return "%+.1f" % (cp / 100.0)
+
+
+# ------------------------------------------------------- the move to avoid
+
+# The second answer is a move worth being warned off: one you might actually
+# play, that a search says is really worse. That is a different problem from
+# finding the best move, and the obvious approach does not work.
+#
+# Measured over 40 positions from real recorded games: asking the engine for
+# its top five and taking the worst of them finds nothing to warn about in more
+# than half of them, because the fifth best move is only 0.32 behind the best at
+# the median. It also costs the move to play two to three plies of depth, since
+# every extra line comes out of the same search. So the top five are not it. The
+# best move is still found by the search it always was, on its own, and the move
+# to avoid is a second pass afterwards over every legal move.
+#
+# That pass is two searches and sometimes a third, and each one is there because
+# the one before it is not to be trusted on its own:
+#
+#   nominate  every legal move scored roughly, which is the only way to see the
+#             moves that are bad enough to be worth showing. A depth limit
+#             rather than a time limit, because lines searched to different
+#             depths cannot be compared with each other at all.
+#   verify    the shortlist searched properly. This is what picks the move, and
+#             two thirds of what nominate puts up does not survive it.
+#   confirm   only for an extraordinary claim. Measured over the same games,
+#             one red arrow in nine pointed at a move a longer search says is
+#             fine, and every one of those was a shallow search inventing a
+#             forced mate. A drop that rests on a mate, or one too large to
+#             believe, is put to a longer search on those two moves alone.
+#
+# What comes out of that: a red arrow on 53% of real positions, and on the 45
+# it was measured over, every single one of them was still at least half a pawn
+# worse under an independent two second search. The other 47% is not a failure
+# to find something. Half of it is positions where nothing tempting is really
+# worse, and the rest is positions already so won or lost that the difference
+# between two moves is not a lesson.
+
+Line = namedtuple("Line", "score move depth")
+
+MATE_CP = 100000        # what a mate is worth when two scores are subtracted
+SHORTLIST = 4           # how many nominees get searched properly
+NOMINATE_DROP = 70      # how far behind a move has to look to become one
+MIN_DROP = 90           # and how far behind it has to be once it is searched
+DECIDED = 500           # past this the game is over bar the moves
+HUGE = 800              # a drop this big is put to a longer search first
+
+# How deep the two cheap passes go. The think-time dial is what a player has
+# said about how much of a core this may hold, so it drives this pass too: a
+# shallower nominate and verify are cheaper and less certain, which is what the
+# dial means everywhere else. Measured at 1.0s: the whole pass takes 0.35s at
+# the median and 0.82s at the 90th percentile.
+DEPTHS = {0.3: (8, 12), 1.0: (10, 14), 2.5: (12, 16)}
+
+# A depth limit is open ended: a position that is hard to search would hold a
+# core for as long as it takes. This is the ceiling on one pass, as a multiple
+# of the think time. It almost never fires, and when it does the lines can come
+# back at different depths, which comparable() then refuses.
+CEILING = 2.0
+
+
+def depths_for(think_seconds):
+    """How deep the nominate and verify passes go, at this think time."""
+    return DEPTHS[nearest_think(think_seconds)]
+
+
+def value(score):
+    """A score as one number, so two of them can be subtracted. Mate is not a
+    number of pawns, so it becomes a number no evaluation can reach."""
+    return score.score(mate_score=MATE_CP)
+
+
+def comparable(lines):
+    """Whether these lines are evidence about each other.
+
+    Only if they were all searched to the same depth. A move that looks lost at
+    depth 12, held up against a best move seen at depth 20, is an artefact of
+    the two depths rather than a mistake.
+    """
+    return bool(lines) and len({line.depth for line in lines}) == 1
+
+
+def shortlist(board, best, rough, drop=NOMINATE_DROP, most=SHORTLIST):
+    """Which roughly scored moves are worth searching properly.
+
+    Captures and checks first, because that is where a player's eye goes and a
+    mistake nobody was ever tempted by teaches nothing. Then the rest in the
+    engine's own order, so what is left is the best of the bad moves rather
+    than the worst move on the board.
+    """
+    if not rough:
+        return []
+    top = value(rough[0].score)
+    bad = [line.move for line in rough
+           if line.move != best and top - value(line.score) >= drop]
+    tempting = [move for move in bad
+                if board.is_capture(move) or board.gives_check(move)]
+    return (tempting + [move for move in bad if move not in tempting])[:most]
+
+
+def most_tempting(drops, bar=MIN_DROP):
+    """The closest call among the moves that are really worse.
+
+    The smallest drop that still clears the bar, rather than the biggest drop
+    there is. A move a pawn behind the best is one a player is about to make;
+    the worst move on the board is one nobody was going to play.
+    """
+    for drop, move in sorted(drops, key=lambda pair: pair[0]):
+        if drop >= bar:
+            return drop, move
+    return None
+
+
+def already_decided(best, bad, margin=DECIDED):
+    """Whether the game is past the point where this is a lesson.
+
+    Five pawns up, every move wins and the difference between two of them is
+    noise; five pawns down, the same in reverse. Measured, this is 18% of real
+    positions, and warning in them was where the wording went silly: "not
+    e8=N+, 3.1 worse" about two moves that both promote and both win.
+    """
+    return value(bad) >= margin or value(best) <= -margin
+
+
+def needs_confirming(drop, best, bad, huge=HUGE):
+    """Whether a claim is extraordinary enough to be searched again.
+
+    Anything resting on a mate, and anything so large that a wrong search is
+    the likelier explanation: a shortlisted move rarely loses eight pawns.
+    """
+    return drop >= huge or best.is_mate() or bad.is_mate()
+
+
+def drop_words(best, bad):
+    """How much worse the second move is, in words rather than centipawns.
+
+    Mate is not a number of pawns. Subtracting the two scores would say
+    "989.4 worse", so a position that turns on a mate says so instead.
+    """
+    if best.is_mate() and best.mate() > 0 and not (bad.is_mate() and bad.mate() > 0):
+        return "throws away mate in %d" % best.mate()
+    if bad.is_mate() and bad.mate() < 0 and not (best.is_mate() and best.mate() < 0):
+        return "walks into mate in %d" % abs(bad.mate())
+    return "%.1f worse" % ((value(best) - value(bad)) / 100.0)
 
 
 class Coach(threading.Thread):
@@ -214,19 +364,32 @@ class Coach(threading.Thread):
         except ValueError:
             self._settle(fen)
             return
+        if not board.is_valid():
+            # Stockfish does not survive a position with a king missing off it:
+            # it exits with an access violation and takes the coaching half of
+            # the program down with it, since the thread cannot restart the
+            # engine. board_from_grid already refuses one, so this is the second
+            # line rather than the only one, and ask() takes any string.
+            self._settle(fen)
+            return
         if board.is_game_over():
             self._settle(fen)
             self.out.put(("advice", {"fen": fen, "over": True}))
             return
         try:
-            self._search(engine, board, fen)
+            best = self._search(engine, board, fen)
+            # Second, and only once the move to play is on screen. It is the
+            # answer that matters, and this pass costs about as long again.
+            if best is not None and not self._cut():
+                self._mistake(engine, board, fen, best)
         except Exception as exc:
             self.out.put(("engine", "Stockfish stopped: %s" % exc))
             self.stop_flag.set()
 
     def _search(self, engine, board, fen):
         """Read the engine to the end of its stream, putting the answer up as
-        it improves and marking the last one final.
+        it improves and marking the last one final. Hands back the move it
+        settled on, which is what the second pass is measured against.
 
         The loop is never broken out of. Whoever wants the search over calls
         stop() on the handle, the engine answers with its best move, and that
@@ -270,10 +433,110 @@ class Coach(threading.Thread):
                     # remembered as answered either.
                     cut = self._want is not None or self.stop_flag.is_set()
         if cut:
-            return
+            return None
         self._settle(fen)
-        if best is not None:
-            self._publish(board, fen, best, True)
+        if best is None:
+            return None
+        self._publish(board, fen, best, True)
+        return best["pv"][0]
+
+    def _cut(self):
+        """Whether there is any point carrying on. A question waiting means the
+        board on screen has moved past this position, so its answer would be
+        thrown away at the draw step anyway."""
+        with self._lock:
+            return self._want is not None or self.stop_flag.is_set()
+
+    def _scan(self, engine, board, limit, multipv, root_moves=None):
+        """Every line the engine has for these moves, best first.
+
+        Registered as the live search the same way the main one is, so a new
+        position stops it where it stands rather than at the end of the pass.
+        Read to the end of the stream for the same reason as _search: leaving
+        the iterator early leaves the engine searching.
+        """
+        with engine.analysis(board, limit, multipv=multipv,
+                             root_moves=root_moves) as an:
+            with self._lock:
+                self._live = an
+                stale = self._want is not None or self.stop_flag.is_set()
+            if stale:
+                self._end(an)
+            try:
+                for _ in an:
+                    pass
+                got = an.multipv
+            finally:
+                with self._lock:
+                    self._live = None
+        lines = [Line(info["score"].pov(board.turn), info["pv"][0],
+                      info.get("depth") or 0)
+                 for info in got if info.get("pv") and "score" in info]
+        lines.sort(key=lambda line: -value(line.score))
+        return lines
+
+    def _mistake(self, engine, board, fen, best):
+        """The move worth being warned off, published on its own.
+
+        Two searches and sometimes a third; the comment above Line says why each
+        one is there. Every one of them can be cut short by the next position
+        arriving, which is checked between them: this whole pass is about a
+        board that may well have been played past while it ran.
+        """
+        nominate, verify = depths_for(self.think_seconds)
+        ceiling = CEILING * self.think_seconds
+
+        rough = self._scan(engine, board,
+                           chess.engine.Limit(depth=nominate, time=ceiling),
+                           board.legal_moves.count())
+        if self._cut():
+            return
+        picks = shortlist(board, best, rough)
+        if not picks:
+            return                       # nothing here looks bad enough
+
+        roots = [best] + picks
+        fine = self._scan(engine, board,
+                          chess.engine.Limit(depth=verify, time=ceiling),
+                          len(roots), roots)
+        if self._cut() or not comparable(fine):
+            return
+        scores = {line.move: line.score for line in fine}
+        if best not in scores:
+            return
+        chosen = most_tempting([(value(scores[best]) - value(scores[move]), move)
+                                for move in picks if move in scores])
+        if chosen is None:
+            return                       # the proper search says they are fine
+        drop, move = chosen
+        if already_decided(scores[best], scores[move]):
+            return
+
+        if needs_confirming(drop, scores[best], scores[move]):
+            # On these two moves alone, with the same clock the move to play
+            # got, which is far deeper than the verify pass reached.
+            pair = self._scan(engine, board,
+                              chess.engine.Limit(time=self.think_seconds),
+                              2, [best, move])
+            if self._cut() or len(pair) != 2 or not comparable(pair):
+                return
+            scores = {line.move: line.score for line in pair}
+            if best not in scores or move not in scores:
+                return
+            drop = value(scores[best]) - value(scores[move])
+            if drop < MIN_DROP or already_decided(scores[best], scores[move]):
+                return                   # the longer look says it is fine
+
+        san, text, _ = describe(board, move, None)
+        self.out.put(("mistake", {
+            "fen": fen,
+            "turn": "white" if board.turn == chess.WHITE else "black",
+            "san": san,
+            "uci": move.uci(),
+            "text": text,
+            "worse": drop_words(scores[best], scores[move]),
+            "drop": drop,
+        }))
 
     def _publish(self, board, fen, info, final):
         move = info["pv"][0]

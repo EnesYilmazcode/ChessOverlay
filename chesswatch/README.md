@@ -41,10 +41,12 @@ about whatever position is on screen. The line above the moves reads:
 ```
 your move  Nf3
 knight: g1 to f3   +0.4
+not Nxe5, 3.5 worse
 ```
 
-Whose move it is and what to play is the large line, and the naming of the
-squares is the small print under it.
+Whose move it is and what to play is the large line, the naming of the squares
+is the small print under it, and the red line is the move to avoid, which is
+the next section.
 
 Untick **Coach** to run as a recorder and start no engine. A machine with no
 Stockfish on it does that anyway, and says so once on the note line rather than
@@ -74,6 +76,65 @@ You supply the engine. `coach.py` looks at `$STOCKFISH_PATH`, then
 `chesswatch\engine\stockfish`, then the sibling `holochess\engine\stockfish`,
 then your `PATH`. Without one the switch says so and turns itself back off.
 
+## The move to avoid
+
+The move to play on its own tells you what a stronger player would do. The red
+line tells you what you were probably about to do instead, which is the half a
+lesson is made of. It reads `not Nxe5, 3.5 worse` on your own move and
+`their slip Nxe4, 3.8 worse` on your opponent's.
+
+It is a second answer about the same position and it arrives about half a
+second after the first. The move to play never waits on it.
+
+**Finding it is not the same problem as finding the best move**, and the
+obvious approach does not work. Asking Stockfish for its top five and taking
+the worst of them, measured over 40 positions from real recorded games, finds
+nothing worth warning about in more than half of them: the fifth best move is
+only 0.32 behind the best at the median. It also costs the move to play two to
+three plies of depth, because every extra line comes out of the same search.
+
+So the search that finds the move to play is left exactly as it was, and the
+move to avoid is a second pass afterwards over **every legal move**:
+
+| Pass | What it does | Why it is there |
+| --- | --- | --- |
+| nominate | every legal move scored roughly, at a fixed depth | the only way to see the moves that are bad enough to be worth showing at all |
+| verify | a shortlist of at most four searched properly | two thirds of what nominate puts up does not survive it |
+| confirm | one move against the best move, on a longer clock | only for an extraordinary claim, and see below |
+
+Each pass is bounded by a **depth** rather than a time, because two lines
+searched to different depths cannot be compared with each other at all: a move
+that looks lost at depth 12, held up against a best move seen at depth 20, is
+an artefact of the two depths and not a mistake. There is still a wall-clock
+ceiling on each pass, and when it fires the answer is thrown away rather than
+shown, for the same reason.
+
+The shortlist is **captures and checks first**, because that is where a
+player's eye goes and a mistake nobody was tempted by teaches nothing. Of what
+survives, the move shown is the **smallest drop that still clears the bar**
+rather than the biggest: a move a pawn behind the best is one you are about to
+play, and the worst move on the board is one nobody was going to.
+
+Nothing is shown in a position **already decided**. Five pawns up every move
+wins, five pawns down every move loses, and the difference between two of them
+is not a lesson. That is 18% of real positions, and warning in them was where
+the wording went silly: "not e8=N+, 3.1 worse" about two moves that both
+promote and both win.
+
+The confirm pass exists because of one measured failure. Without it, one red
+arrow in nine pointed at a move a longer search says is fine, and **every one
+of those was a shallow search inventing a forced mate that is not there**. So a
+drop that rests on a mate, or one too large to believe, is put to a longer
+search on those two moves alone before anything is drawn.
+
+What that adds up to, measured over 45 positions from real games: a red arrow
+on 53% of them, and every single one of those was still at least half a pawn
+worse under an independent two second search. The other 47% is not a failure to
+find something. Half of it is positions where nothing tempting is really worse,
+and the rest is positions already won or lost. The pass costs 0.35s at the
+median and 0.82s at the 90th percentile on top of the think time, and the
+**Think** dial drives how deep it goes, exactly as it drives everything else.
+
 ## The arrow on the board
 
 Tick **Arrow** as well and the suggestion is drawn on the board itself, on top
@@ -95,15 +156,30 @@ answer to your opponent's position is what they are threatening, which is worth
 seeing, so the two are told apart by colour: cyan is your move, violet is
 theirs. The label underneath still says which one it is.
 
+The move to avoid is drawn beside it in red, thinner, and underneath it where
+the two cross, so the move to play is never the broken one. It is one colour
+for both sides: whose move it is has already been said twice above the board,
+and a second pair of reds would be two more things to learn before the picture
+means anything.
+
 The awkward part is that the recorder is reading the same pixels the arrow is
 painting on, and it must not be able to corrupt a game.
 
 `read_occupancy` converts the board to grey and counts only pixels brighter
 than 244 or darker than 70. Everything in between is already thrown away, which
-is how highlights, coordinate labels and the check marker are ignored. So both
-arrow colours land in that gap. Cyan greys to 165 and violet to 123, and
-blended at 85 per cent over pure white or pure black each one stays inside the
-band on its own account, not on the other's. The reader cannot see either.
+is how highlights, coordinate labels and the check marker are ignored. So all
+three arrow colours land in that gap. Cyan greys to 165, violet to 123 and the
+red to 113, and blended at 85 per cent over pure white or pure black each one
+stays inside the band on its own account and not on the others'. The reader
+cannot see any of them.
+
+That band is also why the red is not as dark as a warning colour wants to be.
+The window's alpha puts a floor of grey 83 on anything drawn here, and a proper
+dark red is under it: `#8B0000` greys to 42 and even pure `#FF0000` to 76, so
+either of them would be read as a black piece wherever the arrow crossed a
+square. `#E04242` is about as deep as a red can go and still be invisible to
+the reader, and it clears the floor by 26 greys where the violet clears it by
+34.
 
 The one thing arrow coverage can still do is change what a square reads as: a
 white pawn with the shaft painted down its file can lose enough bright pixels
@@ -116,8 +192,17 @@ the crowded ranks, arrows landing on pieces, at 664px and again at 240px, in
 both colours: every one of them is confirmed to be on the board, not one of
 them changed a single square, and every pixel any of them touched is confirmed
 to have landed between the two cutoffs, cyan on greys 142 to 179 and violet on
-106 to 143. Then it plays a whole game with an arrow up for every frame,
-changing colour every half move, and checks the moves came out right.
+106 to 143.
+
+Then all of it again with **two arrows up at once**, which is what is on the
+board for most of a game and which neither single-colour sweep covers: a square
+the move to play only clips can be crossed by the move to avoid as well, and
+what the reader has to survive is the pair. Sixteen pairs, on the big board and
+the small one, none of them changed a square, and the pair lands on greys 99 to
+179. The second arrow is confirmed to have added pixels to the first rather
+than being drawn on top of it, or a pair sweep would pass on one arrow drawn
+twice. Then it plays a whole game with both arrows up for every frame, changing
+colour every half move, and checks the moves came out right.
 
 The check that the arrow is really there is the important one. Without it an
 overlay that drew nothing at all would pass every other check in the file. It
@@ -497,13 +582,15 @@ rectangle is in use.
 ## Checking it still works
 
     python selftest.py     147 checks, including real screenshots
-    python piecetest.py     62 checks on the piece reader under a bad capture
-    python positiontest.py  29 checks on the whole board solver, no pixels
-    python enrolltest.py   212 checks on teaching the pieces and on the arrow
-    python layouttest.py    98 checks on what the window shows and how wide
-    python coachtest.py     53 checks on the engine wrapper and its label,
-                            43 without a display and 31 without Stockfish
-    python overlaytest.py   21 checks that the arrows cannot corrupt a reading
+    python piecetest.py     66 checks on the piece reader under a bad capture
+    python positiontest.py  39 checks on the whole board solver, no pixels
+    python enrolltest.py   224 checks on teaching the pieces and on the arrows
+    python layouttest.py   115 checks on what the window shows and how wide
+    python coachtest.py     86 checks on the engine wrapper and the lines it
+                            feeds, 77 without a display and 56 without
+                            Stockfish
+    python overlaytest.py   26 checks that the arrows cannot corrupt a reading,
+                            28 with --on-screen
     python settletest.py    move animation, with the screen on a clock
     python banktest.py      33 checks on choosing a piece set
     python livetest.py      full loop through the real capture worker
