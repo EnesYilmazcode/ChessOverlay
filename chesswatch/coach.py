@@ -153,6 +153,7 @@ MATE_CP = 100000        # what a mate is worth when two scores are subtracted
 SHORTLIST = 4           # how many nominees get searched properly
 NOMINATE_DROP = 70      # how far behind a move has to look to become one
 MIN_DROP = 90           # and how far behind it has to be once it is searched
+SOFT_DROP = 20          # below this two moves are the same move, see standing()
 DECIDED = 500           # past this the game is over bar the moves
 HUGE = 800              # a drop this big is put to a longer search first
 
@@ -269,6 +270,34 @@ def most_tempting(drops, bar=MIN_DROP):
         if drop >= bar:
             return drop, move
     return None
+
+
+def standing(best, bad, margin=DECIDED):
+    """Which of the three things a warning can be, given the two scores.
+
+    A red arrow used to be one thing and the rest was silence, and the silence
+    was 45% of turns. It is three things instead, because the reasons the pass
+    used to give up are not the same reason and do not deserve the same wording:
+
+      "mistake"  a real one. Far enough behind to matter, in a game still worth
+                 playing well. This is the only one the old pass drew.
+      "weaker"   worse, but not a mistake. Half a pawn is not something to be
+                 warned off, so it does not say not.
+      "decided"  five pawns up or down, where every move wins or every move
+                 loses. Warning here is what produced "not e8=N+, 3.1 worse"
+                 about two moves that both promote and both win, so the wording
+                 says which way the game already went instead.
+
+    None means the two moves are the same move and there is nothing to draw.
+    """
+    drop = value(best) - value(bad)
+    if drop < SOFT_DROP:
+        return None
+    if value(bad) >= margin:
+        return "decided"                 # winning even after the worse move
+    if value(best) <= -margin:
+        return "decided"                 # losing even after the better one
+    return "mistake" if drop >= MIN_DROP else "weaker"
 
 
 def already_decided(best, bad, margin=DECIDED):
@@ -588,13 +617,16 @@ class Coach(threading.Thread):
         scores = {line.move: line.score for line in fine}
         if best not in scores:
             return
-        chosen = most_tempting([(value(scores[best]) - value(scores[move]), move)
-                                for move in picks if move in scores])
+        drops = [(value(scores[best]) - value(scores[move]), move)
+                 for move in picks if move in scores]
+        # The closest real mistake if there is one, and otherwise the closest
+        # move that is worse at all. Asking twice rather than once with the low
+        # bar, because when a real mistake is on the board it is the one worth
+        # drawing even though something nearer the best move also qualifies.
+        chosen = most_tempting(drops) or most_tempting(drops, bar=SOFT_DROP)
         if chosen is None:
-            return                       # the proper search says they are fine
+            return                       # nothing here is worse than the best
         drop, move = chosen
-        if already_decided(scores[best], scores[move]):
-            return
 
         if needs_confirming(drop, scores[best], scores[move]):
             # On these two moves alone, with the same clock the move to play
@@ -608,9 +640,10 @@ class Coach(threading.Thread):
             if best not in scores or move not in scores:
                 return
             drop = value(scores[best]) - value(scores[move])
-            if drop < MIN_DROP or already_decided(scores[best], scores[move]):
-                return                   # the longer look says it is fine
 
+        kind = standing(scores[best], scores[move])
+        if kind is None:
+            return                       # the longer look says it is the same
         san, text, _ = describe(board, move, None)
         self.out.put(("mistake", {
             "fen": fen,
@@ -620,6 +653,8 @@ class Coach(threading.Thread):
             "text": text,
             "worse": drop_words(scores[best], scores[move]),
             "drop": drop,
+            "kind": kind,
+            "winning": value(scores[best]) > 0,
         }))
 
     def _publish(self, board, fen, info, final):

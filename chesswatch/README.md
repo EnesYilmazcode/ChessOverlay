@@ -142,11 +142,24 @@ games that are already over.** `UCI_Elo` cannot go below 1320 and adds nothing
 over Skill Level 0, zero positions in sixty, so there is one weak engine and
 not two.
 
-Nothing is shown in a position **already decided**. Five pawns up every move
-wins, five pawns down every move loses, and the difference between two of them
-is not a lesson. That is 18% of real positions, and warning in them was where
-the wording went silly: "not e8=N+, 3.1 worse" about two moves that both
-promote and both win.
+A warning is one of **three things**, and the wording is what tells them apart.
+It used to be one thing and silence, and the silence was 45% of turns.
+
+| | when | reads |
+| --- | --- | --- |
+| mistake | 0.9+ behind, game still worth playing well | `not Nxe5, 3.5 worse` |
+| weaker | worse, but not by enough to be a mistake | `Nxe5 is 0.4 worse` |
+| decided | five pawns up or down either way | `Nxe5, 3.1 worse, winning anyway` |
+
+Only a real mistake gets told **not**. Saying it about a move half a pawn
+behind teaches that everything except the engine's first choice is wrong, and
+saying it in a game already won is what produced "not e8=N+, 3.1 worse" about
+two moves that both promote and both win. The arrow is drawn in all three
+cases, because the move really is the worse one and seeing it is the point;
+what changes is whether the line claims it matters.
+
+Below **0.2 pawns** nothing is drawn at all, because at that distance the two
+moves are the same move and an arrow would be inventing a difference.
 
 The confirm pass exists because of one measured failure. Without it, one red
 arrow in nine pointed at a move a longer search says is fine, and **every one
@@ -155,13 +168,18 @@ drop that rests on a mate, or one too large to believe, is put to a longer
 search on those two moves alone before anything is drawn.
 
 What that adds up to, measured by driving the real `Coach` over 60 positions
-from games/: a red arrow on **55%** of them, 53% without the tempt pass, and a
-median 1.50 pawns worse with nothing under 0.95. The other 45% is not a failure
-to find something. Roughly half is positions where nothing tempting is really
-worse, and the rest is positions already won or lost. Getting closer to every
-turn than that means either dropping `MIN_DROP` below 0.9, which points the
-arrow at moves that are not mistakes, or warning inside decided games, which is
-where the wording went silly in the first place. The pass costs 0.35s at the
+from games/: a red arrow on **82%** of them, made of 33 real mistakes, 15
+decided games and 1 merely weaker, at a median 1.47 pawns.
+
+The 33 is the number to watch, because it is the same 33 the pass found when it
+drew on 55% of turns and stayed silent the rest. **Widening it did not cost a
+single real mistake**; it only stopped throwing away the 16 positions where
+there was a worse move to show and no honest way to call it a blunder.
+
+The remaining 18% is positions where nothing on the shortlist is even 0.2
+behind the best move. Filling those in means nominating moves less than 0.7
+behind at rough depth, which is more search for arrows pointing at moves that
+are equal in every way that matters. The pass costs 0.35s at the
 median and 0.82s at the 90th percentile on top of the think time, and the
 **Think** dial drives how deep it goes, exactly as it drives everything else.
 

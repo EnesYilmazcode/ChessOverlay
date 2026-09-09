@@ -1105,7 +1105,7 @@ def coach_side():
     print("\n-- and the warning the second answer brings ---------------")
     import chesswatch as CW
 
-    def warned(turn, yours, fen=FEN_A):
+    def warned(turn, yours, fen=FEN_A, kind="mistake"):
         app = types.SimpleNamespace(
             coach=types.SimpleNamespace(out=queue.Queue()),
             coach_on=types.SimpleNamespace(get=lambda: True, set=lambda v: None),
@@ -1119,12 +1119,18 @@ def coach_side():
         app._sync_arrow = lambda: CW.App._sync_arrow(app)
         app.coach.out.put(("mistake", {
             "fen": fen, "turn": turn, "san": "Nh3", "uci": "g1h3",
-            "text": "knight: g1 to h3", "worse": "1.0 worse", "drop": 100}))
+            "text": "knight: g1 to h3", "worse": "1.0 worse", "drop": 100,
+            "kind": kind, "winning": True}))
         CW.App._drain_coach(app)
         return app.arrow_bad_uci, app.lbl_mistake.text
 
     check("a warning about the position on screen is kept and worded for you",
           warned("white", "white"), ("g1h3", "not Nh3, 1.0 worse"))
+    check("  a move that is only a little worse is not called a mistake",
+          warned("white", "white", kind="weaker"), ("g1h3", "Nh3 is 1.0 worse"))
+    check("  and one in a game already won says so instead",
+          warned("white", "white", kind="decided"),
+          ("g1h3", "Nh3, 1.0 worse, winning anyway"))
     check("  one for the opponent's side is dropped, like the advice",
           warned("black", "white"), (None, ""))
     check("a warning about a position already played past is dropped",

@@ -559,8 +559,20 @@ def my_turn(fen, colour):
     return len(fields) > 1 and fields[1] == ("w" if colour == "white" else "b")
 
 
-def mistake_line(san, worse):
-    """The warning, in one line under the move to play."""
+def mistake_line(san, worse, kind="mistake", winning=True):
+    """The line under the move to play, worded for what it actually is.
+
+    Only a real mistake gets told "not". A move half a pawn behind is worse and
+    not a blunder, and saying not about it teaches that everything except the
+    engine's first choice is wrong. In a game already won or lost the move is
+    still the worse one, so it is still drawn, but the line says which way the
+    game went rather than pretending the difference decides anything.
+    """
+    if kind == "weaker":
+        return "%s is %s" % (san, worse)
+    if kind == "decided":
+        return "%s, %s, %s anyway" % (san, worse,
+                                      "winning" if winning else "losing")
     return "not %s, %s" % (san, worse)
 
 
@@ -1241,7 +1253,9 @@ class App:
                         continue
                     self._show_mistake(payload["uci"], payload["fen"])
                     self.lbl_mistake.configure(
-                        text=mistake_line(payload["san"], payload["worse"]))
+                        text=mistake_line(payload["san"], payload["worse"],
+                                          payload.get("kind", "mistake"),
+                                          payload.get("winning", True)))
         except queue.Empty:
             pass
 

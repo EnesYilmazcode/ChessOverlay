@@ -302,7 +302,10 @@ arrives about half a second after the first and the move to play never waits on
 it. Finding it runs a second Stockfish at Skill Level 0 alongside the real one,
 because a ranking sorts moves by strength and has no opinion about which of
 them is tempting, and the move a weak player picks is the definition of the
-move a weak player was tempted by. It shows on 55% of positions; the
+move a weak player was tempted by. It shows on 82% of positions, and the line under it says which of three things
+it is: `not Nxe5, 3.5 worse` for a real mistake, `Nxe5 is 0.4 worse` for a move
+that is only weaker, and `Nxe5, 3.1 worse, winning anyway` in a game already
+decided. Only the first gets told *not*. The
 [chesswatch README](chesswatch/README.md#the-move-to-avoid) has the measured
 reason it is not all of them.
 

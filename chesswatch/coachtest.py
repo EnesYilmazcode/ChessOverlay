@@ -285,6 +285,24 @@ def mistake_rules():
     check("no second engine leaves the shortlist as it was",
           CO.with_tempted(caps, best, None), caps)
 
+    # Three things, not one thing and silence. The wording depends on which,
+    # because "not" about a move half a pawn behind teaches that everything
+    # except the engine's first choice is wrong.
+    def sc(cp):
+        return chess.engine.Cp(cp)
+    check("far enough behind, in a game still worth playing, is a mistake",
+          CO.standing(sc(30), sc(-120)), "mistake")
+    check("  worse but not by much is weaker, not a mistake",
+          CO.standing(sc(30), sc(-20)), "weaker")
+    check("  and two moves that are the same move are nothing at all",
+          CO.standing(sc(30), sc(20)), None)
+    check("a game already won is decided, however big the drop",
+          CO.standing(sc(900), sc(600)), "decided")
+    check("  and so is one already lost",
+          CO.standing(sc(-700), sc(-900)), "decided")
+    check("  the bar for decided is the worse move still winning, not the best",
+          CO.standing(sc(700), sc(200)), "mistake")
+
     check("the warning is the closest call that still clears the bar",
           CO.most_tempting([(400, chess.Move.from_uci("c6d4")),
                             (150, chess.Move.from_uci("g8h6")),
