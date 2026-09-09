@@ -51,6 +51,9 @@ tkinter.Toplevel = _forbid
 
 import chesswatch as C            # noqa: E402  after the guard, on purpose
 
+START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+AFTER_E4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
+
 R = []
 
 
@@ -344,7 +347,7 @@ def available():
 # them at. The longest SAN there is has a piece, both source coordinates, a
 # capture, a destination and a mark; the move line also has a wraplength, so a
 # longer one folds rather than pushing the clear button off the row.
-WORST = {"lbl_coach": "their move  Qa1xd4#"}
+WORST = {"lbl_coach": "your move  Qa1xd4#"}
 
 
 class Unreadable(Exception):
@@ -752,6 +755,50 @@ def the_lines():
           app.lbl_board.text, "no board on screen")
 
 
+def whose_turn():
+    print("\n-- nothing is asked while it is not your move -------------")
+    check("your own turn is a turn", C.my_turn(START_FEN, "white"), True)
+    check("  and the same position is not, playing black",
+          C.my_turn(START_FEN, "black"), False)
+    check("  which way round follows the side you play",
+          (C.my_turn(AFTER_E4, "black"), C.my_turn(AFTER_E4, "white")),
+          (True, False))
+    check("not knowing your colour is not a turn either",
+          [C.my_turn(START_FEN, c) for c in (None, "", "auto")],
+          [False, False, False])
+    check("  nor is having no position at all",
+          [C.my_turn(f, "white") for f in (None, "", "rubbish")],
+          [False, False, False])
+
+    def rendered(fen, colour, result="*"):
+        """The real _render, with a coach that writes down what it was asked."""
+        app = viewer()
+        asked = []
+        app.coach = types.SimpleNamespace(out=queue.Queue(),
+                                          ask=lambda f: asked.append(f))
+        app.coach_on = types.SimpleNamespace(get=lambda: True)
+        app.my_colour = colour
+        app._render(frame(fen=fen, color=colour, result=result,
+                          region=(0, 0, 400, 400)))
+        return asked, app.lbl_coach.text, app.coach_fen
+
+    asked, line, held = rendered(START_FEN, "white")
+    check("your own turn is asked about", (asked, held),
+          ([START_FEN], START_FEN))
+    check("  and the move line is left for the answer to fill in", line, "")
+
+    asked, line, held = rendered(START_FEN, "black")
+    check("their turn is not asked about at all", (asked, held), ([], None))
+    check("  and the row stays up saying so, rather than the window changing"
+          " height twice a move", line, "their turn")
+
+    asked, line, held = rendered(START_FEN, None)
+    check("nor is a board whose orientation has not settled",
+          (asked, held), ([], None))
+    asked, line, held = rendered(START_FEN, "white", result="1-0")
+    check("nor a game that is over", (asked, line, held), ([], "", None))
+
+
 def coached(turn="white", final=True, over=False):
     """App._drain_coach with one answer waiting on the queue. Returns the app
     and the arrow it asked for, if it asked for one."""
@@ -761,7 +808,7 @@ def coached(turn="white", final=True, over=False):
     app.coach_fen = "the position"
     app.my_colour = "white"
     drawn = []
-    app._show_arrow = lambda uci, fen, mine: drawn.append((uci, fen, mine))
+    app._show_arrow = lambda uci, fen: drawn.append((uci, fen))
     app._show_mistake = lambda uci, fen: drawn.append((uci, fen))
     app.coach.out.put(("advice", {
         "fen": "the position", "over": over, "final": final, "turn": turn,
@@ -778,13 +825,15 @@ def the_answer():
           app.lbl_coach.text, "your move  Ra8#")
     check("  the naming of the squares and the score are under it",
           app.lbl_detail.text, "rook: a1 to a8, with check   mate in 1")
-    check("  and the arrow is asked for in your colour",
-          drawn, [("a1a8", "the position", True)])
+    check("  and the arrow is asked for",
+          drawn, [("a1a8", "the position")])
 
+    # Both arrows are about a move you are the one to make, so an answer for
+    # the opponent's side is one the board has moved past. Drawing it was the
+    # bug: the opponent's plan on your board, over your own turn.
     app, drawn = coached(turn="black")
-    check("their best move is drawn too, in the other colour",
-          (app.lbl_coach.text, drawn),
-          ("their move  Ra8#", [("a1a8", "the position", False)]))
+    check("an answer for the opponent's side is dropped, arrow and all",
+          (app.lbl_coach.text, drawn), ("", []))
 
     app, drawn = coached(final=False)
     check("an answer the engine has not finished with is marked",
@@ -1152,6 +1201,7 @@ def main():
         every_stripe_is_built()
         the_pack_order()
         the_lines()
+        whose_turn()
         the_answer()
         the_first_run()
         the_filename()

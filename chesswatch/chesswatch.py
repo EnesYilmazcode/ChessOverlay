@@ -540,15 +540,28 @@ STRIPES = ("top", "setup", "hero", "clear", "advice", "detail", "mistake",
 UNSETTLED = "which way up"
 
 
-def mistake_line(san, worse, mine):
-    """The warning, in one line under the move to play.
+def my_turn(fen, colour):
+    """Whether the position on screen is one you are the one to move in.
 
-    Whose move it is decides the first word and nothing else. On your own move
-    it is an instruction; on theirs the same move is a thing that might happen,
-    and "not Nxe5" over the opponent's turn reads as advice to the wrong
-    player.
+    Both arrows are about a move you get to make, so this is what decides
+    whether there is anything to ask the engine at all. Read off the fen's own
+    side-to-move field rather than by building a board, because it is asked on
+    every frame.
+
+    Not knowing which colour you are is not a turn. The window already has a
+    line saying it cannot tell which way up the board is, and the control that
+    answers it, so the honest thing is to advise nobody until one of them has
+    settled it rather than to guess and be wrong half the time.
     """
-    return "%s %s, %s" % ("not" if mine else "their slip", san, worse)
+    if not fen or colour not in ("white", "black"):
+        return False
+    fields = fen.split(" ")
+    return len(fields) > 1 and fields[1] == ("w" if colour == "white" else "b")
+
+
+def mistake_line(san, worse):
+    """The warning, in one line under the move to play."""
+    return "not %s, %s" % (san, worse)
 
 
 def showing(state):
@@ -609,7 +622,6 @@ class App:
         self.arrow_fen = None        # the position it named it for
         self.arrow_bad_uci = None    # the move to avoid, which lands later
         self.arrow_bad_fen = None    # and the position that one is about
-        self.arrow_mine = True       # and whose move it was, which is the colour
         self.arrow_cleared = None    # a position whose arrow was cleared by hand
         self.arrow_drawn = False     # whether one is on the board right now
         self.teacher = None          # the teach-the-pieces window, if it is open
@@ -743,7 +755,7 @@ class App:
 
         # The move to avoid, in the colour it is drawn on the board in, so the
         # line and the arrow are obviously the same thing being said twice.
-        self.lbl_mistake = tk.Label(self.root, text="", bg=BG, fg=OV.MISTAKE,
+        self.lbl_mistake = tk.Label(self.root, text="", bg=BG, fg=OV.AVOID,
                                     font=("Segoe UI", 9), anchor="w")
         pack["mistake"] = (self.lbl_mistake, dict(fill="x", padx=12))
 
@@ -1012,10 +1024,9 @@ class App:
             self.arrow = OV.Arrow(self.root)
         self._sync_arrow()
 
-    def _show_arrow(self, uci, fen, mine=True):
-        """Remember what the engine said, which position it said it about and
-        whose move it was. Whether that is still worth drawing is _sync_arrow's
-        decision, and mine is which of the two colours it gets.
+    def _show_arrow(self, uci, fen):
+        """Remember what the engine said and which position it said it about.
+        Whether that is still worth drawing is _sync_arrow's decision.
 
         fen has no default on purpose. None is also the "nothing cleared"
         sentinel, so a call that forgot to pass one would suppress the arrow
@@ -1023,7 +1034,6 @@ class App:
         """
         self.arrow_uci = uci
         self.arrow_fen = fen
-        self.arrow_mine = mine
         self._sync_arrow()
 
     def _show_mistake(self, uci, fen):
@@ -1061,7 +1071,7 @@ class App:
             return
         want = OV.wanted(self.arrow_on.get(), self.region, self.coach_fen,
                          self.arrow_fen, self.arrow_uci, self.arrow_cleared,
-                         self.flipped, self.arrow_mine,
+                         self.flipped,
                          self.arrow_bad_uci, self.arrow_bad_fen)
         # The clear button is only on screen while there is something drawn
         # for it to take away, which is this.
@@ -1069,8 +1079,8 @@ class App:
         if want is None:
             self.arrow.hide()
             return
-        region, uci, flipped, mine, bad = want
-        self.arrow.show(region, chess.Move.from_uci(uci), flipped, mine,
+        region, uci, flipped, bad = want
+        self.arrow.show(region, chess.Move.from_uci(uci), flipped,
                         chess.Move.from_uci(bad) if bad else None)
 
     def _clear_arrows(self):
@@ -1203,13 +1213,12 @@ class App:
                     # for or does not exist, which is half of all positions.
                     if payload["fen"] != self.arrow_bad_fen:
                         self.lbl_mistake.configure(text="")
-                    # Their best move is what they are threatening, so it is
-                    # drawn too, in the other colour. Until the orientation
-                    # settles my_colour is None and nothing is yours yet, which
-                    # puts the arrow in their colour and the label agrees.
-                    mine = payload["turn"] == self.my_colour
-                    whose = "your move" if mine else "their move"
-                    self._show_arrow(payload["uci"], payload["fen"], mine)
+                    # Nothing is ever asked about the opponent's turn, so an
+                    # answer for their side is one the board has moved past
+                    # while it was being worked out.
+                    if payload["turn"] != self.my_colour:
+                        continue
+                    self._show_arrow(payload["uci"], payload["fen"])
                     # Whose move it is and what to play, large, on their own.
                     # The naming of the squares, the score, and the mark that
                     # says the engine has not finished are the small print
@@ -1220,20 +1229,19 @@ class App:
                     # what an unfinished answer is hedging is the score, which
                     # is already on that line.
                     self.lbl_coach.configure(
-                        text="%s  %s" % (whose, payload["san"]),
-                        fg=ACCENT if mine else MUTED)
+                        text="your move  %s" % payload["san"], fg=ACCENT)
                     self.lbl_detail.configure(
                         text="   ".join(part for part in
                                         (payload["text"], payload["score"],
                                          "" if payload.get("final") else "...")
                                         if part))
                 elif kind == "mistake" and self.coach_on.get():
-                    if payload["fen"] != self.coach_fen:
+                    if (payload["fen"] != self.coach_fen
+                            or payload["turn"] != self.my_colour):
                         continue
                     self._show_mistake(payload["uci"], payload["fen"])
                     self.lbl_mistake.configure(
-                        text=mistake_line(payload["san"], payload["worse"],
-                                          payload["turn"] == self.my_colour))
+                        text=mistake_line(payload["san"], payload["worse"]))
         except queue.Empty:
             pass
 
@@ -1328,11 +1336,18 @@ class App:
             self.note_until = time.time() + NOTE_SECONDS
 
         if self.coach is not None and self.coach_on.get():
-            if f.get("fen") and f["result"] == "*":
+            playing = f["result"] == "*"
+            if playing and my_turn(f.get("fen"), self.my_colour):
                 self.coach.ask(f["fen"])
                 self.coach_fen = f["fen"]
             else:
-                self.lbl_coach.configure(text="")
+                # A move you cannot make is not advice. While they are thinking
+                # the board is left alone and the engine goes idle, and the row
+                # stays up saying why rather than the window changing height
+                # twice every move.
+                self.lbl_coach.configure(
+                    text="their turn" if playing and f.get("fen") else "",
+                    fg=MUTED)
                 self.lbl_detail.configure(text="")
                 self.lbl_mistake.configure(text="")
                 self.coach_fen = None

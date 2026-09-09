@@ -437,20 +437,20 @@ def squares(board_img, size=None):
 # ---------------------------------------------- the program's own coach arrow
 
 def _arrow_paint():
-    """The colours the arrow is painted in and how solidly, read off overlay
-    rather than copied into here, so a third colour cannot be added there
-    without this seeing it.
+    """The colours the arrows are painted in and how solidly, read off overlay
+    rather than copied into here, so a colour cannot be added there without
+    this seeing it.
 
     overlay is a GUI module. Importing it defines constants and functions and
     opens nothing, but a machine with no tkinter at all should still be able to
-    read a board, so the fallback repeats the two colours and piecetest checks
-    that the repeat still agrees with overlay.
+    read a board, so the fallback repeats the colours and piecetest checks that
+    the repeat still agrees with overlay.
     """
     try:
         import overlay as OV
-        names, alpha = (OV.YOURS, OV.THEIRS), OV.ALPHA
+        names, alpha = (OV.PLAY, OV.AVOID), OV.ALPHA
     except Exception:
-        names, alpha = ("#00E8FF", "#A64BFF"), 0.85
+        names, alpha = ("#00E8FF", "#E04242"), 0.85
     out = []
     for name in names:
         h = name.lstrip("#")

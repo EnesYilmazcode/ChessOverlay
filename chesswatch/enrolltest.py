@@ -971,12 +971,12 @@ def labels():
 def arrow():
     print("\n-- the arrow follows the position, not the last reply ----")
     # wanted(on, region, position, advice_for, advice_uci, cleared, flipped,
-    #        mine, bad_uci, bad_for)
+    #        bad_uci, bad_for)
     check("nothing is drawn before the engine has answered",
           OV.wanted(True, R1, FEN_A, None, None, None), None)
     check("advice for the position on screen is drawn",
           OV.wanted(True, R1, FEN_A, FEN_A, "e2e4", None),
-          (R1, "e2e4", False, True, None))
+          (R1, "e2e4", False, None))
 
     # Fault one. The move lands, the engine has not answered yet, and the old
     # arrow used to stay drawn on the new position until it did.
@@ -986,13 +986,13 @@ def arrow():
           OV.wanted(True, R1, FEN_C, FEN_B, "e7e5", None), None)
     check("  advice for the position now on screen is what comes back",
           OV.wanted(True, R1, FEN_B, FEN_B, "g1f3", None),
-          (R1, "g1f3", False, True, None))
+          (R1, "g1f3", False, None))
 
     # Fault two. The window moved or was resized. The advice is still true, so
     # the arrow moves with the board rather than hiding or staying put.
     check("moving the board moves the arrow with it",
           OV.wanted(True, R2, FEN_B, FEN_B, "g1f3", None),
-          (R2, "g1f3", False, True, None))
+          (R2, "g1f3", False, None))
     check("  and turning the board round is carried through",
           OV.wanted(True, R1, FEN_B, FEN_B, "g1f3", None, True)[2], True)
     check("  a region change is a different answer, so a caller cannot miss it",
@@ -1015,57 +1015,40 @@ def arrow():
           OV.wanted(True, R2, FEN_B, FEN_B, "g1f3", FEN_B), None)
     check("the next move brings arrows back without another click",
           OV.wanted(True, R1, FEN_C, FEN_C, "b1c3", FEN_B),
-          (R1, "b1c3", False, True, None))
-
-    # The opponent's move is drawn too, in the other colour. Which side the
-    # advice was for travels with it, so the answer says what to paint and the
-    # caller does not work it out again a frame later.
-    print("\n-- whose move it is, which is the colour ------------------")
-    check("your move comes back as yours",
-          OV.wanted(True, R1, FEN_B, FEN_B, "g1f3", None, False, True)[3], True)
-    check("and theirs as theirs",
-          OV.wanted(True, R1, FEN_B, FEN_B, "g1f3", None, False, False)[3],
-          False)
-    check("the same move for the other side is a different answer, so a"
-          " caller cannot miss it",
-          OV.wanted(True, R1, FEN_B, FEN_B, "g1f3", None, False, True)
-          == OV.wanted(True, R1, FEN_B, FEN_B, "g1f3", None, False, False),
-          False)
-    check("and a stale position is still nothing at all, whoever it was for",
-          OV.wanted(True, R1, FEN_C, FEN_B, "g1f3", None, False, False), None)
+          (R1, "b1c3", False, None))
 
     # The move to avoid is a second answer about the same position, and it
     # lands a second or so after the first. Every rule above applies to it, and
     # it is dropped on its own rather than taking the move to play with it.
     print("\n-- the move to avoid, which arrives later -----------------")
     check("nothing is drawn in red until the second answer lands",
-          OV.wanted(True, R1, FEN_B, FEN_B, "g1f3", None, False, True)[4], None)
+          OV.wanted(True, R1, FEN_B, FEN_B, "g1f3", None)[3], None)
     check("and it is drawn once it has",
-          OV.wanted(True, R1, FEN_B, FEN_B, "g1f3", None, False, True,
-                    "g1h3", FEN_B)[4], "g1h3")
+          OV.wanted(True, R1, FEN_B, FEN_B, "g1f3", None, False,
+                    "g1h3", FEN_B)[3], "g1h3")
     check("a warning about the position before is dropped on its own",
-          OV.wanted(True, R1, FEN_B, FEN_B, "g1f3", None, False, True,
+          OV.wanted(True, R1, FEN_B, FEN_B, "g1f3", None, False,
                     "e2e4", FEN_A),
-          (R1, "g1f3", False, True, None))
+          (R1, "g1f3", False, None))
     check("  which is the ordinary case, not an error: for the second between"
           " the two answers there is a move to play and nothing to avoid yet",
-          OV.wanted(True, R1, FEN_B, FEN_B, "g1f3", None, False, True,
-                    "e2e4", FEN_A)[:4],
-          OV.wanted(True, R1, FEN_B, FEN_B, "g1f3", None, False, True)[:4])
+          OV.wanted(True, R1, FEN_B, FEN_B, "g1f3", None, False,
+                    "e2e4", FEN_A),
+          OV.wanted(True, R1, FEN_B, FEN_B, "g1f3", None))
     check("a warning for a position the board has moved past draws nothing"
           " at all, the same as advice for one",
-          OV.wanted(True, R1, FEN_C, FEN_B, "g1f3", None, False, True,
+          OV.wanted(True, R1, FEN_C, FEN_B, "g1f3", None, False,
                     "g1h3", FEN_B), None)
     check("a cleared position stays clear in both colours",
-          OV.wanted(True, R1, FEN_B, FEN_B, "g1f3", FEN_B, False, True,
+          OV.wanted(True, R1, FEN_B, FEN_B, "g1f3", FEN_B, False,
                     "g1h3", FEN_B), None)
     check("switching the arrow off takes both down",
-          OV.wanted(False, R1, FEN_B, FEN_B, "g1f3", None, False, True,
+          OV.wanted(False, R1, FEN_B, FEN_B, "g1f3", None, False,
                     "g1h3", FEN_B), None)
     check("the same board with and without a warning is a different answer,"
           " so a caller cannot miss it",
-          OV.wanted(True, R1, FEN_B, FEN_B, "g1f3", None, False, True)
-          == OV.wanted(True, R1, FEN_B, FEN_B, "g1f3", None, False, True,
+          OV.wanted(True, R1, FEN_B, FEN_B, "g1f3", None)
+          == OV.wanted(True, R1, FEN_B, FEN_B, "g1f3", None, False,
                        "g1h3", FEN_B),
           False)
     # None means "no position", and it turns up on both sides: the sentinel
@@ -1078,17 +1061,17 @@ def arrow():
 
 
 def coach_side():
-    """The real _drain_coach, handed one reply, asked which side it drew for.
+    """The real _drain_coach, handed one reply, asked what it did with it.
 
-    The colour is decided in two steps, and wanted() above only covers the
-    second. This is the first: whose move the engine answered for. Getting it
-    backwards draws your plan in the opponent's colour and labels it theirs,
-    which no check that only looks at the arrow rule would notice.
+    Both arrows are about a move you are the one to make, so an answer for the
+    opponent's side is one the board has moved past while it was being worked
+    out, and drawing it is the bug this exists to catch: it put the opponent's
+    plan on the board, in a second colour, over your own turn.
 
     No window. _sync_arrow stops at a board with no arrow built on it, so the
     real method runs and only the state it wrote is read back.
     """
-    print("\n-- the side the coach's reply is drawn for ----------------")
+    print("\n-- the side the coach's reply is for ----------------------")
     import chesswatch as CW
 
     def drained(turn, yours):
@@ -1096,7 +1079,7 @@ def coach_side():
             coach=types.SimpleNamespace(out=queue.Queue()),
             coach_on=types.SimpleNamespace(get=lambda: True, set=lambda v: None),
             coach_fen=FEN_A, my_colour=yours, arrow=None, arrow_uci=None,
-            arrow_fen=None, arrow_mine=None, arrow_cleared=None, region=R1,
+            arrow_fen=None, arrow_cleared=None, region=R1,
             flipped=False, lbl_coach=Blank(), lbl_detail=Blank(),
             lbl_mistake=Blank(), arrow_bad_uci=None, arrow_bad_fen=None,
             arrow_on=types.SimpleNamespace(get=lambda: True))
@@ -1108,16 +1091,16 @@ def coach_side():
             "turn": turn, "san": "Nf3", "uci": "g1f3",
             "text": "knight: g1 to f3", "score": "+0.4"}))
         CW.App._drain_coach(app)
-        return app.arrow_mine, app.lbl_coach.text.split("  ")[0]
+        return app.arrow_uci, app.lbl_coach.text
 
     check("white to move with white at the bottom is your move",
-          drained("white", "white"), (True, "your move"))
-    check("  and black to move on the same board is theirs",
-          drained("black", "white"), (False, "their move"))
+          drained("white", "white"), ("g1f3", "your move  Nf3"))
     check("the other way round when you are the one playing black",
-          drained("black", "black"), (True, "your move"))
-    check("before the orientation settles nothing is yours yet",
-          drained("white", None), (False, "their move"))
+          drained("black", "black"), ("g1f3", "your move  Nf3"))
+    check("an answer for the opponent's side is dropped, arrow and all",
+          drained("black", "white"), (None, ""))
+    check("  and so is one that arrives before the orientation has settled",
+          drained("white", None), (None, ""))
 
     print("\n-- and the warning the second answer brings ---------------")
     import chesswatch as CW
@@ -1127,7 +1110,7 @@ def coach_side():
             coach=types.SimpleNamespace(out=queue.Queue()),
             coach_on=types.SimpleNamespace(get=lambda: True, set=lambda v: None),
             coach_fen=FEN_A, my_colour=yours, arrow=None, arrow_uci=None,
-            arrow_fen=None, arrow_mine=None, arrow_cleared=None, region=R1,
+            arrow_fen=None, arrow_cleared=None, region=R1,
             flipped=False, lbl_coach=Blank(), lbl_detail=Blank(),
             lbl_mistake=Blank(), arrow_bad_uci=None, arrow_bad_fen=None,
             arrow_on=types.SimpleNamespace(get=lambda: True))
@@ -1142,8 +1125,8 @@ def coach_side():
 
     check("a warning about the position on screen is kept and worded for you",
           warned("white", "white"), ("g1h3", "not Nh3, 1.0 worse"))
-    check("  and the opponent's own worst option is not addressed to you",
-          warned("black", "white"), ("g1h3", "their slip Nh3, 1.0 worse"))
+    check("  one for the opponent's side is dropped, like the advice",
+          warned("black", "white"), (None, ""))
     check("a warning about a position already played past is dropped",
           warned("white", "white", fen=FEN_B), (None, ""))
 
@@ -1170,7 +1153,7 @@ def clear_across_games():
     check("  and is dropped the moment the position moves on", cleared, None)
     check("  so the same position in game two is not suppressed",
           OV.wanted(True, R1, FEN_A, FEN_A, "e2e4", cleared),
-          (R1, "e2e4", False, True, None))
+          (R1, "e2e4", False, None))
     check("a new game drops it even at the position it was made at",
           after_frame(FEN_A, FEN_A, event="newgame"), None)
 
@@ -1450,12 +1433,13 @@ def wiring():
     check("_drain hides the arrow when the worker says it is searching",
           "self.region = None" in src["_drain"]
           and "self._sync_arrow()" in src["_drain"], True)
-    check("the coach hands the arrow the position its move was for,"
-          " and whose move it is",
-          max(calls_of(src["_drain_coach"], "_show_arrow")), 3)
+    check("the coach hands the arrow the position its move was for",
+          max(calls_of(src["_drain_coach"], "_show_arrow")), 2)
+    check("  and the warning the position that one was for",
+          max(calls_of(src["_drain_coach"], "_show_mistake")), 2)
     sig = inspect.signature(CW.App._show_arrow)
-    check("  and _show_arrow takes the position and the side",
-          list(sig.parameters), ["self", "uci", "fen", "mine"])
+    check("  and _show_arrow takes the move and the position, no side",
+          list(sig.parameters), ["self", "uci", "fen"])
     # Names alone pass whatever the defaults are, and a default on fen is the
     # bug: None is also the "nothing cleared" sentinel, so a call that forgot
     # the position would suppress the arrow for the rest of the session rather
@@ -1481,14 +1465,10 @@ def wiring():
     esrc = inspect.getsource(E)
     check("enroll builds a root only for its own standalone run",
           esrc.count("tk.Tk()"), 1)
-    check("your arrow colour is untouched", OV.YOURS, "#00E8FF")
-    check("and one place decides which side gets which, and which is the"
-          " move to avoid",
-          (OV.colour_for(True), OV.colour_for(False), OV.colour_for(True, True),
-           OV.colour_for(False, True)),
-          (OV.YOURS, OV.THEIRS, OV.MISTAKE, OV.MISTAKE))
-    for spec, who in ((OV.YOURS, "yours "), (OV.THEIRS, "theirs"),
-                      (OV.MISTAKE, "to avoid")):
+    check("the colour of the move to play is untouched", OV.PLAY, "#00E8FF")
+    check("and one place decides which arrow gets which",
+          (OV.colour_for(False), OV.colour_for(True)), (OV.PLAY, OV.AVOID))
+    for spec, who in ((OV.PLAY, "to play "), (OV.AVOID, "to avoid")):
         grey = Image.new("RGB", (1, 1), spec).convert("L").getpixel((0, 0))
         check("  %s greys into the band the reader ignores" % who,
               W.DARK < grey < W.BRIGHT, True)

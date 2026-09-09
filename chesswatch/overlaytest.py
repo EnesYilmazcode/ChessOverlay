@@ -13,12 +13,12 @@ The claim has two halves, and the second is worthless without the first:
   2. With the arrow up, all 64 squares read exactly as they do without it, and
      a whole game still records move for move.
 
-Both halves are done once per arrow colour, because the coach answers for
-whoever is to move and the second colour is the opponent's, and then again with
-two arrows on the board at once. That last sweep is the one the second colour
-cannot stand in for: the move to play and the move to avoid are drawn together
-for most of a game, and two arrows cover more of a square than either does on
-its own.
+Both halves are done for the move to play on its own and then again with the
+move to avoid beside it. The second sweep is the one the first cannot stand in
+for: two arrows cover more of a square than one does, and the pixels the second
+one adds are measured on their own by diffing the two captures, since the red
+arrow is never on the board without the blue one and there is no state of the
+app that would put it there alone.
 
 By default the arrow is modelled: the same path from overlay.py, the same
 colours, the same width, composited in PIL the way a layered window at ALPHA
@@ -133,7 +133,7 @@ def _head(pts, step):
             (x1 - d2 * ux - d3 * px, y1 - d2 * uy - d3 * py)]
 
 
-def paint_arrow(board, region, move, flipped=False, mine=True, bad=None):
+def paint_arrow(board, region, move, flipped=False, bad=None):
     """What the overlay window puts on the screen, worked out in PIL instead.
 
     Same path, same colours, same widths, in the same order, blended the way a
@@ -142,12 +142,12 @@ def paint_arrow(board, region, move, flipped=False, mine=True, bad=None):
     and nothing else.
 
     The plan comes from overlay rather than from a second copy of it here, so
-    the colour a side gets and which arrow goes down first are the app's answer
-    and not this file's.
+    the colour each arrow gets and which one goes down first are the app's
+    answer and not this file's.
     """
     x, y, size = region[0], region[1], region[2]
     step = size / 8.0
-    for drawn, colour, weight in OV.plan_for(move, mine, bad):
+    for drawn, colour, weight in OV.plan_for(move, bad):
         pts = [(px - x, py - y)
                for px, py in OV.path_points(region, drawn, flipped)]
         width = max(2, int(round(step * weight)))
@@ -180,7 +180,6 @@ class PaperStage:
         self.size = None
         self.picture = None
         self.move = None
-        self.mine = True
         self.bad = None
 
     @property
@@ -195,15 +194,14 @@ class PaperStage:
         self.bad = None
         self._paint()
 
-    def arrow(self, move, mine=True, bad=None):
-        self.move, self.mine, self.bad = move, mine, bad
+    def arrow(self, move, bad=None):
+        self.move, self.bad = move, bad
         self._paint()
 
     def _paint(self):
         img = self.picture
         if self.move is not None:
-            img = paint_arrow(img, self.region, self.move, mine=self.mine,
-                              bad=self.bad)
+            img = paint_arrow(img, self.region, self.move, bad=self.bad)
         self.screen.show(img, self.at)
 
     def grab(self):
@@ -236,8 +234,8 @@ class RealStage:
                          self.at)
         time.sleep(self.screen.settle)
 
-    def arrow(self, move, mine=True, bad=None):
-        self.win.show(self.region, move, False, mine, bad)
+    def arrow(self, move, bad=None):
+        self.win.show(self.region, move, False, bad)
         self.screen.root.update()
         time.sleep(self.screen.pause)
 
@@ -276,8 +274,7 @@ def geometry():
     # land between them, and it has to still land between them after the
     # window's alpha has mixed it with whatever is underneath. The two extremes
     # bracket every board there could ever be.
-    for spec, who in ((OV.YOURS, "yours   "), (OV.THEIRS, "theirs  "),
-                      (OV.MISTAKE, "to avoid")):
+    for spec, who in ((OV.PLAY, "to play "), (OV.AVOID, "to avoid")):
         grey = Image.new("RGB", (1, 1), spec).convert("L").getpixel((0, 0))
         pure = Image.new("RGB", (1, 1), spec).getpixel((0, 0))
         worst = []
@@ -305,11 +302,10 @@ def one_mapping():
                                    ("Arrow._draw", OV.Arrow._draw),
                                    ("paint_arrow", paint_arrow))
              if any(word in inspect.getsource(fn)
-                    for word in ("YOURS", "THEIRS", "MISTAKE"))]
+                    for word in ("PLAY", "AVOID"))]
     check("one place decides which colour an arrow gets", named, ["colour_for"])
-    check("  and it is the only place that knows red is not a side",
-          (OV.colour_for(True, True), OV.colour_for(False, True)),
-          (OV.MISTAKE, OV.MISTAKE))
+    check("  and the two arrows do not get the same one",
+          (OV.colour_for(False), OV.colour_for(True)), (OV.PLAY, OV.AVOID))
 
 
 # ------------------------------------------------------------ arrows on a board
@@ -332,10 +328,10 @@ def arrow_checks(stage):
     check("and there is nothing arrow-coloured on it yet",
           cyan_pixels(plain), 0)
 
-    # Once per colour, and the captures are kept so the two runs can be
-    # compared against each other afterwards.
+    # The move to play on its own first. The captures are kept, because what
+    # the second arrow adds is measured against them below.
     shots = {}
-    for mine, who in ((True, "yours "), (False, "theirs")):
+    for bad, who in ((False, "to play "),):
         clean = True
         drawn = []
         # None rather than an empty range. Seeded 255 and 0, an overlay that
@@ -344,9 +340,9 @@ def arrow_checks(stage):
         # doing it.
         lo, hi = None, None
         for uci in MOVES:
-            stage.arrow(chess.Move.from_uci(uci), mine)
+            stage.arrow(chess.Move.from_uci(uci))
             painted = stage.grab()
-            shots[(mine, uci)] = painted
+            shots[(bad, uci)] = painted
             count, dark, bright = arrow_marks(plain, painted)
             drawn.append(count)
             if count == 0:
@@ -375,34 +371,35 @@ def arrow_checks(stage):
             print("      %s lands on greys %d..%d, the reader ignores %d..%d"
                   % (who, lo, hi, W.DARK, W.BRIGHT))
 
-    # Both sweeps above would pass on one colour drawn twice, and then
-    # everything this file claims about a second colour would be worth nothing.
-    # Comparing the two captures of the same move settles it without either
-    # sweep having to know which colour it asked for.
-    same = [uci for uci in MOVES
-            if arrow_marks(shots[(True, uci)], shots[(False, uci)])[0] == 0]
-    check("the same move in the two colours is not the same picture", same, [])
-
-    # Two arrows at once, which is what is on the board for most of a game once
-    # the coach has both answers. Neither sweep above covers it: a square the
-    # move to play only clips can be crossed by the move to avoid as well, and
-    # what the reader has to survive is the two together.
+    # Two arrows at once, which is what is on the board for most of a game
+    # once the coach has both answers. The sweep above does not cover it: a
+    # square the move to play only clips can be crossed by the move to avoid as
+    # well, and what the reader has to survive is the two together.
     clean = True
     lo, hi = None, None
+    red_lo, red_hi = None, None
     thin = []
     for uci, other in PAIRS:
-        stage.arrow(chess.Move.from_uci(uci), True, chess.Move.from_uci(other))
+        stage.arrow(chess.Move.from_uci(uci), chess.Move.from_uci(other))
         painted = stage.grab()
         count, dark, bright = arrow_marks(plain, painted)
-        alone = arrow_marks(plain, shots[(True, uci)])[0]
-        if count <= alone:
+        # Every pixel the second arrow changed, and no others: the same
+        # capture differenced against the one with only the first arrow on it.
+        # That is where the red is measured, because the app never draws it
+        # without the blue one and there is no state that would. Not quite
+        # only red: a pixel of the blue shaft with red now underneath it
+        # changed too, by the fifteen per cent of it that shows through.
+        added, red_dark, red_bright = arrow_marks(shots[(False, uci)], painted)
+        if not added:
             print("FAIL  the second arrow for %s drew nothing on top of %s"
                   % (other, uci))
             clean = False
             continue
-        thin.append(count - alone)
+        thin.append(added)
         lo = dark if lo is None else min(lo, dark)
         hi = bright if hi is None else max(hi, bright)
+        red_lo = red_dark if red_lo is None else min(red_lo, red_dark)
+        red_hi = red_bright if red_hi is None else max(red_hi, red_bright)
         occ = W.read_occupancy(painted)
         if occ != base:
             print("FAIL  %s with %s to avoid changed the reading" % (uci, other))
@@ -414,9 +411,13 @@ def arrow_checks(stage):
           clean, True)
     check("  and the pair stayed between the cutoffs too",
           lo is not None and W.DARK < lo and hi < W.BRIGHT, True)
+    check("  as did every pixel the move to avoid changed, which is the"
+          " colour the sweep above never saw",
+          red_lo is not None and W.DARK < red_lo and red_hi < W.BRIGHT, True)
     if thin:
-        print("      the second arrow adds %d to %d pixels, and lands on greys"
-              " %d..%d" % (min(thin), max(thin), lo, hi))
+        print("      the second arrow changes %d to %d pixels, landing on"
+              " greys %d..%d, and the pair on %d..%d"
+              % (min(thin), max(thin), red_lo, red_hi, lo, hi))
 
     # Again on a small board, where the arrow is a bigger share of what it
     # covers and a piece is only a few pixels across.
@@ -427,25 +428,22 @@ def arrow_checks(stage):
     ok_small = base2 == W.START_WHITE_VIEW
     if not ok_small:
         print("        the small board does not read as the start position")
-    for mine, who in ((True, "yours"), (False, "theirs")):
-        for uci in ("a1h8", "e1e8", "e2e4", "g1f3"):
-            stage.arrow(chess.Move.from_uci(uci), mine)
-            got = stage.grab()
-            if arrow_marks(plain2, got)[0] == 0:
-                print("        nothing was drawn for %s in %s at %dpx"
-                      % (uci, who, small))
-                ok_small = False
-            elif W.read_occupancy(got) != base2:
-                print("        %s in %s changed the reading at %dpx"
-                      % (uci, who, small))
-                ok_small = False
-    check("both colours hold on a %dpx board too" % small, ok_small, True)
+    for uci in ("a1h8", "e1e8", "e2e4", "g1f3"):
+        stage.arrow(chess.Move.from_uci(uci))
+        got = stage.grab()
+        if arrow_marks(plain2, got)[0] == 0:
+            print("        nothing was drawn for %s at %dpx" % (uci, small))
+            ok_small = False
+        elif W.read_occupancy(got) != base2:
+            print("        %s changed the reading at %dpx" % (uci, small))
+            ok_small = False
+    check("the move to play holds on a %dpx board too" % small, ok_small, True)
 
     # And the pair on the small board, where the two shafts are a much bigger
     # share of the piece they cross.
     ok_pair = True
     for uci, other in PAIRS[:6]:
-        stage.arrow(chess.Move.from_uci(uci), True, chess.Move.from_uci(other))
+        stage.arrow(chess.Move.from_uci(uci), chess.Move.from_uci(other))
         got = stage.grab()
         if arrow_marks(plain2, got)[0] == 0:
             print("        nothing was drawn for %s with %s at %dpx"
@@ -495,13 +493,10 @@ def whole_game(stage):
         expected.append(board.san(move))
         board.push(move)
         stage.board(board, 664)
-        # Arrows for whoever is to move now, so the board is never read
-        # without them. White is at the bottom here, so the colour changes
-        # under the reader every half move, which is the case this file exists
-        # to cover, and there are two of them from the second move on, which is
-        # what the coach really draws.
+        # Both arrows on every single frame the worker reads, which is what
+        # the coach draws once it has both answers.
         legal = list(board.legal_moves)
-        stage.arrow(legal[0], board.turn == chess.WHITE,
+        stage.arrow(legal[0],
                     legal[len(legal) // 2] if len(legal) > 1 else None)
         worker._tick()
 
@@ -516,8 +511,8 @@ def say_mode(screen, stage):
     print("\nmode           : %s, %s arrow" % (screen.mode, stage.kind))
     print("screen space   :", screen.footprint())
     if screen.mode == "headless":
-        print("  proves      : the arrow paths, all three colours, what they"
-              " blend to over the board,")
+        print("  proves      : the arrow paths, both colours, what they blend"
+              " to over the board,")
         print("                that the reader and the recorder cannot see any"
               " of it, and")
         print("                that grab() still decodes mss bytes as BGRA")
