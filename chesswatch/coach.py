@@ -156,6 +156,38 @@ MIN_DROP = 90           # and how far behind it has to be once it is searched
 DECIDED = 500           # past this the game is over bar the moves
 HUGE = 800              # a drop this big is put to a longer search first
 
+# A move nobody was tempted by teaches nothing, and a ranking has no opinion
+# about temptation: it sorts by strength, so the moves either side of the one
+# you were about to play look the same to it. shortlist() guesses at temptation
+# from the board, by putting captures and checks first, and a second engine
+# playing badly on purpose is a better guess, because the move a weak player
+# picks is the definition of the move a weak player was tempted by.
+#
+# It is a candidate source, not a replacement, and a small one. Measured by
+# driving this class over 60 positions out of games/:
+#
+#   without the weak engine         53%   32 of 60 positions get a red arrow
+#   with it                         55%   33 of 60
+#   its move on its own             25%   median 0.41 worse, and it plays the
+#                                         best move itself 16 times in 60
+#
+# On its own it is a bad red arrow: two thirds of what it names is not a
+# mistake, because Stockfish playing badly plays slightly off rather than
+# tempted. As a candidate behind the gates that were already here it is worth
+# one position in sixty, and that one was a 3.2 pawn blunder the shortlist of
+# four missed while it was looking at captures.
+#
+# It looks worth far more than that until the gates are applied. Scoring its
+# move directly against the best one credits it with seven positions, but six
+# of those seven are already decided, by five pawns or by a forced mate, and
+# already_decided refuses them for the reason it has always refused them. The
+# blunders a weak engine finds are mostly in games that are already over.
+#
+# UCI_Elo cannot go below 1320 and was measured too: it adds nothing at all
+# over Skill Level 0, zero positions in sixty, so there is one weak engine.
+WEAK_SKILL = 0          # the weakest Stockfish will play
+WEAK_THINK = 0.10       # it is being asked what it would play, not analysis
+
 # How deep the two cheap passes go. The think-time dial is what a player has
 # said about how much of a core this may hold, so it drives this pass too: a
 # shallower nominate and verify are cheaper and less certain, which is what the
@@ -207,6 +239,23 @@ def shortlist(board, best, rough, drop=NOMINATE_DROP, most=SHORTLIST):
     tempting = [move for move in bad
                 if board.is_capture(move) or board.gives_check(move)]
     return (tempting + [move for move in bad if move not in tempting])[:most]
+
+
+def with_tempted(picks, best, tempted):
+    """The shortlist with the weak engine's move added to it.
+
+    It goes on the end rather than the front, and on top of the cap rather than
+    displacing anything, because it is a different kind of guess from the ones
+    already there. Those are moves the board says an eye goes to. This is a
+    move something actually played. Neither gets to push the other off.
+
+    A weak engine that agrees with the strong one has named no mistake, and
+    agreeing is most of what it does: 16 times in 60 it played the best move
+    itself. There is nothing to add then, and it adds nothing.
+    """
+    if tempted is None or tempted == best or tempted in picks:
+        return picks
+    return picks + [tempted]
 
 
 def most_tempting(drops, bar=MIN_DROP):
@@ -329,6 +378,21 @@ class Coach(threading.Thread):
         except Exception as exc:
             self.out.put(("engine", "Stockfish would not start: %s" % exc))
             return
+        # The weak one is a candidate source for the red arrow and nothing
+        # else, so it is allowed to fail. A machine that cannot spare the
+        # second process still gets the move to play and still gets a red
+        # arrow, from the shortlist the way it always came.
+        weak = None
+        try:
+            weak = chess.engine.SimpleEngine.popen_uci(self.path, **POPEN_FLAGS)
+            weak.configure({"Skill Level": WEAK_SKILL})
+        except Exception:
+            if weak is not None:
+                try:
+                    weak.quit()
+                except Exception:
+                    pass
+            weak = None
         self.out.put(("engine", "ready"))
         try:
             while not self.stop_flag.is_set():
@@ -341,15 +405,18 @@ class Coach(threading.Thread):
                     if fen is None or self.stop_flag.is_set():
                         break
                     try:
-                        self._answer(engine, fen)
+                        self._answer(engine, weak, fen)
                     finally:
                         with self._lock:
                             self._busy = None
         finally:
-            try:
-                engine.quit()
-            except Exception:
-                pass
+            for live in (engine, weak):
+                if live is None:
+                    continue
+                try:
+                    live.quit()
+                except Exception:
+                    pass
 
     def _settle(self, fen):
         """This position is answered as well as it is going to be. Remembering
@@ -358,7 +425,7 @@ class Coach(threading.Thread):
         with self._lock:
             self._done = fen
 
-    def _answer(self, engine, fen):
+    def _answer(self, engine, weak, fen):
         try:
             board = chess.Board(fen)
         except ValueError:
@@ -381,7 +448,7 @@ class Coach(threading.Thread):
             # Second, and only once the move to play is on screen. It is the
             # answer that matters, and this pass costs about as long again.
             if best is not None and not self._cut():
-                self._mistake(engine, board, fen, best)
+                self._mistake(engine, weak, board, fen, best)
         except Exception as exc:
             self.out.put(("engine", "Stockfish stopped: %s" % exc))
             self.stop_flag.set()
@@ -475,7 +542,23 @@ class Coach(threading.Thread):
         lines.sort(key=lambda line: -value(line.score))
         return lines
 
-    def _mistake(self, engine, board, fen, best):
+    def _tempted(self, weak, board):
+        """What a weak engine would play here, which is this pass's guess at
+        the move you were about to make.
+
+        None if there is no second engine or it will not answer, and the pass
+        carries on without it on the shortlist alone. It is asked to play
+        rather than to analyse, and given a tenth of a second, because the
+        question is which move it picks and not what it thinks of it.
+        """
+        if weak is None:
+            return None
+        try:
+            return weak.play(board, chess.engine.Limit(time=WEAK_THINK)).move
+        except Exception:
+            return None                  # a red arrow is not worth a crash
+
+    def _mistake(self, engine, weak, board, fen, best):
         """The move worth being warned off, published on its own.
 
         Two searches and sometimes a third; the comment above Line says why each
@@ -491,7 +574,8 @@ class Coach(threading.Thread):
                            board.legal_moves.count())
         if self._cut():
             return
-        picks = shortlist(board, best, rough)
+        picks = with_tempted(shortlist(board, best, rough), best,
+                             self._tempted(weak, board))
         if not picks:
             return                       # nothing here looks bad enough
 

@@ -299,7 +299,12 @@ capture takes and when a move gives check, and counts a forced mate in moves.
 The red line is the second answer about the same position: the move you were
 probably about to play instead, which is the half a lesson is made of. It
 arrives about half a second after the first and the move to play never waits on
-it.
+it. Finding it runs a second Stockfish at Skill Level 0 alongside the real one,
+because a ranking sorts moves by strength and has no opinion about which of
+them is tempting, and the move a weak player picks is the definition of the
+move a weak player was tempted by. It shows on 55% of positions; the
+[chesswatch README](chesswatch/README.md#the-move-to-avoid) has the measured
+reason it is not all of them.
 
 Nothing is asked while it is your opponent's turn and the line reads
 `their turn` until it is yours again. A move you cannot make is not advice, and

@@ -267,6 +267,24 @@ def mistake_rules():
           CO.shortlist(board, best, eye, drop=100)[0],
           chess.Move.from_uci("f3e5"))
 
+    # The weak engine's move is a different kind of guess from the shortlist's:
+    # the shortlist reads temptation off the board, this is a move something
+    # actually played. It is added rather than swapped in.
+    caps = CO.shortlist(board, best, rough, drop=100, most=2)
+    weak = chess.Move.from_uci("b1c3")
+    check("the weak engine's move joins the shortlist",
+          CO.with_tempted(caps, best, weak), caps + [weak])
+    check("  on top of the cap, not in place of anything on it",
+          len(CO.with_tempted(caps, best, weak)), len(caps) + 1)
+    check("  and it can be the only candidate there is",
+          CO.with_tempted([], best, weak), [weak])
+    check("a weak engine that agrees with the strong one names no mistake",
+          CO.with_tempted(caps, best, best), caps)
+    check("  nor does it when it picks something already nominated",
+          CO.with_tempted(caps, best, caps[0]), caps)
+    check("no second engine leaves the shortlist as it was",
+          CO.with_tempted(caps, best, None), caps)
+
     check("the warning is the closest call that still clears the bar",
           CO.most_tempting([(400, chess.Move.from_uci("c6d4")),
                             (150, chess.Move.from_uci("g8h6")),

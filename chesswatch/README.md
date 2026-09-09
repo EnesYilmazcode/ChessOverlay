@@ -106,7 +106,8 @@ move to avoid is a second pass afterwards over **every legal move**:
 | Pass | What it does | Why it is there |
 | --- | --- | --- |
 | nominate | every legal move scored roughly, at a fixed depth | the only way to see the moves that are bad enough to be worth showing at all |
-| verify | a shortlist of at most four searched properly | two thirds of what nominate puts up does not survive it |
+| tempt | a second engine, playing badly on purpose, is asked what it would play here | a ranking sorts by strength and has no opinion about temptation |
+| verify | the shortlist searched properly | two thirds of what nominate puts up does not survive it |
 | confirm | one move against the best move, on a longer clock | only for an extraordinary claim, and see below |
 
 Each pass is bounded by a **depth** rather than a time, because two lines
@@ -122,6 +123,25 @@ survives, the move shown is the **smallest drop that still clears the bar**
 rather than the biggest: a move a pawn behind the best is one you are about to
 play, and the worst move on the board is one nobody was going to.
 
+The tempt pass is a **second Stockfish at Skill Level 0**, asked to play rather
+than to analyse and given a tenth of a second, because the question is which
+move it picks. Guessing at temptation from the board is what captures-first
+does; a move a weak player actually played is a better guess by definition. It
+is a candidate on top of the shortlist rather than in place of anything on it,
+so every gate below still applies, and if the second engine will not start the
+pass carries on without it.
+
+Its own move is a **bad** red arrow: two thirds of what it names is not a
+mistake at all, and 16 times in 60 it simply plays the best move, because
+Stockfish playing badly plays slightly off rather than tempted. Behind the
+gates it is worth **one position in sixty**, and that one was a 3.2 pawn
+blunder the shortlist missed while it was looking at captures. It looks worth
+seven times that until the gates are applied, but six of those seven are in
+positions already decided. **The blunders a weak engine finds are mostly in
+games that are already over.** `UCI_Elo` cannot go below 1320 and adds nothing
+over Skill Level 0, zero positions in sixty, so there is one weak engine and
+not two.
+
 Nothing is shown in a position **already decided**. Five pawns up every move
 wins, five pawns down every move loses, and the difference between two of them
 is not a lesson. That is 18% of real positions, and warning in them was where
@@ -134,11 +154,14 @@ of those was a shallow search inventing a forced mate that is not there**. So a
 drop that rests on a mate, or one too large to believe, is put to a longer
 search on those two moves alone before anything is drawn.
 
-What that adds up to, measured over 45 positions from real games: a red arrow
-on 53% of them, and every single one of those was still at least half a pawn
-worse under an independent two second search. The other 47% is not a failure to
-find something. Half of it is positions where nothing tempting is really worse,
-and the rest is positions already won or lost. The pass costs 0.35s at the
+What that adds up to, measured by driving the real `Coach` over 60 positions
+from games/: a red arrow on **55%** of them, 53% without the tempt pass, and a
+median 1.50 pawns worse with nothing under 0.95. The other 45% is not a failure
+to find something. Roughly half is positions where nothing tempting is really
+worse, and the rest is positions already won or lost. Getting closer to every
+turn than that means either dropping `MIN_DROP` below 0.9, which points the
+arrow at moves that are not mistakes, or warning inside decided games, which is
+where the wording went silly in the first place. The pass costs 0.35s at the
 median and 0.82s at the 90th percentile on top of the think time, and the
 **Think** dial drives how deep it goes, exactly as it drives everything else.
 
