@@ -167,7 +167,10 @@ def launch_checks():
         seen.update(kwargs)
         return real([sys.executable, "-u", "-c", STUB, report], **kwargs)
 
-    c = CO.Coach("stockfish", think_seconds=0.05)
+    # Without Maia. Its process is started through subprocess.Popen, which on
+    # Linux is the very thing spied on here, and this check is about Stockfish.
+    # maiatest.py checks how Maia is started.
+    c = CO.Coach("stockfish", think_seconds=0.05, maia=None)
     try:
         setattr(mod, attr, spy)
         c.start()
@@ -267,23 +270,34 @@ def mistake_rules():
           CO.shortlist(board, best, eye, drop=100)[0],
           chess.Move.from_uci("f3e5"))
 
-    # The weak engine's move is a different kind of guess from the shortlist's:
-    # the shortlist reads temptation off the board, this is a move something
-    # actually played. It is added rather than swapped in.
+    # Maia's moves are a different kind of guess from the shortlist's: the
+    # shortlist reads temptation off the board, these are moves people play.
+    # They are added rather than swapped in.
     caps = CO.shortlist(board, best, rough, drop=100, most=2)
-    weak = chess.Move.from_uci("b1c3")
-    check("the weak engine's move joins the shortlist",
-          CO.with_tempted(caps, best, weak), caps + [weak])
+    mv = chess.Move.from_uci
+    # Most likely first, as Maia answers. f1c4 is the best move itself, d2d3 is
+    # only 50 behind it, and b1c3 has no rough score at all.
+    likely = [("f1c4", 0.40), ("d2d3", 0.25), ("f3g1", 0.12), ("b1c3", 0.08),
+              ("h2h3", 0.05), ("f1a6", 0.04), ("a2a3", 0.01)]
+    check("Maia's likeliest worse moves join the shortlist",
+          CO.with_likely([], best, likely, rough),
+          [mv("d2d3"), mv("f3g1"), mv("b1c3")])
     check("  on top of the cap, not in place of anything on it",
-          len(CO.with_tempted(caps, best, weak)), len(caps) + 1)
-    check("  and it can be the only candidate there is",
-          CO.with_tempted([], best, weak), [weak])
-    check("a weak engine that agrees with the strong one names no mistake",
-          CO.with_tempted(caps, best, best), caps)
-    check("  nor does it when it picks something already nominated",
-          CO.with_tempted(caps, best, caps[0]), caps)
-    check("no second engine leaves the shortlist as it was",
-          CO.with_tempted(caps, best, None), caps)
+          CO.with_likely(caps, best, likely, rough),
+          caps + [mv("d2d3"), mv("b1c3"), mv("f1a6")])
+    check("  never the move it is being compared against, however likely",
+          best in CO.with_likely([], best, likely, rough), False)
+    check("  and no more of them than it is asked for",
+          len(CO.with_likely([], best, likely, rough, most=2)), 2)
+    check("a move the rough pass calls equal to the best one is left out,"
+          " since it can never be drawn",
+          mv("d2d3") in CO.with_likely([], best, likely, rough, drop=60), False)
+    check("  while a move it has no score for is let through for verify to"
+          " judge",
+          mv("b1c3") in CO.with_likely([], best, likely, rough), True)
+    check("no Maia leaves the shortlist as it was",
+          (CO.with_likely(caps, best, None, rough),
+           CO.with_likely(caps, best, [], rough)), (caps, caps))
 
     # Three things, not one thing and silence. The wording depends on which,
     # because "not" about a move half a pawn behind teaches that everything
@@ -358,6 +372,59 @@ def mistake_rules():
           sorted(CO.DEPTHS), sorted(CO.THINK_CHOICES))
 
 
+def likely_rules():
+    """Which worse move is drawn once Maia has said how likely each one is."""
+    mv = chess.Move.from_uci
+    print("\n-- which of the worse moves, for which player --------------")
+    drops = [(400, mv("c6d4")), (150, mv("g8h6")), (95, mv("f8b4")),
+             (40, mv("d7d6"))]
+    beginner = [("c6d4", 0.30), ("d7d6", 0.28), ("g8h6", 0.02), ("f8b4", 0.01)]
+    stronger = [("d7d6", 0.55), ("f8b4", 0.10), ("g8h6", 0.03), ("c6d4", 0.01)]
+    check("the warning is the worse move a player of that rating is likeliest"
+          " to play",
+          CO.most_likely(drops, beginner), (400, mv("c6d4")))
+    check("  so a different player is warned off a different move",
+          CO.most_likely(drops, stronger), (95, mv("f8b4")))
+    check("  a real mistake first, even when a move only weaker is likelier",
+          CO.most_likely(drops, stronger)[1] != mv("d7d6"), True)
+    check("  and the weaker one when no real mistake is on the board",
+          CO.most_likely([(40, mv("d7d6")), (25, mv("a7a6"))], stronger,
+                         bar=CO.SOFT_DROP), (40, mv("d7d6")))
+    check("  a move Maia gave nothing for counts as never played",
+          CO.most_likely([(150, mv("g8h6")), (300, mv("h7h5"))], beginner),
+          (150, mv("g8h6")))
+    check("  between two just as likely, the closer call",
+          CO.most_likely([(300, mv("g8h6")), (120, mv("f8b4"))],
+                         [("g8h6", 0.1), ("f8b4", 0.1)]), (120, mv("f8b4")))
+    check("  and nothing when nothing clears the bar",
+          (CO.most_likely([(40, mv("d7d6"))], beginner),
+           CO.most_likely([], beginner)), (None, None))
+    check("without Maia the closest call is still what the scores alone give",
+          CO.most_tempting(drops), (95, mv("f8b4")))
+
+
+def rating_rules():
+    """The rating a hand-edited config.json can ask for, and what a coach does
+    with one it is built with."""
+    print("\n-- the rating it is chosen for -----------------------------")
+    check("a rating inside the slider is kept",
+          [CO.clamp_elo(v) for v in (500, 1000, 1234, 1500)],
+          [500, 1000, 1234, 1500])
+    check("  one outside it is pulled back to the nearer end",
+          [CO.clamp_elo(v) for v in (0, 499, 1501, 3000)],
+          [500, 500, 1500, 1500])
+    check("  and nonsense falls back rather than raising before the window"
+          " exists",
+          [CO.clamp_elo(v) for v in (None, "", "strong", [], float("nan"))],
+          [CO.DEFAULT_ELO] * 5)
+    check("a coach is built at the default rating unless told otherwise,"
+          " and clamped when it is",
+          (CO.Coach("stockfish", maia=None).elo,
+           CO.Coach("stockfish", elo=9000, maia=None).elo,
+           CO.Coach("stockfish", elo="x", maia=None).elo),
+          (CO.DEFAULT_ELO, 1500, CO.DEFAULT_ELO))
+
+
 def mistake_engine_checks(path):
     """The whole second pass against the real engine.
 
@@ -410,6 +477,13 @@ def mistake_engine_checks(path):
     check("the move to play is published first, so it never waits on this",
           order, ["advice", "mistake"])
 
+    if warning is not None:
+        likely = warning.get("likely")
+        check("  and says how likely Maia thinks a player of that rating is to"
+              " play it, which needs Maia to be running",
+              isinstance(likely, float) and 0.0 < likely <= 1.0, True)
+        check("  and which rating that was", warning.get("elo"), CO.DEFAULT_ELO)
+
     # The crash this guard is for takes the engine down for the rest of the
     # session, so the check is that the position after it is still answered.
     c.ask(NO_KING)
@@ -417,6 +491,141 @@ def mistake_engine_checks(path):
     advice, _, _ = both(MATE)
     check("a position with a king missing does not take the engine down",
           advice and advice["san"], "Ra8#")
+    c.stop()
+    rating_checks(path)
+
+
+class Players:
+    """Maia with its mind made up. At each rating it gives one move nine
+    chances in ten and shares the rest out over the other legal moves, so which
+    move the warning names is decided by this and not by the model."""
+
+    def __init__(self, favourite):
+        self.favourite = favourite       # rating -> uci
+        self.asked = []
+        self.closed = False
+
+    def start(self):
+        return True
+
+    def ask(self, fen, elo, give_up=None):
+        self.asked.append(elo)
+        board = chess.Board(fen)
+        pick = self.favourite(elo)
+        rest = [m.uci() for m in board.legal_moves if m.uci() != pick]
+        return [(pick, 0.9)] + [(uci, 0.1 / len(rest)) for uci in rest]
+
+    def close(self):
+        self.closed = True
+
+
+# Two ways for white to give a piece away in BUSY, neither of them a capture
+# or a check, so neither is something the shortlist puts first on its own.
+# Ne6 puts the knight where the f7 pawn takes it and Bh6 puts the bishop where
+# the g7 bishop does; a depth 12 search has them 5.2 and 5.6 behind.
+HANGS_KNIGHT = "d4e6"
+HANGS_BISHOP = "e3h6"
+
+
+def rating_checks(path):
+    """The rating decides the warning, and changing it changes the warning on
+    the position already answered, without searching for the move to play
+    again."""
+    print("\n-- the rating picks the warning, against the real engine ---")
+    players = Players(lambda elo: HANGS_KNIGHT if elo < 1000 else HANGS_BISHOP)
+    c = CO.Coach(path, think_seconds=0.30, elo=600, maia=lambda: players)
+    c.start()
+    check("the engine starts with a Maia of our own",
+          wait(c, "engine"), "ready")
+
+    def answers(seconds=30, until_mistake=True):
+        got = []
+        end = time.time() + seconds
+        while time.time() < end:
+            try:
+                kind, payload = c.out.get(timeout=0.2)
+            except queue.Empty:
+                if not until_mistake and got:
+                    break
+                continue
+            got.append((kind, payload))
+            if kind == "mistake" and until_mistake:
+                break
+            if kind == "engine":
+                break
+        return got
+
+    c.ask(BUSY)
+    first = answers()
+    warned = [p for k, p in first if k == "mistake"]
+    check("a player at 600 is warned off the move a player at 600 plays",
+          [(p["uci"], p["elo"], p["likely"]) for p in warned],
+          [(HANGS_KNIGHT, 600, 0.9)])
+    check("  and Maia was asked at that rating", players.asked[-1:], [600])
+
+    c.set_elo(1400)
+    second = answers()
+    check("moving the slider warns about the same board again, for the new"
+          " player", [(k, p["fen"], p["uci"], p["elo"]) for k, p in second],
+          [("mistake", BUSY, HANGS_BISHOP, 1400)])
+    check("  without searching for the move to play a second time",
+          [k for k, _ in second if k == "advice"], [])
+
+    asked = len(players.asked)
+    c.set_elo(1400)
+    time.sleep(1.0)
+    check("the slider let go where it already was asks nothing",
+          (len(players.asked), c.out.qsize()), (asked, 0))
+
+    c.set_elo(9999)
+    third = answers()
+    check("a rating past the end of the slider is judged at the end",
+          [(p["uci"], p["elo"]) for k, p in third if k == "mistake"],
+          [(HANGS_BISHOP, 1500)])
+
+    # A new position asked for straight after the slider moves is judged at
+    # the new rating, and the old position is not judged again on the way.
+    c.set_elo(700)
+    c.ask(MATE)
+    fourth = answers(until_mistake=False, seconds=8)
+    check("  and a position asked for right after the slider moved is the one"
+          " answered, with no warning left over for the one before it",
+          ([p["fen"] for k, p in fourth
+            if k == "advice" and p.get("final")],
+           [p["fen"] for k, p in fourth
+            if k == "mistake" and p["fen"] != MATE]),
+          ([MATE], []))
+    c.stop()
+    c.join(timeout=10)
+    check("stopping the coach closes its Maia", players.closed, True)
+
+    print("\n-- and without Maia at all ---------------------------------")
+    c = CO.Coach(path, think_seconds=0.30, maia=None)
+    c.start()
+    check("the engine starts with no Maia", wait(c, "engine"), "ready")
+    c.ask(BUSY)
+    warned = [p for k, p in answers() if k == "mistake"]
+    check("there is still a warning, chosen from the scores alone",
+          len(warned), 1)
+    if warned:
+        check("  which says it was chosen without Maia",
+              warned[0]["likely"], None)
+        check("  and is still a real mistake",
+              warned[0]["drop"] >= CO.MIN_DROP, True)
+    c.stop()
+
+    class Broken(Players):
+        def ask(self, fen, elo, give_up=None):
+            return [("not a move", 1.0), (HANGS_KNIGHT, "lots")]
+    c = CO.Coach(path, think_seconds=0.30, maia=lambda: Broken(None))
+    c.start()
+    wait(c, "engine")
+    c.ask(BUSY)
+    got = answers()
+    check("a Maia that answers nonsense costs the warning nothing",
+          [(k, p.get("likely") if isinstance(p, dict) else p)
+           for k, p in got if k in ("mistake", "engine")],
+          [("mistake", None)])
     c.stop()
 
 
@@ -621,6 +830,19 @@ def label_checks(path):
     check("the think time is written to config.json", saved.get("think_seconds"), 2.5)
     check("and reaches an engine that is already going",
           app.coach.think_seconds, 2.5)
+
+    # The rating is the same, and it also takes down a warning chosen for the
+    # rating it replaces, since nothing may come along to replace that one.
+    app.lbl_mistake.configure(text="not Nh3, 1.0 worse")
+    app.elo_choice.set(1400)
+    app._set_elo()
+    saved = json.load(open(C.CONFIG_PATH, encoding="utf-8"))
+    check("the rating is written to config.json",
+          saved.get("mistake_elo"), 1400)
+    check("  reaches the engine that is already going",
+          app.coach.elo, 1400)
+    check("  and the warning for the old rating comes down",
+          app.lbl_mistake.cget("text"), "")
 
     app.coach_on.set(False)
     app._toggle_coach()
@@ -829,6 +1051,8 @@ def main():
           " all.\n")
     wording()
     mistake_rules()
+    likely_rules()
+    rating_rules()
     capture_checks()
     config_bounds()
     launch_checks()

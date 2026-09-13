@@ -332,7 +332,15 @@ DPI = {"100%": 96, "150%": 144}
 CHROME = {"btn": (10, 24), "lbl": (0, 6), "check": (18, 30), "radio": (18, 30)}
 
 KINDS = {"Button": "btn", "Label": "lbl", "Checkbutton": "check",
-         "Radiobutton": "radio"}
+         "Radiobutton": "radio", "Scale": "scale"}
+
+# A slider has no text to measure. Its width is its length plus its border and
+# highlight on both sides, all in plain pixels, which Tk does not grow with the
+# display scaling the way it grows a font. So it is the one widget here that is
+# worked out exactly rather than bounded: a real horizontal Scale on Windows
+# asks for 206 px at length 200 with the defaults below, and 200 px with both
+# set to 0.
+SCALE_DEFAULTS = {"bd": 1, "highlightthickness": 2}
 
 FONTS = {False: "C:/Windows/Fonts/segoeui.ttf",
          True: "C:/Windows/Fonts/segoeuib.ttf"}
@@ -347,7 +355,7 @@ def available():
 # them at. The longest SAN there is has a piece, both source coordinates, a
 # capture, a destination and a mark; the move line also has a wraplength, so a
 # longer one folds rather than pushing the clear button off the row.
-WORST = {"lbl_coach": "your move  Qa1xd4#"}
+WORST = {"lbl_coach": "your move  Qa1xd4#", "lbl_elo": "1500"}
 
 
 class Unreadable(Exception):
@@ -422,11 +430,30 @@ def _options(call):
             if k.arg is not None}
 
 
+def _slider(call, env, name):
+    """A Scale: a width in pixels and no text."""
+    length = _const(_kw(call, "length"), env) if _kw(call, "length") else None
+    if not isinstance(length, int):
+        raise Unreadable("a slider with no length in pixels")
+    border = 0
+    for option, default in SCALE_DEFAULTS.items():
+        given = _kw(call, option)
+        got = default if given is None else _const(given, env)
+        if not isinstance(got, int):
+            raise Unreadable("a slider with a %s this cannot read" % option)
+        border += got
+    return {"kind": "scale", "text": "", "points": None, "bold": False,
+            "chars": None, "wpadx": 0, "ppadx": 0, "pack": {}, "name": name,
+            "px": length + 2 * border}
+
+
 def _widget(call, env, name=None):
     kind = KINDS[call.func.attr]
+    if kind == "scale":
+        return _slider(call, env, name)
     points, bold = _font(call)
     width = _const(_kw(call, "width"), env) if _kw(call, "width") else None
-    text = _const(_kw(call, "text"), env)
+    text = WORST.get(name, _const(_kw(call, "text"), env))
     if text is None:
         raise Unreadable("no readable text on a %s" % kind)
     return {"kind": kind, "text": WORST.get(name, text), "points": points,
@@ -572,7 +599,7 @@ def window_floor():
 
 
 def labelled_rows():
-    """The rows built by _drawer_row, the drawer's four and the side prompt,
+    """The rows built by _drawer_row, the drawer's five and the side prompt,
     counted straight off the calls rather than off build_rows' own
     bookkeeping, so a row build_rows stopped seeing would show up as a row
     that never got measured."""
@@ -803,7 +830,7 @@ def coached(turn="white", final=True, over=False):
     """App._drain_coach with one answer waiting on the queue. Returns the app
     and the arrow it asked for, if it asked for one."""
     app = viewer()
-    app.coach = types.SimpleNamespace(out=queue.Queue())
+    app.coach = types.SimpleNamespace(out=queue.Queue(), elo=1000)
     app.coach_on = types.SimpleNamespace(get=lambda: True)
     app.coach_fen = "the position"
     app.my_colour = "white"
@@ -855,7 +882,7 @@ def the_answer():
     app.coach.out.put(("mistake", {
         "fen": "the position", "turn": "white", "san": "Nh3",
         "uci": "g1h3", "text": "knight: g1 to h3", "worse": "1.0 worse",
-        "drop": 100}))
+        "drop": 100, "elo": 1000}))
     C.App._drain_coach(app)
     check("the warning is one line, in the words of the side it is for",
           app.lbl_mistake.text, "not Nh3, 1.0 worse")
@@ -875,10 +902,21 @@ def the_answer():
     app.coach.out.put(("mistake", {
         "fen": "some other position", "turn": "white", "san": "Nh3",
         "uci": "g1h3", "text": "knight: g1 to h3", "worse": "1.0 worse",
-        "drop": 100}))
+        "drop": 100, "elo": 1000}))
     C.App._drain_coach(app)
     check("a warning about a position already played past is not shown at all",
           app.lbl_mistake.text, "")
+
+    # The slider can move while a warning for the old rating is on the queue.
+    # It is about the right position and the wrong player.
+    app, drawn = coached()
+    app.coach.out.put(("mistake", {
+        "fen": "the position", "turn": "white", "san": "Nh3",
+        "uci": "g1h3", "text": "knight: g1 to h3", "worse": "1.0 worse",
+        "drop": 100, "elo": 600}))
+    C.App._drain_coach(app)
+    check("nor is one chosen for a rating the slider has since left",
+          (app.lbl_mistake.text, drawn), ("", [("a1a8", "the position")]))
 
     app, _ = coached(over=True)
     check("nor is one left up over a finished game", app.lbl_mistake.text, "")
@@ -896,9 +934,10 @@ def the_answer():
 class Engine:
     """A Coach that starts no process."""
 
-    def __init__(self, path, think_seconds=None):
+    def __init__(self, path, think_seconds=None, elo=None):
         self.path = path
         self.think_seconds = think_seconds
+        self.elo = elo
         self.started = False
 
     def start(self):
@@ -916,6 +955,7 @@ def switching_on(coach=None, asked=True, engine="stockfish"):
     app._save_config = lambda: None
     app._hide_arrow = lambda: None
     app._think_seconds = lambda: 1.0
+    app._elo = lambda: 800
     was = C.CO.find_engine, C.CO.Coach
     C.CO.find_engine, C.CO.Coach = (lambda: engine), Engine
     try:
@@ -951,8 +991,10 @@ def the_first_run():
           switching_on(engine=None).lbl_check.colour, C.WARN)
 
     app = switching_on(asked=False)
-    check("an engine that is there is started once, at the saved think time",
-          (app.coach.started, app.coach.think_seconds), (True, 1.0))
+    check("an engine that is there is started once, at the saved think time"
+          " and the saved rating",
+          (app.coach.started, app.coach.think_seconds, app.coach.elo),
+          (True, 1.0, 800))
     check("  with the move line left empty until it has an answer",
           app.lbl_coach.text, "")
     check("  where a tick is answered at once, since that is what it is for",
@@ -986,6 +1028,95 @@ def the_filename():
           and "_open_folder()" in source, True)
 
 
+class Clock:
+    """root.after and after_cancel, written down instead of scheduled."""
+
+    def __init__(self):
+        self.pending = {}
+        self.made = 0
+
+    def after(self, ms, fn):
+        self.made += 1
+        self.pending[self.made] = (ms, fn)
+        return self.made
+
+    def after_cancel(self, ident):
+        self.pending.pop(ident, None)
+
+
+def the_rating():
+    print("\n-- the rating the red arrow is chosen for -----------------")
+    check("a saved rating comes back as a stop the slider has",
+          [C.slider_elo(v) for v in (500, 1200, 1234, 1250, 1500)],
+          [500, 1200, 1200, 1300, 1500])
+    check("  one outside the slider comes back at its nearer end",
+          [C.slider_elo(v) for v in (0, -80, 2900)], [500, 500, 1500])
+    check("  and nonsense in config.json falls back rather than raising",
+          [C.slider_elo(v) for v in (None, "", "strong", [])],
+          [C.CO.DEFAULT_ELO] * 4)
+    check("the slider's two ends are the coach's two ends",
+          (C.CO.ELO_LOW, C.CO.ELO_HIGH), (500, 1500))
+
+    saved = []
+    told = []
+    app = types.SimpleNamespace(
+        root=Clock(), rating_after=None, lbl_elo=Blank(),
+        lbl_mistake=Blank(), arrow_bad_uci="g1h3",
+        arrow_bad_fen="the position", elo_choice=Switch(1000),
+        coach_fen="the position")
+    app.coach = types.SimpleNamespace(elo=1000,
+                                      set_elo=lambda elo: told.append(elo))
+    app._save_config = lambda: saved.append(app.elo_choice.get())
+    app._sync_arrow = lambda: None
+    app._elo = lambda: C.App._elo(app)
+    app._set_elo = lambda: C.App._set_elo(app)
+    app.lbl_mistake.configure(text="not Nh3, 1.0 worse")
+
+    # A drag is a run of steps. Each moves the number at once, and only the
+    # last one reaches the coach, because each hand-over restarts its pass.
+    for elo in (900, 800, 700):
+        app.elo_choice.set(elo)
+        C.App._slide_rating(app, str(elo))
+    check("dragging moves the number beside the slider as it goes",
+          app.lbl_elo.text, "700")
+    check("  and leaves one hand-over waiting, not one a step",
+          [ms for ms, _ in app.root.pending.values()], [C.RATING_SETTLE_MS])
+    check("  with nothing told to the coach while the slider is moving",
+          (told, saved), ([], []))
+
+    (_, fire), = app.root.pending.values()
+    fire()
+    check("once it is still, the coach is told the rating it stopped on",
+          told, [700])
+    check("  and it is written to config.json",
+          saved, [700])
+    check("  and the warning chosen for the old rating comes down, arrow and"
+          " all",
+          (app.lbl_mistake.text, app.arrow_bad_uci, app.arrow_bad_fen),
+          ("", None, None))
+
+    app.coach.elo = 700
+    app.lbl_mistake.configure(text="not Nh3, 1.0 worse")
+    app.arrow_bad_uci, app.arrow_bad_fen = "g1h3", "the position"
+    C.App._set_elo(app)
+    check("dragged away and back to where it was, the warning is left alone",
+          (told, app.lbl_mistake.text, app.arrow_bad_uci),
+          ([700], "not Nh3, 1.0 worse", "g1h3"))
+
+    app.coach = None
+    app.elo_choice.set(1400)
+    C.App._set_elo(app)
+    check("with coaching off the rating is still remembered",
+          saved[-1], 1400)
+
+    saved_keys = config_keys(C.App._save_config)
+    check("the rating is one of the settings written to config.json",
+          "mistake_elo" in saved_keys, True)
+    source = inspect.getsource(C.App._toggle_coach)
+    check("  and the coach is started with it",
+          "elo=self._elo()" in source, True)
+
+
 def every_stripe_is_built():
     """A stripe with no widget behind it is a KeyError on the first relayout."""
     print("\n-- every stripe has a widget -----------------------------")
@@ -1010,6 +1141,10 @@ def row_px(widgets, dpi):
     """How wide a row of widgets is, low bound and high bound."""
     low = high = 0
     for w in widgets:
+        if w["kind"] == "scale":
+            low += w["px"]
+            high += w["px"]
+            continue
         scale = px(w["points"], dpi) / px(w["points"], 96)
         wide = text_px(w["text"], w["points"], dpi, w["bold"])
         if w["chars"]:
@@ -1048,7 +1183,8 @@ def widths():
             low, high = row_px(rows[name], dpi)
             print("      %-6s at %-4s %3d to %3d px of %d   %s"
                   % (name, label, low, high, room,
-                     " ".join(w["text"] or "-" for w in rows[name])))
+                     " ".join(w["text"] or ("slider" if w["kind"] == "scale"
+                                            else "-") for w in rows[name])))
     for label, dpi in DPI.items():
         for name in sorted(rows):
             check("the %s row fits at %s scaling" % (name, label),
@@ -1205,6 +1341,7 @@ def main():
         the_answer()
         the_first_run()
         the_filename()
+        the_rating()
         widths()
         the_status_line()
         unreadable_widgets_are_refused()

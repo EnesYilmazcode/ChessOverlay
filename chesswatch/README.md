@@ -79,6 +79,10 @@ because a search nobody bounded holds a core for as long as you take over a
 move, and a number edited into `config.json` by hand is pulled back to the
 nearest offered one for the same reason.
 
+**Setup > Rating** is who the red line is for, 500 to 1500, saved as
+`mistake_elo`; [The rating](#the-rating) below says what it changes. A rating
+edited into `config.json` outside that range is pulled back to its nearer end.
+
 You supply the engine. `coach.py` looks at `$STOCKFISH_PATH`, then
 `chesswatch\engine\stockfish`, then the sibling `holochess\engine\stockfish`,
 then your `PATH`. Without one the switch says so and turns itself back off.
@@ -106,7 +110,7 @@ move to avoid is a second pass afterwards over **every legal move**:
 | Pass | What it does | Why it is there |
 | --- | --- | --- |
 | nominate | every legal move scored roughly, at a fixed depth | the only way to see the moves that are bad enough to be worth showing at all |
-| tempt | a second engine, playing badly on purpose, is asked what it would play here | a ranking sorts by strength and has no opinion about temptation |
+| likely | Maia-3 says how likely a player of the chosen rating is to play each legal move, and its likeliest bad ones join the shortlist | a ranking sorts by strength and has no opinion about temptation |
 | verify | the shortlist searched properly | two thirds of what nominate puts up does not survive it |
 | confirm | one move against the best move, on a longer clock | only for an extraordinary claim, and see below |
 
@@ -119,28 +123,40 @@ shown, for the same reason.
 
 The shortlist is **captures and checks first**, because that is where a
 player's eye goes and a mistake nobody was tempted by teaches nothing. Of what
-survives, the move shown is the **smallest drop that still clears the bar**
-rather than the biggest: a move a pawn behind the best is one you are about to
-play, and the worst move on the board is one nobody was going to.
+survives, the move shown is the one **a player of the rating on the slider is
+most likely to play**.
 
-The tempt pass is a **second Stockfish at Skill Level 0**, asked to play rather
-than to analyse and given a tenth of a second, because the question is which
-move it picks. Guessing at temptation from the board is what captures-first
-does; a move a weak player actually played is a better guess by definition. It
-is a candidate on top of the shortlist rather than in place of anything on it,
-so every gate below still applies, and if the second engine will not start the
-pass carries on without it.
+### The rating
 
-Its own move is a **bad** red arrow: two thirds of what it names is not a
-mistake at all, and 16 times in 60 it simply plays the best move, because
-Stockfish playing badly plays slightly off rather than tempted. Behind the
-gates it is worth **one position in sixty**, and that one was a 3.2 pawn
-blunder the shortlist missed while it was looking at captures. It looks worth
-seven times that until the gates are applied, but six of those seven are in
-positions already decided. **The blunders a weak engine finds are mostly in
-games that are already over.** `UCI_Elo` cannot go below 1320 and adds nothing
-over Skill Level 0, zero positions in sixty, so there is one weak engine and
-not two.
+**Setup > Rating** is a slider from 500 to 1500, and it says who the red arrow
+is for. The likely pass asks [Maia-3](maia/), a model trained on human games,
+how likely a player of that rating is to play each legal move. That does two
+things. The three moves it rates likeliest, of those nominate has at least 0.2
+behind, join the shortlist on top of its four, because the shortlist is picked
+by captures, checks and the engine's order rather than by what people play. And
+of the moves verify says are really worse, the one drawn is the one it rates
+likeliest. Without Maia it is
+the closest call, the smallest drop that still clears the bar, which is the
+best guess the scores alone can make.
+
+Move the slider and the red arrow on the board is chosen again for the new
+rating. Only the second pass runs again: the move to play has nothing to do
+with a rating, so it is not searched a second time. The coach is told once the
+slider has been still for a quarter of a second, since every rating it is told
+starts the pass over.
+
+This used to be a **second Stockfish at Skill Level 0**, asked what it would
+play. It could not be told a rating: Stockfish playing badly plays slightly off
+rather than tempted, 16 times in 60 it simply played the best move, and its
+`UCI_Elo` setting stops at 1320, above the whole slider. Maia is trained on the
+moves players of each rating actually made.
+
+Maia is a separate program under a different licence, AGPL-3.0, in
+[`maia/`](maia/). `maiaclient.py` starts `maia/engine.py` as a child process and
+exchanges a line of JSON with it per question, the way `coach.py` talks to
+Stockfish. It needs onnxruntime, which is in `requirements.txt`. If it will not
+start, the red arrow is still drawn, chosen the old way, and `maiatest.py` is
+the suite that fails rather than skips.
 
 A warning is one of **three things**, and the wording is what tells them apart.
 It used to be one thing and silence, and the silence was 45% of turns.
@@ -167,21 +183,35 @@ of those was a shallow search inventing a forced mate that is not there**. So a
 drop that rests on a mate, or one too large to believe, is put to a longer
 search on those two moves alone before anything is drawn.
 
-What that adds up to, measured by driving the real `Coach` over 60 positions
-from games/: a red arrow on **82%** of them, made of 33 real mistakes, 15
-decided games and 1 merely weaker, at a median 1.47 pawns.
+What that adds up to, measured by driving the real `Coach` at the 1.0s think
+time over 60 positions from games/, one from each of 60 games and always with
+the recorder's own side to move, which is the only kind of position the app
+asks about. The last column is how often Maia says a player of that rating
+plays the move that got drawn, the median over the positions with an arrow:
 
-The 33 is the number to watch, because it is the same 33 the pass found when it
-drew on 55% of turns and stayed silent the rest. **Widening it did not cost a
-single real mistake**; it only stopped throwing away the 16 positions where
-there was a worse move to show and no honest way to call it a blunder.
+| | red arrow | real mistakes | that player plays it |
+| --- | --- | --- | --- |
+| rating 500 | 56 of 60 | 49 | 12.0% |
+| rating 1000 | 56 of 60 | 48 | 9.1% |
+| rating 1500 | 55 of 60 | 48 | 3.5% |
+| no Maia, closest call | 54 of 60 | 46 | 2.6% at 500, 0.8% at 1000, 0.8% at 1500 |
 
-The remaining 18% is positions where nothing on the shortlist is even 0.2
-behind the best move. Filling those in means nominating moves less than 0.7
-behind at rough depth, which is more search for arrows pointing at moves that
-are equal in every way that matters. The pass costs 0.35s at the
-median and 0.82s at the 90th percentile on top of the think time, and the
-**Think** dial drives how deep it goes, exactly as it drives everything else.
+So the move drawn is one a player of that rating plays four to eleven times as
+often as the closest call, and **the arrow at 500 and the arrow at 1500 are
+different moves on 40 of the 60**, and on 37 in a second run. How often there
+is an arrow at all, and how often it is a real mistake, stays about where it
+was.
+
+When the three wordings replaced one wording and silence, on an earlier sample
+of 60, the arrow went from 55% of turns to 82% without losing one of its 33
+real mistakes. It only stopped throwing away the positions where there was a
+worse move to show and no honest way to call it a blunder.
+
+The pass costs 0.62s at the median and 1.22s at the 90th percentile on top of
+the think time, against 0.55s and 1.09s without Maia, measured the same way in
+the same session; the extra is up to three more lines in verify. Moving the
+slider costs the pass alone, 0.57s at the median. The **Think** dial drives how
+deep it goes, exactly as it drives everything else.
 
 ## The arrow on the board
 
@@ -629,11 +659,13 @@ rectangle is in use.
     python selftest.py     147 checks, including real screenshots
     python piecetest.py     66 checks on the piece reader under a bad capture
     python positiontest.py  39 checks on the whole board solver, no pixels
-    python enrolltest.py   220 checks on teaching the pieces and on the arrows
-    python layouttest.py   126 checks on what the window shows and how wide
-    python coachtest.py     86 checks on the engine wrapper and the lines it
-                            feeds, 77 without a display and 56 without
+    python enrolltest.py   222 checks on teaching the pieces and on the arrows
+    python layouttest.py   143 checks on what the window shows and how wide
+    python coachtest.py    130 checks on the engine wrapper and the lines it
+                            feeds, 118 without a display and 81 without
                             Stockfish
+    python maiatest.py      36 checks on Maia, the model behind the rating,
+                            and the pipe to it
     python overlaytest.py   23 checks that the arrows cannot corrupt a reading,
                             25 with --on-screen
     python settletest.py    move animation, with the screen on a clock
@@ -733,7 +765,7 @@ from your own screen.
 ## Needs
 
 - Python 3
-- `pip install -r requirements.txt` (mss, pillow, chess)
+- `pip install -r requirements.txt` (mss, pillow, chess, onnxruntime)
 
 No OCR, no Tesseract. An earlier version read the move list text and broke on
 figurine notation, where the piece is an icon rather than a letter.

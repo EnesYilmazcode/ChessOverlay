@@ -1076,7 +1076,7 @@ def coach_side():
 
     def drained(turn, yours):
         app = types.SimpleNamespace(
-            coach=types.SimpleNamespace(out=queue.Queue()),
+            coach=types.SimpleNamespace(out=queue.Queue(), elo=1000),
             coach_on=types.SimpleNamespace(get=lambda: True, set=lambda v: None),
             coach_fen=FEN_A, my_colour=yours, arrow=None, arrow_uci=None,
             arrow_fen=None, arrow_cleared=None, region=R1,
@@ -1107,7 +1107,7 @@ def coach_side():
 
     def warned(turn, yours, fen=FEN_A, kind="mistake"):
         app = types.SimpleNamespace(
-            coach=types.SimpleNamespace(out=queue.Queue()),
+            coach=types.SimpleNamespace(out=queue.Queue(), elo=1000),
             coach_on=types.SimpleNamespace(get=lambda: True, set=lambda v: None),
             coach_fen=FEN_A, my_colour=yours, arrow=None, arrow_uci=None,
             arrow_fen=None, arrow_cleared=None, region=R1,
@@ -1120,7 +1120,7 @@ def coach_side():
         app.coach.out.put(("mistake", {
             "fen": fen, "turn": turn, "san": "Nh3", "uci": "g1h3",
             "text": "knight: g1 to h3", "worse": "1.0 worse", "drop": 100,
-            "kind": kind, "winning": True}))
+            "kind": kind, "winning": True, "elo": 1000}))
         CW.App._drain_coach(app)
         return app.arrow_bad_uci, app.lbl_mistake.text
 
@@ -1297,10 +1297,12 @@ def stub_app(reader):
         arrow_on=types.SimpleNamespace(get=lambda: True),
         show_board=types.SimpleNamespace(get=lambda: False),
         think_choice=types.SimpleNamespace(get=lambda: "1s"),
+        elo_choice=types.SimpleNamespace(get=lambda: 1000),
         taught_sheet=None,
         lbl_check=Blank(),
         worker=types.SimpleNamespace(reader=reader))
     app._think_seconds = lambda: CW.App._think_seconds(app)
+    app._elo = lambda: CW.App._elo(app)
     app._save_config = lambda: CW.App._save_config(app)
     app._load_config = lambda: CW.App._load_config(app)
     return app

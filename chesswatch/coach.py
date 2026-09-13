@@ -14,7 +14,10 @@ position: one with "final" false is the engine still looking, and may change.
 Once that answer is settled the same position is asked a second question: which
 move you might play instead that is really worse. That answer arrives on its
 own, as a "mistake" message, because it takes longer and the move to play must
-not wait for it.
+not wait for it. Which of the worse moves it names depends on a rating, set by
+the slider in the window: it is the one a player of that rating is most likely
+to play, which is a question for Maia-3, a model of human moves. Maia runs as a
+separate program, maia/engine.py, spoken to through maiaclient.py.
 
 Stockfish is not in this repository. It is found at $STOCKFISH_PATH, in the
 sibling holochess/engine/stockfish folder, in chesswatch/engine, or on PATH.
@@ -32,6 +35,8 @@ from pathlib import Path
 
 import chess
 import chess.engine
+
+import maiaclient
 
 APP_DIR = Path(__file__).resolve().parent
 
@@ -61,6 +66,27 @@ def nearest_think(value):
     except (TypeError, ValueError):
         return DEFAULT_THINK
     return min(THINK_CHOICES, key=lambda offered: abs(offered - want))
+
+
+ELO_LOW, ELO_HIGH = 500, 1500
+DEFAULT_ELO = 1000
+
+
+def clamp_elo(value):
+    """The rating the red arrow is chosen for, kept inside what the slider offers.
+
+    Read out of config.json the same way the think time is, so a hand-edited
+    3000 comes back as 1500 and nonsense as the default rather than an error
+    before the window exists. The model itself takes any rating; the bound is
+    the range the slider was made for.
+    """
+    try:
+        want = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_ELO
+    if want != want:                     # NaN compares unequal to itself
+        return DEFAULT_ELO
+    return int(min(ELO_HIGH, max(ELO_LOW, round(want))))
 
 
 def find_engine():
@@ -132,16 +158,18 @@ def read_score(score, turn):
 #             moves that are bad enough to be worth showing. A depth limit
 #             rather than a time limit, because lines searched to different
 #             depths cannot be compared with each other at all.
-#   verify    the shortlist searched properly. This is what picks the move, and
-#             two thirds of what nominate puts up does not survive it.
+#   verify    the shortlist searched properly. This is what decides which moves
+#             are really worse, and two thirds of what nominate puts up does
+#             not survive it.
 #   confirm   only for an extraordinary claim. Measured over the same games,
 #             one red arrow in nine pointed at a move a longer search says is
 #             fine, and every one of those was a shallow search inventing a
 #             forced mate. A drop that rests on a mate, or one too large to
 #             believe, is put to a longer search on those two moves alone.
 #
-# What comes out of that: a red arrow on 53% of real positions, and on the 45
-# it was measured over, every single one of them was still at least half a pawn
+# What came out of those searches alone, before the three wordings in standing()
+# and before Maia: a red arrow on 53% of real positions, and on the 45 it was
+# measured over, every single one of them was still at least half a pawn
 # worse under an independent two second search. The other 47% is not a failure
 # to find something. Half of it is positions where nothing tempting is really
 # worse, and the rest is positions already so won or lost that the difference
@@ -160,40 +188,58 @@ HUGE = 800              # a drop this big is put to a longer search first
 # A move nobody was tempted by teaches nothing, and a ranking has no opinion
 # about temptation: it sorts by strength, so the moves either side of the one
 # you were about to play look the same to it. shortlist() guesses at temptation
-# from the board, by putting captures and checks first, and a second engine
-# playing badly on purpose is a better guess, because the move a weak player
-# picks is the definition of the move a weak player was tempted by.
+# from the board, by putting captures and checks first. Maia-3 is a model
+# trained on human games to say how likely a player of a given rating is to
+# play each legal move, which is the question a red arrow is a guess at, asked
+# for the rating on the slider.
 #
-# It is a candidate source, not a replacement, and a small one. Measured by
-# driving this class over 60 positions out of games/:
+# It does two jobs. It adds candidates: of the moves the rough pass has at
+# least SOFT_DROP behind, the LIKELY that Maia rates likeliest join the
+# shortlist, on top of its cap. And it chooses: of the moves verify says are
+# really worse, the red arrow is the one Maia rates likeliest, where it used to
+# be the closest call. A second Stockfish at Skill Level 0 was the candidate
+# source before, and could do neither for a rating: it plays slightly off
+# rather than tempted, and UCI_Elo stops at 1320, above the whole slider.
 #
-#   without the weak engine         53%   32 of 60 positions get a red arrow
-#   with it                         55%   33 of 60
-#   its move on its own             25%   median 0.41 worse, and it plays the
-#                                         best move itself 16 times in 60
+# Measured by driving this class over 60 positions from games/, one per game on
+# the recorder's own side, at the 1.0s think time. The last column is how often
+# Maia says a player of that rating plays the move that got drawn, the median
+# over positions with an arrow:
 #
-# On its own it is a bad red arrow: two thirds of what it names is not a
-# mistake, because Stockfish playing badly plays slightly off rather than
-# tempted. As a candidate behind the gates that were already here it is worth
-# one position in sixty, and that one was a 3.2 pawn blunder the shortlist of
-# four missed while it was looking at captures.
+#                                red arrow   that player plays it
+#   rating 500                   56 of 60    12.0%
+#   rating 1000                  56 of 60     9.1%
+#   rating 1500                  55 of 60     3.5%
+#   no Maia, closest call        54 of 60     2.6% at 500, 0.8% at 1000 and
+#                                             0.8% at 1500
 #
-# It looks worth far more than that until the gates are applied. Scoring its
-# move directly against the best one credits it with seven positions, but six
-# of those seven are already decided, by five pawns or by a forced mate, and
-# already_decided refuses them for the reason it has always refused them. The
-# blunders a weak engine finds are mostly in games that are already over.
+# The arrow at 500 and the arrow at 1500 are different moves on 40 of the 60,
+# and on 37 in a second run, which is the slider doing something you can see.
+# How many arrows are real mistakes rather than weaker or decided stays about
+# where it was, 48 or 49 of 60 at every rating.
 #
-# UCI_Elo cannot go below 1320 and was measured too: it adds nothing at all
-# over Skill Level 0, zero positions in sixty, so there is one weak engine.
-WEAK_SKILL = 0          # the weakest Stockfish will play
-WEAK_THINK = 0.10       # it is being asked what it would play, not analysis
+# Candidates as well as the choice, because the shortlist is picked by captures,
+# checks and the engine's order rather than by what people play: with Maia
+# choosing from the shortlist alone the 1000 column is 1.2%. Three rather than
+# one for the sake of 1500. Against one candidate, three named a likelier move
+# there on 15 and 16 positions in two runs and a less likely one on 6 and 7,
+# where two runs of the same code split 8 and 7; at 500 and 1000 the two were
+# even. Only moves the rough pass has SOFT_DROP behind, since one it calls
+# equal to the best can never be drawn. A bar of NOMINATE_DROP instead, or no
+# bar, came out the same within that run to run spread.
+#
+# What that costs is up to three more lines in verify. The whole pass takes
+# 0.62s at the median and 1.22s at the 90th percentile, against 0.55s and 1.09s
+# without Maia, measured the same way in the same session. Moving the slider
+# runs this pass again on the position on screen and nothing else, 0.57s at the
+# median.
+LIKELY = 3              # how many of Maia's likeliest moves join the shortlist
 
 # How deep the two cheap passes go. The think-time dial is what a player has
 # said about how much of a core this may hold, so it drives this pass too: a
 # shallower nominate and verify are cheaper and less certain, which is what the
-# dial means everywhere else. Measured at 1.0s: the whole pass takes 0.35s at
-# the median and 0.82s at the 90th percentile.
+# dial means everywhere else. What the whole pass costs at 1.0s is measured
+# above LIKELY.
 DEPTHS = {0.3: (8, 12), 1.0: (10, 14), 2.5: (12, 16)}
 
 # A depth limit is open ended: a position that is hard to search would hold a
@@ -242,21 +288,35 @@ def shortlist(board, best, rough, drop=NOMINATE_DROP, most=SHORTLIST):
     return (tempting + [move for move in bad if move not in tempting])[:most]
 
 
-def with_tempted(picks, best, tempted):
-    """The shortlist with the weak engine's move added to it.
+def with_likely(picks, best, likely, rough=(), most=LIKELY, drop=SOFT_DROP):
+    """The shortlist with the moves Maia thinks most likely added to it.
 
-    It goes on the end rather than the front, and on top of the cap rather than
-    displacing anything, because it is a different kind of guess from the ones
-    already there. Those are moves the board says an eye goes to. This is a
-    move something actually played. Neither gets to push the other off.
-
-    A weak engine that agrees with the strong one has named no mistake, and
-    agreeing is most of what it does: 16 times in 60 it played the best move
-    itself. There is nothing to add then, and it adds nothing.
+    likely is Maia's answer, every legal move with its probability and the most
+    likely first. The moves taken from it are the likeliest ones the rough pass
+    already has at least drop behind the best, because a move the rough pass
+    calls equal to the best one can never be drawn and would only cost the
+    verify pass a line. A move the rough pass has no score for is taken, and the
+    verify pass decides. They go on the end, on top of the cap rather than in
+    place of anything on it: the shortlist is moves the board says an eye goes
+    to, these are moves people play, and neither gets to push the other off.
     """
-    if tempted is None or tempted == best or tempted in picks:
+    if not likely:
         return picks
-    return picks + [tempted]
+    behind = {}
+    if rough:
+        top = value(rough[0].score)
+        behind = {line.move: top - value(line.score) for line in rough}
+    extra = []
+    for uci, _ in likely:
+        if len(extra) >= most:
+            break
+        move = chess.Move.from_uci(uci)
+        if move == best or move in picks or move in extra:
+            continue
+        if behind.get(move, drop) < drop:
+            continue
+        extra.append(move)
+    return picks + extra
 
 
 def most_tempting(drops, bar=MIN_DROP):
@@ -270,6 +330,23 @@ def most_tempting(drops, bar=MIN_DROP):
         if drop >= bar:
             return drop, move
     return None
+
+
+def most_likely(drops, likely, bar=MIN_DROP):
+    """The move a player of the chosen rating is likeliest to play, among the
+    moves that are really worse.
+
+    likely is Maia's answer as (uci, probability) pairs. A move it gave no
+    probability counts as never played. Between two moves just as likely, the
+    closer call wins, for the reason most_tempting gives.
+    """
+    chance = dict(likely or ())
+    worse = [(chance.get(move.uci(), 0.0), -drop, drop, move)
+             for drop, move in drops if drop >= bar]
+    if not worse:
+        return None
+    _, _, drop, move = max(worse, key=lambda row: row[:2])
+    return drop, move
 
 
 def standing(best, bad, margin=DECIDED):
@@ -352,10 +429,16 @@ class Coach(threading.Thread):
     # the arrow cannot chase the engine faster than the eye can follow.
     PARTIAL_GAP = 0.35
 
-    def __init__(self, path, think_seconds=DEFAULT_THINK):
+    def __init__(self, path, think_seconds=DEFAULT_THINK, elo=DEFAULT_ELO,
+                 maia=maiaclient.Maia):
         super().__init__()
         self.path = str(path)
         self.think_seconds = think_seconds
+        # The rating the red arrow is chosen for. Read once at the start of each
+        # second pass, like think_seconds; set it through set_elo() so the
+        # position already on screen is judged again.
+        self.elo = clamp_elo(elo)
+        self.maia = maia         # what starts Maia, or None to do without it
         self.out = queue.Queue()
         self.stop_flag = threading.Event()
         self._wake = threading.Event()
@@ -364,6 +447,8 @@ class Coach(threading.Thread):
         self._busy = None        # the position being searched at this moment
         self._done = None        # the position most recently answered in full
         self._live = None        # the running search, so a question can end it
+        self._best = None        # (fen, move) the move to play on _busy or _done
+        self._redo = None        # a position whose second pass is to run again
 
     def ask(self, fen):
         """Look at this position. Repeats and stale positions cost nothing.
@@ -380,6 +465,31 @@ class Coach(threading.Thread):
             if fen == self._want or fen == self._busy or fen == self._done:
                 return
             self._want = fen
+            live = self._live
+        self._end(live)
+        self._wake.set()
+
+    def set_elo(self, elo):
+        """Choose the red arrow for a player of this rating from now on, and
+        choose it again for the position that was last answered.
+
+        Only the second pass runs again. The move to play does not depend on a
+        rating, so searching for it again would only put the line above back
+        into its "..." for nothing. A position whose move to play is still being
+        searched needs nothing done: its second pass reads the rating when it
+        starts. One whose second pass is running is stopped and started again,
+        and one already finished is asked again.
+        """
+        elo = clamp_elo(elo)
+        with self._lock:
+            if elo == self.elo:
+                return
+            self.elo = elo
+            again = self._busy if self._busy is not None else self._done
+            if (self._want is not None or again is None
+                    or self._best is None or self._best[0] != again):
+                return
+            self._want = self._redo = again
             live = self._live
         self._end(live)
         self._wake.set()
@@ -407,21 +517,19 @@ class Coach(threading.Thread):
         except Exception as exc:
             self.out.put(("engine", "Stockfish would not start: %s" % exc))
             return
-        # The weak one is a candidate source for the red arrow and nothing
-        # else, so it is allowed to fail. A machine that cannot spare the
-        # second process still gets the move to play and still gets a red
-        # arrow, from the shortlist the way it always came.
-        weak = None
-        try:
-            weak = chess.engine.SimpleEngine.popen_uci(self.path, **POPEN_FLAGS)
-            weak.configure({"Skill Level": WEAK_SKILL})
-        except Exception:
-            if weak is not None:
-                try:
-                    weak.quit()
-                except Exception:
-                    pass
-            weak = None
+        # Maia only ever shapes the red arrow, so it is allowed to fail. A
+        # machine without onnxruntime still gets the move to play and still gets
+        # a red arrow, chosen the way it was before there was a model. Started
+        # now rather than at the first question, because loading it takes about
+        # half a second and the first move to play is being searched for in the
+        # meantime anyway.
+        maia = None
+        if self.maia is not None:
+            try:
+                maia = self.maia()
+                maia.start()
+            except Exception:
+                maia = None
         self.out.put(("engine", "ready"))
         try:
             while not self.stop_flag.is_set():
@@ -430,20 +538,26 @@ class Coach(threading.Thread):
                 while True:
                     with self._lock:
                         fen, self._want = self._want, None
+                        redo = fen is not None and fen == self._redo
+                        self._redo = None
                         self._busy = fen
+                        if fen is not None and not redo:
+                            self._best = None
                     if fen is None or self.stop_flag.is_set():
                         break
                     try:
-                        self._answer(engine, weak, fen)
+                        self._answer(engine, maia, fen, redo)
                     finally:
                         with self._lock:
                             self._busy = None
         finally:
-            for live in (engine, weak):
-                if live is None:
-                    continue
+            try:
+                engine.quit()
+            except Exception:
+                pass
+            if maia is not None:
                 try:
-                    live.quit()
+                    maia.close()
                 except Exception:
                     pass
 
@@ -454,7 +568,21 @@ class Coach(threading.Thread):
         with self._lock:
             self._done = fen
 
-    def _answer(self, engine, weak, fen):
+    def _answer(self, engine, maia, fen, redo=False):
+        if redo:
+            # The rating changed on a position already answered. Its move to
+            # play is known and already on screen, so only the red arrow is
+            # worked out again.
+            with self._lock:
+                known = self._best
+            if known is None or known[0] != fen:
+                return
+            try:
+                self._mistake(engine, maia, chess.Board(fen), fen, known[1])
+            except Exception as exc:
+                self.out.put(("engine", "Stockfish stopped: %s" % exc))
+                self.stop_flag.set()
+            return
         try:
             board = chess.Board(fen)
         except ValueError:
@@ -474,10 +602,13 @@ class Coach(threading.Thread):
             return
         try:
             best = self._search(engine, board, fen)
+            if best is not None:
+                with self._lock:
+                    self._best = (fen, best)
             # Second, and only once the move to play is on screen. It is the
             # answer that matters, and this pass costs about as long again.
             if best is not None and not self._cut():
-                self._mistake(engine, weak, board, fen, best)
+                self._mistake(engine, maia, board, fen, best)
         except Exception as exc:
             self.out.put(("engine", "Stockfish stopped: %s" % exc))
             self.stop_flag.set()
@@ -571,23 +702,28 @@ class Coach(threading.Thread):
         lines.sort(key=lambda line: -value(line.score))
         return lines
 
-    def _tempted(self, weak, board):
-        """What a weak engine would play here, which is this pass's guess at
-        the move you were about to make.
+    def _likely(self, maia, board, fen, elo):
+        """Maia's answer for this position at this rating: every legal move with
+        how likely a player of that rating is to play it, most likely first.
 
-        None if there is no second engine or it will not answer, and the pass
-        carries on without it on the shortlist alone. It is asked to play
-        rather than to analyse, and given a tenth of a second, because the
-        question is which move it picks and not what it thinks of it.
+        None if there is no Maia or it will not answer, and the pass carries on
+        without it. The wait gives up the moment a new position is asked for,
+        since the answer would be about a board already played past. Anything
+        that is not a legal move here is dropped rather than trusted, because
+        this answer came out of another process.
         """
-        if weak is None:
+        if maia is None:
             return None
         try:
-            return weak.play(board, chess.engine.Limit(time=WEAK_THINK)).move
+            answer = maia.ask(fen, elo, give_up=self._cut)
+            if not answer:
+                return None
+            legal = {move.uci() for move in board.legal_moves}
+            return [(uci, float(p)) for uci, p in answer if uci in legal] or None
         except Exception:
             return None                  # a red arrow is not worth a crash
 
-    def _mistake(self, engine, weak, board, fen, best):
+    def _mistake(self, engine, maia, board, fen, best):
         """The move worth being warned off, published on its own.
 
         Two searches and sometimes a third; the comment above Line says why each
@@ -597,14 +733,17 @@ class Coach(threading.Thread):
         """
         nominate, verify = depths_for(self.think_seconds)
         ceiling = CEILING * self.think_seconds
+        elo = self.elo
 
         rough = self._scan(engine, board,
                            chess.engine.Limit(depth=nominate, time=ceiling),
                            board.legal_moves.count())
         if self._cut():
             return
-        picks = with_tempted(shortlist(board, best, rough), best,
-                             self._tempted(weak, board))
+        likely = self._likely(maia, board, fen, elo)
+        if self._cut():
+            return
+        picks = with_likely(shortlist(board, best, rough), best, likely, rough)
         if not picks:
             return                       # nothing here looks bad enough
 
@@ -619,11 +758,17 @@ class Coach(threading.Thread):
             return
         drops = [(value(scores[best]) - value(scores[move]), move)
                  for move in picks if move in scores]
-        # The closest real mistake if there is one, and otherwise the closest
-        # move that is worse at all. Asking twice rather than once with the low
-        # bar, because when a real mistake is on the board it is the one worth
-        # drawing even though something nearer the best move also qualifies.
-        chosen = most_tempting(drops) or most_tempting(drops, bar=SOFT_DROP)
+        # A real mistake if there is one, and otherwise a move that is worse at
+        # all. Asking twice rather than once with the low bar, because when a
+        # real mistake is on the board it is the one worth drawing even though
+        # something nearer the best move also qualifies. Of those, the one a
+        # player of the chosen rating is likeliest to play, and without Maia
+        # the closest call, which is the best guess the scores alone can make.
+        if likely:
+            chosen = (most_likely(drops, likely)
+                      or most_likely(drops, likely, bar=SOFT_DROP))
+        else:
+            chosen = most_tempting(drops) or most_tempting(drops, bar=SOFT_DROP)
         if chosen is None:
             return                       # nothing here is worse than the best
         drop, move = chosen
@@ -655,6 +800,12 @@ class Coach(threading.Thread):
             "drop": drop,
             "kind": kind,
             "winning": value(scores[best]) > 0,
+            # The rating it was chosen for, so an answer that was already on
+            # its way when the slider moved can be told apart and dropped.
+            "elo": elo,
+            # How likely Maia thinks a player of that rating is to play it, or
+            # None if the choice was made without Maia.
+            "likely": dict(likely).get(move.uci()) if likely else None,
         }))
 
     def _publish(self, board, fen, info, final):

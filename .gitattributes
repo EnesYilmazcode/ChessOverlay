@@ -1,0 +1,4 @@
+# The Maia model is protobuf, not text. git guesses which a file is from its
+# first few kilobytes, and with core.autocrlf on a wrong guess would rewrite the
+# byte pairs in it that look like line endings. This says so outright.
+*.onnx binary

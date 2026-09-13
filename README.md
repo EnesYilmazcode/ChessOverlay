@@ -19,10 +19,15 @@ leaves the machine.
 
 That is a real position twenty-two plies in, not an opening: the arrows are
 worth looking at when the board is busy enough that the move is not obvious.
-Cyan is the move to play, d5. Red is Nxe5, the pawn grab that is 3.5 worse and
-the move a player is far more likely to reach for. Both come out of the engine
-at the moment the picture is taken rather than being typed into the script.
-Regenerate it with `python mkshot.py` from `chesswatch/`.
+Cyan is the move to play, d5. Red is Nxe5, the pawn grab that is 3.5 worse.
+Both come out of the engine at the moment the picture is taken rather than
+being typed into the script. Regenerate it with `python mkshot.py` from
+`chesswatch/`.
+
+That picture was taken before the red arrow followed a rating. At the slider's
+default of 1000 the same position gets dxe5 or Nxe5, depending on how the
+search comes out. dxe5 is 0.9 worse, right on the bar for a real mistake, and
+Maia gives a 1000 player a 17% chance of playing it against 0.04% for Nxe5.
 
 ## How it works
 
@@ -238,12 +243,15 @@ never imports the piece reader and can be tested without one.
     |                     BoardTracker as its `reader`.
     +-- enroll.py ....... cut a piece set out of a screenshot, by hand
     +-- coach.py ........ Stockfish on its own thread, answers on a queue
+    +-- maiaclient.py ... starts maia/engine.py and asks it which moves a
+    |                     player of a rating plays.  A pipe, not an import.
     +-- overlay.py ...... the click-through arrow on the real board
 
   not wired in yet, each with its own tests and command line:
     position.py ......... all 64 squares as one legal position
     piecebank.py ........ which piece set this board is drawn in
 
+  chesswatch/maia/engine.py  Maia-3, a separate AGPL program, see License
   holochess/holochess.py ... standalone board vs the engine, own arrow
 ```
 
@@ -252,7 +260,8 @@ never imports the piece reader and can be tested without one.
 | [`chesswatch/chesswatch.py`](chesswatch/) | The window, the capture thread, the queues, the wiring. | Finished. |
 | [`chesswatch/watcher.py`](chesswatch/watcher.py) | Board-finding, occupancy, move inference, game files. No GUI on purpose, so it tests headless. | Finished. 87 headless checks + 2 on-screen. |
 | [`chesswatch/pieces.py`](chesswatch/pieces.py) | Which piece is on a square, by normalised shape matching. | Works. |
-| [`chesswatch/coach.py`](chesswatch/coach.py) | Stockfish on its own thread, read mid-search, then asked which move to avoid. | Works. 86 checks. On by default. |
+| [`chesswatch/coach.py`](chesswatch/coach.py) | Stockfish on its own thread, read mid-search, then asked which move to avoid, with Maia choosing it for a rating. | Works. 130 checks. On by default. |
+| [`chesswatch/maia/`](chesswatch/maia/) | Maia-3 5M under onnxruntime, as a separate program over a pipe. AGPL-3.0. | Works. 36 checks in `maiatest.py`. |
 | [`chesswatch/overlay.py`](chesswatch/overlay.py) | Both click-through arrows, in colours the reader is blind to. | Works. 23 checks, headless by default. |
 | [`chesswatch/position.py`](chesswatch/position.py) | All 64 squares as one legal position, min-cost flow. | Works. 29 checks. Nothing calls it yet. |
 | [`chesswatch/piecebank.py`](chesswatch/piecebank.py) | Choosing the piece set when learning is impossible. | Works. Command line only so far. |
@@ -299,13 +308,19 @@ capture takes and when a move gives check, and counts a forced mate in moves.
 The red line is the second answer about the same position: the move you were
 probably about to play instead, which is the half a lesson is made of. It
 arrives about half a second after the first and the move to play never waits on
-it. Finding it runs a second Stockfish at Skill Level 0 alongside the real one,
-because a ranking sorts moves by strength and has no opinion about which of
-them is tempting, and the move a weak player picks is the definition of the
-move a weak player was tempted by. It shows on 82% of positions, and the line under it says which of three things
-it is: `not Nxe5, 3.5 worse` for a real mistake, `Nxe5 is 0.4 worse` for a move
-that is only weaker, and `Nxe5, 3.1 worse, winning anyway` in a game already
-decided. Only the first gets told *not*. The
+it. A ranking sorts moves by strength and has no opinion about which of them is
+tempting, so which worse move it names is decided by a model of human players:
+[Maia-3](chesswatch/maia/), trained on human games to say how likely a player of
+a given rating is to play each move. **Setup > Rating** is a slider from 500 to
+1500, and the red arrow is the worse move a player of that rating is most likely
+to play. Move the slider and the arrow on the board is chosen again. A model of
+people rather than a weakened Stockfish, because Stockfish playing badly plays
+slightly off rather than tempted, and its own rating setting stops at 1320. It
+shows on about 92% of positions at every rating, and the line under it says
+which of three things it is: `not Nxe5, 3.5 worse` for a real mistake,
+`Nxe5 is 0.4 worse` for a move that is only weaker, and
+`Nxe5, 3.1 worse, winning anyway` in a game already decided. Only the first
+gets told *not*. The
 [chesswatch README](chesswatch/README.md#the-move-to-avoid) has the measured
 reason it is not all of them.
 
@@ -322,9 +337,9 @@ list, and carries on as a recorder. Untick **Coach** under **Setup** to run that
 way on purpose, and it is remembered.
 
 **Setup > Think** sets how long the engine gets on one position: 0.3, 1 or 2.5
-seconds. Both switches and the think time are remembered in `config.json`. See
-[Three threads and two queues](#three-threads-and-two-queues) for why a longer
-think never makes you wait.
+seconds. Both switches, the think time and the rating are remembered in
+`config.json`. See [Three threads and two queues](#three-threads-and-two-queues)
+for why a longer think never makes you wait.
 
 Tick **Arrow** as well and both moves are drawn on the board itself, over
 whatever program is showing it. The window is click-through, so it does not get
@@ -364,7 +379,8 @@ hint is always computed at full strength no matter where that slider sits.
 ```
 cd chesswatch
 python selftest.py     147 headless checks, including real screenshots
-python coachtest.py     86 checks on the engine wrapper and its label
+python coachtest.py    130 checks on the engine wrapper and its label
+python maiatest.py      36 checks on Maia and the pipe to it
 python overlaytest.py   23 checks that the arrows cannot corrupt a reading
 python settletest.py    move animation, driven off a real clock
 python livetest.py      plays whole games past the real capture worker
@@ -393,9 +409,11 @@ name ships with them.
 ## Needs
 
 Python 3, and `pip install -r requirements.txt` in whichever half you are
-running. The recorder needs mss, pillow and chess. The engine half needs PyQt6,
-chess, and a Stockfish binary, which the coach then shares. No OCR anywhere, and
-no Tesseract.
+running. The recorder needs mss, pillow, chess and onnxruntime, the last for
+the rating behind the red arrow; without it the red arrow is still drawn, chosen
+from Stockfish's scores alone. The engine half needs PyQt6, chess, and a
+Stockfish binary, which the coach then shares. No OCR anywhere, and no
+Tesseract.
 
 Written for Windows. The recorder calls `SetProcessDpiAwareness` and guards
 itself with a named mutex, both Windows specific, and the board reading itself
@@ -405,3 +423,11 @@ is plain pixels and would port.
 
 MIT, see [LICENSE](LICENSE). Stockfish is separate and GPL, which is the other
 reason it is not vendored here.
+
+[`chesswatch/maia/`](chesswatch/maia/) is the exception inside the repository:
+Maia-3's code and weights are AGPL-3.0, and that folder carries its own
+[LICENSE](chesswatch/maia/LICENSE). It is a separate program. ChessWatch starts
+it as a child process and exchanges lines of JSON with it, the same way it runs
+Stockfish, and nothing outside the folder imports anything in it. Its
+[README](chesswatch/maia/README.md) says where the code and weights come from
+and how the model file was made.

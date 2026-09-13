@@ -59,7 +59,8 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       # requirements.txt is unpinned, so a green run here is evidence about
-      # today's mss, pillow and chess rather than about a fixed set of them.
+      # today's mss, pillow, chess and onnxruntime rather than about a fixed set
+      # of them.
       - run: pip install -r requirements.txt
       - name: stockfish
         working-directory: .
@@ -103,15 +104,24 @@ jobs:
         run: python -X utf8 coachtest.py
         env:
           CHESSWATCH_NO_TK: "1"
+      # The coach carries on without Maia when onnxruntime or the model will
+      # not load, which is right for the app and would be a silent skip here.
+      # maiatest does not carry on: it fails, so a model that stopped loading
+      # is a red mark rather than a red arrow that quietly stopped following
+      # the rating slider.
+      - name: maiatest
+        if: always()
+        run: python -X utf8 maiatest.py
 
   # The flag the coach starts Stockfish with, and the window it suppresses, only
   # exist on Windows, so that part of coachtest is about this job. It is also
   # the only runner with a display, so the checks that build the real app and
-  # read its label run here and nowhere else. Only coachtest is here: the other
-  # suites have never been looked at on a Windows runner, and a job that goes
-  # red for an unrelated reason is worse than one that does not run.
+  # read its label run here and nowhere else. maiatest is here because Maia is
+  # started with that same flag and because Windows is what the app is for.
+  # The other suites have never been looked at on a Windows runner, and a job
+  # that goes red for an unrelated reason is worse than one that does not run.
   windows:
-    name: windows, coachtest only
+    name: windows, coachtest and maiatest
     runs-on: windows-latest
     defaults:
       run:
@@ -131,4 +141,9 @@ jobs:
           unzip -q sf.zip -d chesswatch/engine
         env:
           SF: https://github.com/official-stockfish/Stockfish/releases/download/sf_19
-      - run: python -X utf8 coachtest.py
+      - name: coachtest
+        if: always()
+        run: python -X utf8 coachtest.py
+      - name: maiatest
+        if: always()
+        run: python -X utf8 maiatest.py

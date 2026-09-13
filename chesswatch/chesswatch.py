@@ -86,6 +86,12 @@ SETTLE_HOLD_RISKY = 1.10
 # still true; a receipt for something you clicked gets this much and no more.
 NOTE_SECONDS = 6.0
 
+# How long the rating slider has to sit still before the coach is told. Every
+# rating handed over stops the red arrow's pass and starts it again, so passing
+# on every step of a drag would restart it for each of them.
+RATING_SETTLE_MS = 250
+RATING_STEP = 100
+
 BG = "#262421"
 PANEL = "#302e2b"
 FG = "#e8e6e3"
@@ -559,6 +565,12 @@ def my_turn(fen, colour):
     return len(fields) > 1 and fields[1] == ("w" if colour == "white" else "b")
 
 
+def slider_elo(value):
+    """A rating read out of config.json, as one of the stops on the slider."""
+    elo = CO.clamp_elo(value)
+    return CO.ELO_LOW + int((elo - CO.ELO_LOW) / RATING_STEP + 0.5) * RATING_STEP
+
+
 def mistake_line(san, worse, kind="mistake", winning=True):
     """The line under the move to play, worded for what it actually is.
 
@@ -641,6 +653,7 @@ class App:
         self.region = None
         self.flipped = False
         self.setup_open = False      # the drawer, shut until you ask for it
+        self.rating_after = None     # the slider's pending hand-over to the coach
         self.note_until = 0.0        # when the note line goes blank again
         self._shown = ()             # the stripes packed right now
 
@@ -731,6 +744,27 @@ class App:
                            bg=BG, fg=MUTED, selectcolor=BG, activebackground=BG,
                            activeforeground=FG, font=("Segoe UI", 8),
                            cursor="hand2").pack(side="left")
+
+        # Who the red arrow is for. It names the worse move a player of this
+        # rating is most likely to play, so one position can get a different
+        # red arrow at 500 from the one it gets at 1500; the measurement above
+        # coach.LIKELY says how often. A slider rather than a row of words like
+        # the one above, because eleven stops do not fit on a line as words.
+        # The number beside it is the rating, since a slider with no number on
+        # it says nothing about where it is.
+        rating = self._drawer_row(setup, "Rating")
+        elo = slider_elo(self.cfg.get("mistake_elo"))
+        self.elo_choice = tk.IntVar(value=elo)
+        tk.Scale(rating, from_=CO.ELO_LOW, to=CO.ELO_HIGH,
+                 resolution=RATING_STEP, orient="horizontal",
+                 variable=self.elo_choice, command=self._slide_rating,
+                 showvalue=False, length=200, width=12, sliderlength=20,
+                 bd=0, highlightthickness=0, bg=MUTED, activebackground=FG,
+                 troughcolor="#3d3a37", cursor="hand2",
+                 font=("Segoe UI", 8)).pack(side="left")
+        self.lbl_elo = tk.Label(rating, text="%d" % elo, bg=BG, fg=MUTED,
+                                font=("Segoe UI", 8), anchor="w")
+        self.lbl_elo.pack(side="left", padx=(6, 0))
 
         board = self._drawer_row(setup, "Board")
         for word, command in (("Pick", self._pick),
@@ -828,7 +862,7 @@ class App:
         self._relayout()
 
     def _drawer_row(self, parent, name):
-        """A word, then the controls it covers. Four of these make the drawer
+        """A word, then the controls it covers. Five of these make the drawer
         and one is the side prompt, which is why it lines up with the drawer's
         own Side row. The width is in characters, so the words still line up
         when the display scaling grows the font and the window does not
@@ -1000,7 +1034,8 @@ class App:
                     text="no Stockfish, so no coaching. See the README.",
                     fg=WARN if asked else MUTED)
                 return
-            self.coach = CO.Coach(path, think_seconds=self._think_seconds())
+            self.coach = CO.Coach(path, think_seconds=self._think_seconds(),
+                                  elo=self._elo())
             self.coach.start()
         # The receipt for the tick, so it belongs to the tick. This runs at
         # launch now, where nothing has been asked and no board has been found
@@ -1022,6 +1057,35 @@ class App:
         self._save_config()
         if self.coach is not None:
             self.coach.think_seconds = self._think_seconds()
+
+    def _elo(self):
+        return int(self.elo_choice.get())
+
+    def _slide_rating(self, value=None):
+        """The number beside the slider follows the drag, and the coach hears
+        about it once the slider has been still for RATING_SETTLE_MS."""
+        self.lbl_elo.configure(text="%d" % self._elo())
+        if self.rating_after is not None:
+            self.root.after_cancel(self.rating_after)
+        self.rating_after = self.root.after(RATING_SETTLE_MS, self._set_elo)
+
+    def _set_elo(self):
+        """Write the rating down and hand it to the engine thread, which
+        chooses the red arrow on the position on screen again.
+
+        The warning already up was chosen for the old rating, so it comes down
+        now rather than when its replacement arrives: for some positions and
+        ratings nothing replaces it, and it would stay up describing a player
+        the slider no longer says you are.
+        """
+        self.rating_after = None
+        self._save_config()
+        if self.coach is None or self.coach.elo == self._elo():
+            return
+        self.coach.set_elo(self._elo())
+        self.lbl_mistake.configure(text="")
+        self.arrow_bad_uci = self.arrow_bad_fen = None
+        self._sync_arrow()
 
     def _toggle_arrow(self):
         """The arrow needs the coach, since it draws what the coach found."""
@@ -1248,8 +1312,11 @@ class App:
                                          "" if payload.get("final") else "...")
                                         if part))
                 elif kind == "mistake" and self.coach_on.get():
+                    # The rating as well as the position: one chosen before
+                    # the slider moved can still be on the queue after it.
                     if (payload["fen"] != self.coach_fen
-                            or payload["turn"] != self.my_colour):
+                            or payload["turn"] != self.my_colour
+                            or payload.get("elo") != self.coach.elo):
                         continue
                     self._show_mistake(payload["uci"], payload["fen"])
                     self.lbl_mistake.configure(
@@ -1397,6 +1464,7 @@ class App:
                        "colour": self.colour_choice.get(),
                        "coach": bool(self.coach_on.get()),
                        "think_seconds": self._think_seconds(),
+                       "mistake_elo": self._elo(),
                        "arrow": bool(self.arrow_on.get()),
                        "position": bool(self.show_board.get()),
                        "sheet": self.taught_sheet}, fh, indent=2)
