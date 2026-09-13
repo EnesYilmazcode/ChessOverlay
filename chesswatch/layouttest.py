@@ -1089,8 +1089,9 @@ def the_rating():
     check("  one outside the slider comes back at its nearer end",
           [C.slider_elo(v) for v in (0, -80, 2900)], [500, 500, 1500])
     check("  and nonsense in config.json falls back rather than raising",
-          [C.slider_elo(v) for v in (None, "", "strong", [])],
-          [C.CO.DEFAULT_ELO] * 4)
+          [C.slider_elo(v) for v in (None, "", "strong", [], float("inf"),
+                                     10 ** 400, True)],
+          [C.CO.DEFAULT_ELO] * 7)
     check("the slider's two ends are the coach's two ends",
           (C.CO.ELO_LOW, C.CO.ELO_HIGH), (500, 1500))
 

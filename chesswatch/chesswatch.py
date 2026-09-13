@@ -102,6 +102,7 @@ ACCENT = "#7fa650"
 MUTED = "#8b8987"
 WARN = "#d08a70"
 TROUGH = "#3d3a37"         # the rating slider's groove
+THUMB = "#b0aeab"          # its handle, flat, so lighter than MUTED
 THUMB_OFF = "#595653"      # and its handle once the rating does nothing
 
 _MSS = getattr(mss, "MSS", None) or mss.mss
@@ -766,7 +767,8 @@ class App:
                                   command=self._slide_rating,
                                   showvalue=False, length=200, width=12,
                                   sliderlength=20, bd=0, highlightthickness=0,
-                                  bg=MUTED, activebackground=FG,
+                                  sliderrelief="flat",
+                                  bg=THUMB, activebackground=FG,
                                   troughcolor=TROUGH, cursor="hand2",
                                   font=("Segoe UI", 8))
         self.scale_elo.pack(side="left")

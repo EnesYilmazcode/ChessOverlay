@@ -20,6 +20,8 @@ import ast
 import glob
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -33,11 +35,12 @@ import maiaclient
 R = []
 HERE = os.path.dirname(os.path.abspath(__file__))
 ENGINE = os.path.join(HERE, "maia", "engine.py")
+MODEL = os.path.join(HERE, "maia", "maia3-5m.onnx")
 
 START = chess.STARTING_FEN
 # Black to move, where the top move at 500 is not the top move at 1500 even
-# with no history behind the board. One of 34 such positions in 97 sampled from
-# recorded games.
+# with no history behind the board. One of 34 such positions in the 97 the
+# answers in GOLDEN were picked from, 90 of them sampled from recorded games.
 SPLIT = "rn1qkbnr/pp3ppp/8/3p4/3Q4/7P/PP2PPBP/RNB1K2R b KQkq - 0 7"
 MIDDLE = "3rrq1k/pp3pb1/5N1p/1Pn1PQ2/8/P2R3P/4R1B1/7K b - - 4 30"
 PINNED = "r2q1rk1/1pp2ppp/p2p1n2/2bNp1B1/2BnP3/P2P1b2/1PPQ1PPP/R4RK1 w - - 0 6"
@@ -87,26 +90,58 @@ def check(name, got, want):
     return ok
 
 
+def hide(*names):
+    """A folder that, first on PYTHONPATH, makes each of names fail to import
+    the way a module that is not installed does. engine.py is still started
+    plainly as its own process, and that one failing import is all of ours
+    it runs."""
+    folder = tempfile.mkdtemp(prefix="maiatest-")
+    for name in names:
+        os.makedirs(os.path.join(folder, name))
+        with open(os.path.join(folder, name, "__init__.py"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("raise ModuleNotFoundError(%r, name=%r)\n"
+                     % ("No module named %r" % name, name))
+    return folder
+
+
+def hiding(folder):
+    """This process's environment with folder put first on PYTHONPATH."""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [folder] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+    return env
+
+
+def why_not(reply):
+    """What stopped the model answering, for a person, going by what it said."""
+    error = reply.get("error", "") if isinstance(reply, dict) else ""
+    missing = re.search(r"No module named '([\w.]+)'", error)
+    if missing:
+        return "this needs %s: pip install -r requirements.txt" % missing.group(1)
+    if not os.path.isfile(MODEL):
+        return "maia/maia3-5m.onnx is not there"
+    if error.startswith("the model did not load: "):
+        cause = error.split(": ", 1)[1]
+        if cause.startswith("ImportError"):
+            return "an import failed, not the model file: " + cause
+        return "the model file would not load: " + cause
+    return "no answer; see stderr above"
+
+
 class Raw:
     """engine.py spoken to line by line, with nothing of the client in the way,
     so the protocol itself is what is checked."""
 
-    def __init__(self, prelude=None):
-        if prelude is None:
-            argv = [sys.executable, "-X", "utf8", ENGINE]
-        else:
-            # Run engine.py as __main__ after some code of our own, the way
-            # python would run it, so that code can take things away first.
-            code = prelude + "\nimport runpy, sys\nsys.argv = [%r]\n" \
-                   "runpy.run_path(%r, run_name='__main__')\n" % (ENGINE, ENGINE)
-            argv = [sys.executable, "-X", "utf8", "-c", code]
+    def __init__(self, env=None):
         # stderr to a file rather than a pipe nobody reads, which would stop
         # the process dead if onnxruntime ever wrote enough warnings to fill it.
         self.errors = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
-        self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE,
+        self.proc = subprocess.Popen([sys.executable, "-X", "utf8", ENGINE],
+                                     stdin=subprocess.PIPE,
                                      stdout=subprocess.PIPE,
                                      stderr=self.errors, text=True,
-                                     encoding="utf-8", bufsize=1,
+                                     encoding="utf-8", bufsize=1, env=env,
                                      **maiaclient.POPEN_FLAGS)
 
     def line(self, text, seconds=60):
@@ -194,38 +229,42 @@ def separation():
     check("no MIT file in chesswatch imports anything out of maia/", ours, {})
 
     folder = os.path.join(HERE, "maia")
-    with open(os.path.join(folder, "LICENSE"), encoding="utf-8") as fh:
-        head = fh.read(200)
+    try:
+        with open(os.path.join(folder, "LICENSE"), encoding="utf-8") as fh:
+            head = fh.read(200)
+    except OSError:
+        head = ""
     check("maia/ carries the AGPL-3.0 text",
           "GNU AFFERO GENERAL PUBLIC LICENSE" in head, True)
     check("  and says what it is and where it came from",
           os.path.exists(os.path.join(folder, "README.md")), True)
     check("the model is in the repository, not downloaded at run time",
-          os.path.getsize(os.path.join(folder, "maia3-5m.onnx")) > 20 * 2**20, True)
+          os.path.isfile(MODEL) and os.path.getsize(MODEL) > 20 * 2**20, True)
 
 
 # ---------------------------------------------------------------- the engine
 
 def without_torch():
     print("\n-- it runs with torch taken away ------------------------")
-    # sys.modules["torch"] = None makes every `import torch` in the process
-    # raise, including one buried inside a dependency.
-    raw = Raw(prelude="import sys\nsys.modules['torch'] = None")
+    # Every `import torch` in the process fails, including one buried inside a
+    # dependency, even on a machine that has torch.
+    folder = hide("torch")
+    raw = Raw(env=hiding(folder))
     reply = raw.send(fen=START, elo=1000)
     got = moves_of(reply)
     if not check("an answer comes back from a process where torch cannot be"
                  " imported", got is not None, True):
         print("        it said: %r" % (reply,))
         print("        stderr: %s" % raw.stderr())
+        print("        " + why_not(reply))
     raw.close()
-
-
-HIDE_ORT = "import sys\nsys.modules['onnxruntime'] = None"
+    shutil.rmtree(folder, ignore_errors=True)
 
 
 def without_onnxruntime():
     print("\n-- it says so when the model will not load --------------")
-    raw = Raw(prelude=HIDE_ORT)
+    folder = hide("onnxruntime")
+    raw = Raw(env=hiding(folder))
     reply = raw.send(fen=START, elo=1000, id=3)
     check("an answer with onnxruntime taken away is an error marked fatal",
           (isinstance(reply, dict) and "did not load" in reply.get("error", ""),
@@ -234,6 +273,7 @@ def without_onnxruntime():
     check("  where a question that is only wrong is not marked",
           "fatal" in (raw.send(fen="not a position", elo=1000) or {}), False)
     check("  and it still exits cleanly at the end of its input", raw.close(), 0)
+    shutil.rmtree(folder, ignore_errors=True)
 
 
 def protocol():
@@ -247,7 +287,7 @@ def protocol():
     if not check("the model loads and answers", got is not None, True):
         print("        it said: %r" % (first,))
         print("        stderr: %s" % raw.stderr())
-        print("        this needs onnxruntime: pip install -r requirements.txt")
+        print("        " + why_not(first))
     check("  and the id asked with comes back on the answer",
           isinstance(first, dict) and first.get("id"), 7)
 
@@ -263,8 +303,9 @@ def protocol():
             exact.append(sorted(names) == legal
                          and len(set(names)) == len(names))
             summed.append(abs(sum(probs) - 1.0) < 1e-6)
-            ordered.append(probs == sorted(probs, reverse=True))
-            bounded.append(all(0.0 <= p <= 1.0 for p in probs))
+            # An empty answer is trivially sorted and bounded, so it fails both.
+            ordered.append(bool(probs) and probs == sorted(probs, reverse=True))
+            bounded.append(bool(probs) and all(0.0 <= p <= 1.0 for p in probs))
     n = len(exact)
     check("every legal move is in the answer once and nothing else is, in %d"
           " answers" % n, sum(exact), n)
@@ -383,25 +424,26 @@ def client():
     check("a client already closed starts nothing",
           (closed.ask(START, 1000), closed._proc), (None, None))
 
-    # engine.py with onnxruntime taken away, started the way the client starts
-    # any script, so the fatal answer is read by the real client.
-    folder = tempfile.mkdtemp()
-    script = os.path.join(folder, "no_ort.py")
-    with open(script, "w", encoding="utf-8") as fh:
-        fh.write(HIDE_ORT + "\nimport runpy\nsys.argv = [%r]\n"
-                 "runpy.run_path(%r, run_name='__main__')\n" % (ENGINE, ENGINE))
-    broken = maiaclient.Maia(script=script)
+    # The real engine.py with onnxruntime taken away, started by the real
+    # client, which hands this process's environment on to it.
+    folder = hide("onnxruntime")
+    broken = maiaclient.Maia()
+    before = os.environ.get("PYTHONPATH")
+    os.environ["PYTHONPATH"] = hiding(folder)["PYTHONPATH"]
+    try:
+        broken.start()
+    finally:
+        if before is None:
+            del os.environ["PYTHONPATH"]
+        else:
+            os.environ["PYTHONPATH"] = before
     check("a model that will not load is None, with the reason kept",
           (broken.ask(START, 1000), "did not load" in (broken.problem or "")),
           (None, True))
     check("  and the client counts itself gone, so the coach can tell",
           (broken.alive(), broken.ask(START, 1000)), (False, None))
     broken.close()
-    try:
-        os.remove(script)
-        os.rmdir(folder)
-    except OSError:
-        pass
+    shutil.rmtree(folder, ignore_errors=True)
 
 
 def main():

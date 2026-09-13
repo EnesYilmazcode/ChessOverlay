@@ -260,7 +260,7 @@ never imports the piece reader and can be tested without one.
 | [`chesswatch/chesswatch.py`](chesswatch/) | The window, the capture thread, the queues, the wiring. | Finished. |
 | [`chesswatch/watcher.py`](chesswatch/watcher.py) | Board-finding, occupancy, move inference, game files. No GUI on purpose, so it tests headless. | Finished. 87 headless checks + 2 on-screen. |
 | [`chesswatch/pieces.py`](chesswatch/pieces.py) | Which piece is on a square, by normalised shape matching. | Works. |
-| [`chesswatch/coach.py`](chesswatch/coach.py) | Stockfish on its own thread, read mid-search, then asked which move to avoid, with Maia choosing it for a rating. | Works. 143 checks. On by default. |
+| [`chesswatch/coach.py`](chesswatch/coach.py) | Stockfish on its own thread, read mid-search, then asked which move to avoid, with Maia choosing it for a rating. | Works. 144 checks. On by default. |
 | [`chesswatch/maia/`](chesswatch/maia/) | Maia-3 5M under onnxruntime, as a separate program over a pipe. AGPL-3.0. | Works. 41 checks in `maiatest.py`. |
 | [`chesswatch/overlay.py`](chesswatch/overlay.py) | Both click-through arrows, in colours the reader is blind to. | Works. 23 checks, headless by default. |
 | [`chesswatch/position.py`](chesswatch/position.py) | All 64 squares as one legal position, min-cost flow. | Works. 29 checks. Nothing calls it yet. |
@@ -313,11 +313,13 @@ tempting, so which worse move it names is decided by a model of human players:
 [Maia-3](chesswatch/maia/), trained on human games to say how likely a player of
 a given rating is to play each move. **Setup > Rating** is a slider from 500 to
 1500, and the red arrow is the worse move a player of that rating is most likely
-to play. Move the slider and the arrow on the board is chosen again. A model of
-people rather than a weakened Stockfish, because Stockfish playing badly plays
-slightly off rather than tempted, and its own rating setting stops at 1320. It
-shows on most positions, 50 to 56 of 60 in two samples and about as often as
-without Maia, and the line under it says which of three things it is:
+to play. The numbers are Lichess ratings, since Maia-3 learned from Lichess
+games, and at beginner levels a Lichess rating tends to run higher than a
+chess.com one. Move the slider and the arrow on the board is chosen again. A
+model of people rather than a weakened Stockfish, because Stockfish playing
+badly plays slightly off rather than tempted, and its own rating setting stops
+at 1320. It shows on most positions, 50 to 56 of 60 in two samples and about as
+often as without Maia, and the line under it says which of three things it is:
 `not Nxe5, 3.5 worse` for a real mistake,
 `Nxe5 is 0.4 worse` for a move that is only weaker, and
 `Nxe5, 3.1 worse, winning anyway` in a game already decided. Only the first
@@ -380,7 +382,7 @@ hint is always computed at full strength no matter where that slider sits.
 ```
 cd chesswatch
 python selftest.py     147 headless checks, including real screenshots
-python coachtest.py    143 checks on the engine wrapper and its label
+python coachtest.py    144 checks on the engine wrapper and its label
 python maiatest.py      41 checks on Maia and the pipe to it
 python overlaytest.py   23 checks that the arrows cannot corrupt a reading
 python settletest.py    move animation, driven off a real clock

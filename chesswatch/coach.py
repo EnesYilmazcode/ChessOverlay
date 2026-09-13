@@ -23,6 +23,7 @@ Stockfish is not in this repository. It is found at $STOCKFISH_PATH, in the
 sibling holochess/engine/stockfish folder, in chesswatch/engine, or on PATH.
 """
 
+import math
 import os
 import queue
 import shutil
@@ -78,13 +79,16 @@ def clamp_elo(value):
     Read out of config.json the same way the think time is, so a hand-edited
     3000 comes back as 1500 and nonsense as the default rather than an error
     before the window exists. The model itself takes any rating; the bound is
-    the range the slider was made for.
+    the range the slider was made for. JSON reads 1e999 as infinity, and a JSON
+    true would otherwise pass as 1, so both count as nonsense too.
     """
+    if isinstance(value, bool):
+        return DEFAULT_ELO
     try:
         want = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return DEFAULT_ELO
-    if want != want:                     # NaN compares unequal to itself
+    if not math.isfinite(want):
         return DEFAULT_ELO
     return int(min(ELO_HIGH, max(ELO_LOW, round(want))))
 

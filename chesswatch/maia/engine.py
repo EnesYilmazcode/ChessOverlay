@@ -1,5 +1,8 @@
 """Maia-3 5M as a program of its own: which move a player of a given rating plays.
 
+Ported from CSSLab/maia3 at 1e13597, with the model exported to ONNX, for
+ChessWatch, September 2026.
+
 This folder is AGPL-3.0, see LICENSE beside this file, and it is a separate
 program from the MIT code around it. ChessWatch starts it as a child process
 and talks to it over a pipe, the same way it talks to Stockfish. Nothing outside

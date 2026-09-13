@@ -1,4 +1,5 @@
 mss
 pillow
 chess
+# Powers the Rating slider. The app runs without it, with the slider greyed out.
 onnxruntime

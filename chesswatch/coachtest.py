@@ -417,6 +417,12 @@ def rating_rules():
           " exists",
           [CO.clamp_elo(v) for v in (None, "", "strong", [], float("nan"))],
           [CO.DEFAULT_ELO] * 5)
+    # 1e999 and Infinity are what json.load gives for a number too big to
+    # hold, and a 400-digit integer is too big for float() at all.
+    huge = (json.loads("1e999"), json.loads("-Infinity"), "1e999", 10 ** 400)
+    check("  and so does a number too big to hold, or a true or false",
+          [CO.clamp_elo(v) for v in huge + (True, False)],
+          [CO.DEFAULT_ELO] * 6)
     check("a coach is built at the default rating unless told otherwise,"
           " and clamped when it is",
           (CO.Coach("stockfish", maia=None).elo,

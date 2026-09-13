@@ -129,15 +129,16 @@ most likely to play**.
 ### The rating
 
 **Setup > Rating** is a slider from 500 to 1500, and it says who the red arrow
-is for. The likely pass asks [Maia-3](maia/), a model trained on human games,
-how likely a player of that rating is to play each legal move. That does two
-things. The three moves it rates likeliest, of those nominate has at least 0.2
-behind, join the shortlist on top of its four, because the shortlist is picked
-by captures, checks and the engine's order rather than by what people play. And
-of the moves verify says are really worse, the one drawn is the one it rates
-likeliest. Without Maia it is
-the closest call, the smallest drop that still clears the bar, which is the
-best guess the scores alone can make.
+is for. The numbers are Lichess ratings, since Maia-3 learned from Lichess
+games, and at beginner levels a Lichess rating tends to run higher than a
+chess.com one. The likely pass asks [Maia-3](maia/), a model trained on human
+games, how likely a player of that rating is to play each legal move. That does
+two things. The three moves it rates likeliest, of those nominate has at least
+0.2 behind, join the shortlist on top of its four, because the shortlist is
+picked by captures, checks and the engine's order rather than by what people
+play. And of the moves verify says are really worse, the one drawn is the one it
+rates likeliest. Without Maia it is the closest call, the smallest drop that
+still clears the bar, which is the best guess the scores alone can make.
 
 Move the slider and the red arrow on the board is chosen again for the new
 rating. Only the second pass runs again: the move to play has nothing to do
@@ -201,9 +202,10 @@ move that got drawn, the median over the positions with an arrow:
 | rating 1500 | 55 of 60 | 47 to 50 | 2.1 to 3.5% |
 | no Maia, closest call | 54 of 60 | 46 | 2.6% at 500, 0.8% at 1000, 0.8% at 1500 |
 
-So the move drawn is one a player of that rating plays two and a half to eleven
-times as often as the closest call. **The arrow at 500 and the arrow at 1500
-are different moves on 36 to 40 of the 60**, but not all of that is the rating.
+So the move drawn is one a player of that rating plays about three to eleven
+times as often as the closest call, at the median, and where in that range
+varies between runs. **The arrow at 500 and the arrow at 1500 are different
+moves on 36 to 40 of the 60**, but not all of that is the rating.
 The searches are timed, so two runs at the same rating already differ on 8 of
 the 60 at 500 and on 18 at 1500. On a second sample of 60, from the same games
 with either side to move, 500 and 1500 differed on 27, where two runs at one
@@ -672,8 +674,8 @@ rectangle is in use.
     python positiontest.py  39 checks on the whole board solver, no pixels
     python enrolltest.py   222 checks on teaching the pieces and on the arrows
     python layouttest.py   147 checks on what the window shows and how wide
-    python coachtest.py    143 checks on the engine wrapper and the lines it
-                            feeds, 130 without a display and 81 without
+    python coachtest.py    144 checks on the engine wrapper and the lines it
+                            feeds, 131 without a display and 82 without
                             Stockfish
     python maiatest.py      41 checks on Maia, the model behind the rating,
                             and the pipe to it

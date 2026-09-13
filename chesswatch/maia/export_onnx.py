@@ -1,5 +1,8 @@
 """How maia3-5m.onnx was made. Build time only: nothing at run time uses this.
 
+Written for ChessWatch against CSSLab/maia3 at 1e13597, September 2026. It
+changes the model before exporting it to ONNX, as described below.
+
     python export_onnx.py <clone of CSSLab/maia3> <maia3-5m.pt> [out.onnx]
 
 Needs torch (2.7.1 was used) and onnx on top of what maia3 itself needs, which

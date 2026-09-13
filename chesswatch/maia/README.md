@@ -3,7 +3,10 @@
 The red arrow in ChessWatch names the worse move a player of a chosen rating is
 most likely to play. This folder is the part that knows what players of a given
 rating play: **Maia-3 5M**, a model trained on human games by the Computational
-Social Science Lab at the University of Toronto, run with onnxruntime.
+Social Science Lab at the University of Toronto, run with onnxruntime. The
+ratings it takes are Lichess ratings, since it was trained on Lichess blitz
+games from January 2023 to July 2025, and at beginner levels a Lichess rating
+tends to run higher than a chess.com one.
 
 **It is a separate program, under a different licence from the rest of this
 repository.** Everything in this folder is AGPL-3.0, see [LICENSE](LICENSE).
@@ -25,6 +28,11 @@ Stockfish. No file outside this folder imports anything in it, and
 python-chess, all in `chesswatch/requirements.txt`. It uses two threads.
 
 ## Where it comes from
+
+Modified for ChessWatch, September 2026: `engine.py` is ported from
+CSSLab/maia3 at `1e13597` to run under onnxruntime, and `maia3-5m.onnx` is an
+ONNX export of the published weights with `RMSNorm` rewritten, as described
+below.
 
 - Code: [CSSLab/maia3](https://github.com/CSSLab/maia3) at commit
   `1e13597c42d4858b7cfd7cfdae01e297263364b2`, AGPL-3.0. The board encoding and
@@ -56,7 +64,11 @@ It was then checked against the original. Over 90 positions sampled from
 recorded games, at ratings 500, 1000 and 1500, `maia3`'s own UCI engine running
 the torch checkpoint and this file under onnxruntime agree on the most likely
 move in all 270 cases, and no move's probability differs by more than 0.00001.
-`maiatest.py` keeps 18 of those answers, and fails if they stop matching.
+`maiatest.py` keeps 18 answers, the most likely move and its probability, from
+a second comparison over 97 positions: the starting position, those 90, and 6
+built by hand for castling, en passant and promotion. 12 of the 18 come from the
+sampled positions and 6 from the hand-built ones, and it fails if they stop
+matching.
 
 ## What it does not do yet
 
