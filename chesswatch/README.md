@@ -155,8 +155,12 @@ Maia is a separate program under a different licence, AGPL-3.0, in
 [`maia/`](maia/). `maiaclient.py` starts `maia/engine.py` as a child process and
 exchanges a line of JSON with it per question, the way `coach.py` talks to
 Stockfish. It needs onnxruntime, which is in `requirements.txt`. If it will not
-start, the red arrow is still drawn, chosen the old way, and `maiatest.py` is
-the suite that fails rather than skips.
+run, the red arrow is still drawn, chosen the old way, and that is the same move
+at every rating, so the slider greys out and reads **off** and the note line
+says `no Maia, so Rating is off` once. A Maia that stops partway through a
+session is started once more before that. The usual reason is onnxruntime
+missing, which `pip install -r requirements.txt` fixes. `maiatest.py` is the
+suite that fails rather than skips.
 
 A warning is one of **three things**, and the wording is what tells them apart.
 It used to be one thing and silence, and the silence was 45% of turns.
@@ -186,21 +190,28 @@ search on those two moves alone before anything is drawn.
 What that adds up to, measured by driving the real `Coach` at the 1.0s think
 time over 60 positions from games/, one from each of 60 games and always with
 the recorder's own side to move, which is the only kind of position the app
-asks about. The last column is how often Maia says a player of that rating
-plays the move that got drawn, the median over the positions with an arrow:
+asks about. The Maia rows are four runs of the same code and the last row is
+one. The last column is how often Maia says a player of that rating plays the
+move that got drawn, the median over the positions with an arrow:
 
 | | red arrow | real mistakes | that player plays it |
 | --- | --- | --- | --- |
-| rating 500 | 56 of 60 | 49 | 12.0% |
-| rating 1000 | 56 of 60 | 48 | 9.1% |
-| rating 1500 | 55 of 60 | 48 | 3.5% |
+| rating 500 | 56 of 60 | 49 to 52 | 12.0% |
+| rating 1000 | 56 of 60 | 48 to 50 | 7.9 to 9.1% |
+| rating 1500 | 55 of 60 | 47 to 50 | 2.1 to 3.5% |
 | no Maia, closest call | 54 of 60 | 46 | 2.6% at 500, 0.8% at 1000, 0.8% at 1500 |
 
-So the move drawn is one a player of that rating plays four to eleven times as
-often as the closest call, and **the arrow at 500 and the arrow at 1500 are
-different moves on 40 of the 60**, and on 37 in a second run. How often there
-is an arrow at all, and how often it is a real mistake, stays about where it
-was.
+So the move drawn is one a player of that rating plays two and a half to eleven
+times as often as the closest call. **The arrow at 500 and the arrow at 1500
+are different moves on 36 to 40 of the 60**, but not all of that is the rating.
+The searches are timed, so two runs at the same rating already differ on 8 of
+the 60 at 500 and on 18 at 1500. On a second sample of 60, from the same games
+with either side to move, 500 and 1500 differed on 27, where two runs at one
+rating differed on 12 and 14.
+
+How often there is an arrow at all depends on the sample, 55 or 56 of 60 here
+and 50 in the second, and it is about the same without Maia, 54 and 49. So is
+how often it is a real mistake.
 
 When the three wordings replaced one wording and silence, on an earlier sample
 of 60, the arrow went from 55% of turns to 82% without losing one of its 33
@@ -660,11 +671,11 @@ rectangle is in use.
     python piecetest.py     66 checks on the piece reader under a bad capture
     python positiontest.py  39 checks on the whole board solver, no pixels
     python enrolltest.py   222 checks on teaching the pieces and on the arrows
-    python layouttest.py   143 checks on what the window shows and how wide
-    python coachtest.py    130 checks on the engine wrapper and the lines it
-                            feeds, 118 without a display and 81 without
+    python layouttest.py   147 checks on what the window shows and how wide
+    python coachtest.py    143 checks on the engine wrapper and the lines it
+                            feeds, 130 without a display and 81 without
                             Stockfish
-    python maiatest.py      36 checks on Maia, the model behind the rating,
+    python maiatest.py      41 checks on Maia, the model behind the rating,
                             and the pipe to it
     python overlaytest.py   23 checks that the arrows cannot corrupt a reading,
                             25 with --on-screen

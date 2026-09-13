@@ -91,6 +91,9 @@ NOTE_SECONDS = 6.0
 # on every step of a drag would restart it for each of them.
 RATING_SETTLE_MS = 250
 RATING_STEP = 100
+# What the note line says when Maia will not run, the way it says so when
+# there is no Stockfish. The README says what to do about it.
+RATING_OFF = "no Maia, so Rating is off. See the README."
 
 BG = "#262421"
 PANEL = "#302e2b"
@@ -98,6 +101,8 @@ FG = "#e8e6e3"
 ACCENT = "#7fa650"
 MUTED = "#8b8987"
 WARN = "#d08a70"
+TROUGH = "#3d3a37"         # the rating slider's groove
+THUMB_OFF = "#595653"      # and its handle once the rating does nothing
 
 _MSS = getattr(mss, "MSS", None) or mss.mss
 _local = threading.local()
@@ -755,13 +760,16 @@ class App:
         rating = self._drawer_row(setup, "Rating")
         elo = slider_elo(self.cfg.get("mistake_elo"))
         self.elo_choice = tk.IntVar(value=elo)
-        tk.Scale(rating, from_=CO.ELO_LOW, to=CO.ELO_HIGH,
-                 resolution=RATING_STEP, orient="horizontal",
-                 variable=self.elo_choice, command=self._slide_rating,
-                 showvalue=False, length=200, width=12, sliderlength=20,
-                 bd=0, highlightthickness=0, bg=MUTED, activebackground=FG,
-                 troughcolor="#3d3a37", cursor="hand2",
-                 font=("Segoe UI", 8)).pack(side="left")
+        self.scale_elo = tk.Scale(rating, from_=CO.ELO_LOW, to=CO.ELO_HIGH,
+                                  resolution=RATING_STEP, orient="horizontal",
+                                  variable=self.elo_choice,
+                                  command=self._slide_rating,
+                                  showvalue=False, length=200, width=12,
+                                  sliderlength=20, bd=0, highlightthickness=0,
+                                  bg=MUTED, activebackground=FG,
+                                  troughcolor=TROUGH, cursor="hand2",
+                                  font=("Segoe UI", 8))
+        self.scale_elo.pack(side="left")
         self.lbl_elo = tk.Label(rating, text="%d" % elo, bg=BG, fg=MUTED,
                                 font=("Segoe UI", 8), anchor="w")
         self.lbl_elo.pack(side="left", padx=(6, 0))
@@ -1082,10 +1090,26 @@ class App:
         self._save_config()
         if self.coach is None or self.coach.elo == self._elo():
             return
-        self.coach.set_elo(self._elo())
+        if not self.coach.set_elo(self._elo()):
+            return                   # Maia is off, so nothing is chosen again
         self.lbl_mistake.configure(text="")
         self.arrow_bad_uci = self.arrow_bad_fen = None
         self._sync_arrow()
+
+    def _rating_off(self):
+        """Maia would not run, or stopped and would not start again, so the
+        rating no longer changes anything this session.
+
+        The red arrow is still drawn, chosen from the scores alone, and that is
+        the same move at every rating. A slider left looking as it did would
+        say otherwise, so it is greyed out and reads off, and the note line
+        says so once.
+        """
+        self.scale_elo.configure(state="disabled", bg=THUMB_OFF,
+                                 cursor="arrow")
+        self.lbl_elo.configure(text="off")
+        self.note_until = time.time() + NOTE_SECONDS
+        self.lbl_check.configure(text=RATING_OFF, fg=WARN)
 
     def _toggle_arrow(self):
         """The arrow needs the coach, since it draws what the coach found."""
@@ -1274,6 +1298,8 @@ class App:
                         self.lbl_coach.configure(text="")
                         self.lbl_detail.configure(text="")
                         self.coach_on.set(False)
+                elif kind == "rating":
+                    self._rating_off()
                 elif kind == "advice" and self.coach_on.get():
                     if payload["fen"] != self.coach_fen:
                         continue
@@ -1313,10 +1339,12 @@ class App:
                                         if part))
                 elif kind == "mistake" and self.coach_on.get():
                     # The rating as well as the position: one chosen before
-                    # the slider moved can still be on the queue after it.
+                    # the slider moved can still be on the queue after it. One
+                    # chosen without Maia is the same move at every rating.
                     if (payload["fen"] != self.coach_fen
                             or payload["turn"] != self.my_colour
-                            or payload.get("elo") != self.coach.elo):
+                            or (payload.get("likely") is not None
+                                and payload.get("elo") != self.coach.elo)):
                         continue
                     self._show_mistake(payload["uci"], payload["fen"])
                     self.lbl_mistake.configure(

@@ -4,10 +4,11 @@ that talks to it.
 Run:  python maiatest.py
 
 Nothing in here is skipped. The red arrow can do without Maia, so the app
-carries on quietly when onnxruntime is missing, and that is exactly why this
-file must not: a model that stopped loading would otherwise show up as nothing
-at all, a red arrow that no longer moves with the slider. A machine that cannot
-load the model fails every check that needs it, and says why.
+carries on when onnxruntime is missing, with the slider greyed out and a note
+nobody running the tests would ever see, and that is exactly why this file must
+not: a model that stopped loading would otherwise show up as nothing at all. A
+machine that cannot load the model fails every check that needs it, and says
+why.
 
 engine.py is a separate AGPL-3.0 program, and this file is on the MIT side of
 that line like the rest of chesswatch. It only ever starts it as a process and
@@ -219,6 +220,22 @@ def without_torch():
     raw.close()
 
 
+HIDE_ORT = "import sys\nsys.modules['onnxruntime'] = None"
+
+
+def without_onnxruntime():
+    print("\n-- it says so when the model will not load --------------")
+    raw = Raw(prelude=HIDE_ORT)
+    reply = raw.send(fen=START, elo=1000, id=3)
+    check("an answer with onnxruntime taken away is an error marked fatal",
+          (isinstance(reply, dict) and "did not load" in reply.get("error", ""),
+           isinstance(reply, dict) and reply.get("fatal"),
+           isinstance(reply, dict) and reply.get("id")), (True, True, 3))
+    check("  where a question that is only wrong is not marked",
+          "fatal" in (raw.send(fen="not a position", elo=1000) or {}), False)
+    check("  and it still exits cleanly at the end of its input", raw.close(), 0)
+
+
 def protocol():
     print("\n-- one line in, one line out ----------------------------")
     raw = Raw()
@@ -366,11 +383,32 @@ def client():
     check("a client already closed starts nothing",
           (closed.ask(START, 1000), closed._proc), (None, None))
 
+    # engine.py with onnxruntime taken away, started the way the client starts
+    # any script, so the fatal answer is read by the real client.
+    folder = tempfile.mkdtemp()
+    script = os.path.join(folder, "no_ort.py")
+    with open(script, "w", encoding="utf-8") as fh:
+        fh.write(HIDE_ORT + "\nimport runpy\nsys.argv = [%r]\n"
+                 "runpy.run_path(%r, run_name='__main__')\n" % (ENGINE, ENGINE))
+    broken = maiaclient.Maia(script=script)
+    check("a model that will not load is None, with the reason kept",
+          (broken.ask(START, 1000), "did not load" in (broken.problem or "")),
+          (None, True))
+    check("  and the client counts itself gone, so the coach can tell",
+          (broken.alive(), broken.ask(START, 1000)), (False, None))
+    broken.close()
+    try:
+        os.remove(script)
+        os.rmdir(folder)
+    except OSError:
+        pass
+
 
 def main():
     print("engine: %s" % ENGINE)
     separation()
     without_torch()
+    without_onnxruntime()
     protocol()
     client()
     print("\n%d/%d passed" % (sum(R), len(R)))

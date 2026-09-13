@@ -17,7 +17,9 @@ Every legal move is in the answer with its probability, most likely first, and
 the probabilities add up to 1. A finished game has no moves. A request may carry
 an "id", which is copied onto its answer. A line that cannot be answered, for
 any reason, gets {"error": "..."} and the program carries on with the next one.
-It exits at the end of its input.
+If the model itself would not load, every answer is that error with
+"fatal": true added, so whoever asked can tell a question it got wrong from a
+program that will never answer one. It exits at the end of its input.
 
 The rating is used for both players, which is the same thing maia3's own UCI
 engine does with its Elo option. The model is given the current board in all
@@ -148,6 +150,7 @@ def answer(model, line, problem="the model did not load"):
         return reply
     if model is None:
         reply["error"] = problem
+        reply["fatal"] = True
         return reply
     try:
         reply["moves"] = model.moves(board, elo)

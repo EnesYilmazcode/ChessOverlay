@@ -913,10 +913,21 @@ def the_answer():
     app.coach.out.put(("mistake", {
         "fen": "the position", "turn": "white", "san": "Nh3",
         "uci": "g1h3", "text": "knight: g1 to h3", "worse": "1.0 worse",
-        "drop": 100, "elo": 600}))
+        "drop": 100, "elo": 600, "likely": 0.3}))
     C.App._drain_coach(app)
     check("nor is one chosen for a rating the slider has since left",
           (app.lbl_mistake.text, drawn), ("", [("a1a8", "the position")]))
+
+    # Unless no rating went into it. Without Maia the warning is the closest
+    # call, which is the same move whatever the slider says.
+    app, drawn = coached()
+    app.coach.out.put(("mistake", {
+        "fen": "the position", "turn": "white", "san": "Nh3",
+        "uci": "g1h3", "text": "knight: g1 to h3", "worse": "1.0 worse",
+        "drop": 100, "elo": 600, "likely": None}))
+    C.App._drain_coach(app)
+    check("  but one chosen without Maia is shown whatever rating it carries",
+          app.lbl_mistake.text, "not Nh3, 1.0 worse")
 
     app, _ = coached(over=True)
     check("nor is one left up over a finished game", app.lbl_mistake.text, "")
@@ -929,6 +940,32 @@ def the_answer():
     check("an engine that will not start is a note, not a headline",
           (app.lbl_coach.text, app.lbl_check.text.startswith("Stockfish")),
           ("", True))
+
+    app = viewer()
+    app.coach = types.SimpleNamespace(out=queue.Queue(), elo=1000)
+    app.coach_on = types.SimpleNamespace(get=lambda: False)
+    app.scale_elo = Knob()
+    app.lbl_elo = Blank()
+    app.lbl_elo.configure(text="1000")
+    app._rating_off = lambda: C.App._rating_off(app)
+    app.coach.out.put(("rating", "the model did not load"))
+    C.App._drain_coach(app)
+    check("a Maia that will not run greys the slider out, coaching on or off",
+          (app.scale_elo.options.get("state"), app.lbl_elo.text),
+          ("disabled", "off"))
+    check("  and says so on the note line, as a warning",
+          (app.lbl_check.text, app.lbl_check.colour, app.note_until > 0),
+          (C.RATING_OFF, C.WARN, True))
+
+
+class Knob:
+    """A widget that remembers every option it was configured with."""
+
+    def __init__(self):
+        self.options = {}
+
+    def configure(self, **kw):
+        self.options.update(kw)
 
 
 class Engine:
@@ -1064,8 +1101,9 @@ def the_rating():
         lbl_mistake=Blank(), arrow_bad_uci="g1h3",
         arrow_bad_fen="the position", elo_choice=Switch(1000),
         coach_fen="the position")
-    app.coach = types.SimpleNamespace(elo=1000,
-                                      set_elo=lambda elo: told.append(elo))
+    counts = [True]
+    app.coach = types.SimpleNamespace(
+        elo=1000, set_elo=lambda elo: told.append(elo) or counts[0])
     app._save_config = lambda: saved.append(app.elo_choice.get())
     app._sync_arrow = lambda: None
     app._elo = lambda: C.App._elo(app)
@@ -1102,6 +1140,15 @@ def the_rating():
     check("dragged away and back to where it was, the warning is left alone",
           (told, app.lbl_mistake.text, app.arrow_bad_uci),
           ([700], "not Nh3, 1.0 worse", "g1h3"))
+
+    # Once Maia is off the coach says the rating does not count, and nothing
+    # is chosen again to replace a warning taken down.
+    counts[0] = False
+    app.elo_choice.set(1200)
+    C.App._set_elo(app)
+    check("with the rating off the coach is still told, and the warning stays up",
+          (told[-1], saved[-1], app.lbl_mistake.text, app.arrow_bad_uci),
+          (1200, 1200, "not Nh3, 1.0 worse", "g1h3"))
 
     app.coach = None
     app.elo_choice.set(1400)

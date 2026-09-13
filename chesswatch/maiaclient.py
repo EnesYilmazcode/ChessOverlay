@@ -14,6 +14,8 @@ the same reason.
 Everything here is allowed to fail. No onnxruntime on the machine, a process
 that has died, an answer that does not come: each of them is None, and the
 coach goes on choosing its red arrow the way it did before there was a model.
+After any of those alive() is False, which is how the coach tells a Maia that
+has gone from one that only got a question wrong.
 """
 
 import itertools
@@ -140,6 +142,11 @@ class Maia:
                 if not isinstance(reply, dict) or reply.get("id") != ident:
                     continue             # the answer to a question given up on
                 self._warm = True
+                if reply.get("fatal"):
+                    # The model did not load, so every later answer from this
+                    # process would be this one again.
+                    self._give_up(str(reply.get("error")))
+                    return None
                 if "error" in reply:
                     self.problem = str(reply["error"])
                     return None

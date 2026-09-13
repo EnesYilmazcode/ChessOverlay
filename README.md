@@ -260,8 +260,8 @@ never imports the piece reader and can be tested without one.
 | [`chesswatch/chesswatch.py`](chesswatch/) | The window, the capture thread, the queues, the wiring. | Finished. |
 | [`chesswatch/watcher.py`](chesswatch/watcher.py) | Board-finding, occupancy, move inference, game files. No GUI on purpose, so it tests headless. | Finished. 87 headless checks + 2 on-screen. |
 | [`chesswatch/pieces.py`](chesswatch/pieces.py) | Which piece is on a square, by normalised shape matching. | Works. |
-| [`chesswatch/coach.py`](chesswatch/coach.py) | Stockfish on its own thread, read mid-search, then asked which move to avoid, with Maia choosing it for a rating. | Works. 130 checks. On by default. |
-| [`chesswatch/maia/`](chesswatch/maia/) | Maia-3 5M under onnxruntime, as a separate program over a pipe. AGPL-3.0. | Works. 36 checks in `maiatest.py`. |
+| [`chesswatch/coach.py`](chesswatch/coach.py) | Stockfish on its own thread, read mid-search, then asked which move to avoid, with Maia choosing it for a rating. | Works. 143 checks. On by default. |
+| [`chesswatch/maia/`](chesswatch/maia/) | Maia-3 5M under onnxruntime, as a separate program over a pipe. AGPL-3.0. | Works. 41 checks in `maiatest.py`. |
 | [`chesswatch/overlay.py`](chesswatch/overlay.py) | Both click-through arrows, in colours the reader is blind to. | Works. 23 checks, headless by default. |
 | [`chesswatch/position.py`](chesswatch/position.py) | All 64 squares as one legal position, min-cost flow. | Works. 29 checks. Nothing calls it yet. |
 | [`chesswatch/piecebank.py`](chesswatch/piecebank.py) | Choosing the piece set when learning is impossible. | Works. Command line only so far. |
@@ -316,8 +316,9 @@ a given rating is to play each move. **Setup > Rating** is a slider from 500 to
 to play. Move the slider and the arrow on the board is chosen again. A model of
 people rather than a weakened Stockfish, because Stockfish playing badly plays
 slightly off rather than tempted, and its own rating setting stops at 1320. It
-shows on about 92% of positions at every rating, and the line under it says
-which of three things it is: `not Nxe5, 3.5 worse` for a real mistake,
+shows on most positions, 50 to 56 of 60 in two samples and about as often as
+without Maia, and the line under it says which of three things it is:
+`not Nxe5, 3.5 worse` for a real mistake,
 `Nxe5 is 0.4 worse` for a move that is only weaker, and
 `Nxe5, 3.1 worse, winning anyway` in a game already decided. Only the first
 gets told *not*. The
@@ -379,8 +380,8 @@ hint is always computed at full strength no matter where that slider sits.
 ```
 cd chesswatch
 python selftest.py     147 headless checks, including real screenshots
-python coachtest.py    130 checks on the engine wrapper and its label
-python maiatest.py      36 checks on Maia and the pipe to it
+python coachtest.py    143 checks on the engine wrapper and its label
+python maiatest.py      41 checks on Maia and the pipe to it
 python overlaytest.py   23 checks that the arrows cannot corrupt a reading
 python settletest.py    move animation, driven off a real clock
 python livetest.py      plays whole games past the real capture worker
@@ -411,9 +412,9 @@ name ships with them.
 Python 3, and `pip install -r requirements.txt` in whichever half you are
 running. The recorder needs mss, pillow, chess and onnxruntime, the last for
 the rating behind the red arrow; without it the red arrow is still drawn, chosen
-from Stockfish's scores alone. The engine half needs PyQt6, chess, and a
-Stockfish binary, which the coach then shares. No OCR anywhere, and no
-Tesseract.
+from Stockfish's scores alone, and the Rating slider greys out. The engine half
+needs PyQt6, chess, and a Stockfish binary, which the coach then shares. No OCR
+anywhere, and no Tesseract.
 
 Written for Windows. The recorder calls `SetProcessDpiAwareness` and guards
 itself with a named mutex, both Windows specific, and the board reading itself

@@ -202,21 +202,26 @@ HUGE = 800              # a drop this big is put to a longer search first
 # rather than tempted, and UCI_Elo stops at 1320, above the whole slider.
 #
 # Measured by driving this class over 60 positions from games/, one per game on
-# the recorder's own side, at the 1.0s think time. The last column is how often
-# Maia says a player of that rating plays the move that got drawn, the median
-# over positions with an arrow:
+# the recorder's own side, at the 1.0s think time: four runs of the same code
+# for the Maia rows, one for the last. The middle column is how many arrows were
+# real mistakes rather than weaker or decided, and the last is how often Maia
+# says a player of that rating plays the move that got drawn, the median over
+# positions with an arrow:
 #
-#                                red arrow   that player plays it
-#   rating 500                   56 of 60    12.0%
-#   rating 1000                  56 of 60     9.1%
-#   rating 1500                  55 of 60     3.5%
-#   no Maia, closest call        54 of 60     2.6% at 500, 0.8% at 1000 and
-#                                             0.8% at 1500
+#                           red arrow   real mistakes   that player plays it
+#   rating 500              56 of 60    49 to 52        12.0%
+#   rating 1000             56 of 60    48 to 50        7.9 to 9.1%
+#   rating 1500             55 of 60    47 to 50        2.1 to 3.5%
+#   no Maia, closest call   54 of 60    46              2.6% at 500, 0.8% at
+#                                                       1000 and 0.8% at 1500
 #
-# The arrow at 500 and the arrow at 1500 are different moves on 40 of the 60,
-# and on 37 in a second run, which is the slider doing something you can see.
-# How many arrows are real mistakes rather than weaker or decided stays about
-# where it was, 48 or 49 of 60 at every rating.
+# The arrow at 500 and the arrow at 1500 are different moves on 36 to 40 of the
+# 60 across those runs. Not all of that is the rating. The searches are timed,
+# so two runs at the same rating already differ on 8 of the 60 at 500 and on 18
+# at 1500. A second sample of 60, from the same games with either side to move,
+# put 500 and 1500 apart on 27, where two runs at one rating differed on 12 and
+# 14. How often there is an arrow at all depends on the sample, 55 or 56 of 60
+# here and 50 in the second, and is about the same without Maia, 54 and 49.
 #
 # Candidates as well as the choice, because the shortlist is picked by captures,
 # checks and the engine's order rather than by what people play: with Maia
@@ -232,7 +237,7 @@ HUGE = 800              # a drop this big is put to a longer search first
 # 0.62s at the median and 1.22s at the 90th percentile, against 0.55s and 1.09s
 # without Maia, measured the same way in the same session. Moving the slider
 # runs this pass again on the position on screen and nothing else, 0.57s at the
-# median.
+# median, and once Maia is off it runs nothing, see set_elo().
 LIKELY = 3              # how many of Maia's likeliest moves join the shortlist
 
 # How deep the two cheap passes go. The think-time dial is what a player has
@@ -439,6 +444,14 @@ class Coach(threading.Thread):
         # position already on screen is judged again.
         self.elo = clamp_elo(elo)
         self.maia = maia         # what starts Maia, or None to do without it
+        # Why the rating does nothing for the rest of the session, or None
+        # while it still counts. Set once, by the engine thread, when Maia has
+        # failed and then failed again after being started a second time; a
+        # ("rating", why) message goes on the out queue at the same moment.
+        self.rating_off = None
+        self._client = None      # the running Maia, used by the engine thread only
+        self._restarted = False  # Maia gets one second start per session
+        self._open_failed = None  # why self.maia() raised, if it did
         self.out = queue.Queue()
         self.stop_flag = threading.Event()
         self._wake = threading.Event()
@@ -479,20 +492,28 @@ class Coach(threading.Thread):
         searched needs nothing done: its second pass reads the rating when it
         starts. One whose second pass is running is stopped and started again,
         and one already finished is asked again.
+
+        Without Maia nothing runs again, since the red arrow is then the
+        closest call at every rating and a second pass would only be the same
+        search with its noise in a different place. Returns whether the rating
+        still counts, which is False from then on.
         """
         elo = clamp_elo(elo)
         with self._lock:
-            if elo == self.elo:
-                return
+            counts = self.maia is not None and self.rating_off is None
+            if elo == self.elo or not counts:
+                self.elo = elo
+                return counts
             self.elo = elo
             again = self._busy if self._busy is not None else self._done
             if (self._want is not None or again is None
                     or self._best is None or self._best[0] != again):
-                return
+                return True
             self._want = self._redo = again
             live = self._live
         self._end(live)
         self._wake.set()
+        return True
 
     def stop(self):
         self.stop_flag.set()
@@ -523,13 +544,8 @@ class Coach(threading.Thread):
         # now rather than at the first question, because loading it takes about
         # half a second and the first move to play is being searched for in the
         # meantime anyway.
-        maia = None
         if self.maia is not None:
-            try:
-                maia = self.maia()
-                maia.start()
-            except Exception:
-                maia = None
+            self._client = self._open_maia()
         self.out.put(("engine", "ready"))
         try:
             while not self.stop_flag.is_set():
@@ -546,7 +562,7 @@ class Coach(threading.Thread):
                     if fen is None or self.stop_flag.is_set():
                         break
                     try:
-                        self._answer(engine, maia, fen, redo)
+                        self._answer(engine, fen, redo)
                     finally:
                         with self._lock:
                             self._busy = None
@@ -555,11 +571,7 @@ class Coach(threading.Thread):
                 engine.quit()
             except Exception:
                 pass
-            if maia is not None:
-                try:
-                    maia.close()
-                except Exception:
-                    pass
+            self._close_maia()
 
     def _settle(self, fen):
         """This position is answered as well as it is going to be. Remembering
@@ -568,7 +580,7 @@ class Coach(threading.Thread):
         with self._lock:
             self._done = fen
 
-    def _answer(self, engine, maia, fen, redo=False):
+    def _answer(self, engine, fen, redo=False):
         if redo:
             # The rating changed on a position already answered. Its move to
             # play is known and already on screen, so only the red arrow is
@@ -578,7 +590,7 @@ class Coach(threading.Thread):
             if known is None or known[0] != fen:
                 return
             try:
-                self._mistake(engine, maia, chess.Board(fen), fen, known[1])
+                self._mistake(engine, chess.Board(fen), fen, known[1])
             except Exception as exc:
                 self.out.put(("engine", "Stockfish stopped: %s" % exc))
                 self.stop_flag.set()
@@ -608,7 +620,7 @@ class Coach(threading.Thread):
             # Second, and only once the move to play is on screen. It is the
             # answer that matters, and this pass costs about as long again.
             if best is not None and not self._cut():
-                self._mistake(engine, maia, board, fen, best)
+                self._mistake(engine, board, fen, best)
         except Exception as exc:
             self.out.put(("engine", "Stockfish stopped: %s" % exc))
             self.stop_flag.set()
@@ -702,7 +714,7 @@ class Coach(threading.Thread):
         lines.sort(key=lambda line: -value(line.score))
         return lines
 
-    def _likely(self, maia, board, fen, elo):
+    def _likely(self, board, fen, elo):
         """Maia's answer for this position at this rating: every legal move with
         how likely a player of that rating is to play it, most likely first.
 
@@ -711,19 +723,77 @@ class Coach(threading.Thread):
         since the answer would be about a board already played past. Anything
         that is not a legal move here is dropped rather than trusted, because
         this answer came out of another process.
+
+        A Maia that has gone, rather than one that only had no answer this
+        time, is started once more and asked again. If that one goes too, the
+        rating is off for the rest of the session and the app is told, because
+        a slider that has quietly stopped doing anything still looks as if it
+        works: Stockfish's own noise moves the arrow when it is let go.
         """
-        if maia is None:
+        if self.maia is None or self.rating_off is not None:
+            return None
+        answer = self._ask_maia(fen, elo)
+        if answer is None and not self._cut() and not self._maia_alive():
+            if not self._restarted:
+                self._restarted = True
+                self._close_maia()
+                self._client = self._open_maia()
+                answer = self._ask_maia(fen, elo)
+            if answer is None and not self._cut() and not self._maia_alive():
+                self._turn_rating_off()
+                return None
+        if not answer:
             return None
         try:
-            answer = maia.ask(fen, elo, give_up=self._cut)
-            if not answer:
-                return None
             legal = {move.uci() for move in board.legal_moves}
             return [(uci, float(p)) for uci, p in answer if uci in legal] or None
         except Exception:
             return None                  # a red arrow is not worth a crash
 
-    def _mistake(self, engine, maia, board, fen, best):
+    def _open_maia(self):
+        """A Maia from self.maia, started, or None if even that failed."""
+        try:
+            client = self.maia()
+            client.start()
+            return client
+        except Exception as exc:
+            self._open_failed = "would not start: %s" % exc
+            return None
+
+    def _ask_maia(self, fen, elo):
+        client = self._client
+        if client is None:
+            return None
+        try:
+            return client.ask(fen, elo, give_up=self._cut)
+        except Exception:
+            return None
+
+    def _maia_alive(self):
+        client = self._client
+        try:
+            return client is not None and bool(client.alive())
+        except Exception:
+            return False
+
+    def _close_maia(self):
+        client, self._client = self._client, None
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+    def _turn_rating_off(self):
+        client = self._client
+        why = (getattr(client, "problem", None) if client is not None
+               else self._open_failed) or "it stopped"
+        with self._lock:
+            self.rating_off = str(why)
+        self._close_maia()
+        self.out.put(("rating", self.rating_off))
+
+    def _mistake(self, engine, board, fen, best):
         """The move worth being warned off, published on its own.
 
         Two searches and sometimes a third; the comment above Line says why each
@@ -740,7 +810,7 @@ class Coach(threading.Thread):
                            board.legal_moves.count())
         if self._cut():
             return
-        likely = self._likely(maia, board, fen, elo)
+        likely = self._likely(board, fen, elo)
         if self._cut():
             return
         picks = with_likely(shortlist(board, best, rough), best, likely, rough)

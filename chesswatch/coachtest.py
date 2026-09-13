@@ -515,8 +515,33 @@ class Players:
         rest = [m.uci() for m in board.legal_moves if m.uci() != pick]
         return [(pick, 0.9)] + [(uci, 0.1 / len(rest)) for uci in rest]
 
+    def alive(self):
+        return not self.closed
+
     def close(self):
         self.closed = True
+
+
+class Gone(Players):
+    """A Maia whose process has gone: no answer, and it knows it is gone."""
+
+    def __init__(self, why="the process ended"):
+        super().__init__(lambda elo: HANGS_KNIGHT)
+        self.problem = why
+
+    def ask(self, fen, elo, give_up=None):
+        self.asked.append(elo)
+        return None
+
+    def alive(self):
+        return False
+
+
+class Puzzled(Gone):
+    """A Maia with no answer to one question that is still running."""
+
+    def alive(self):
+        return True
 
 
 # Two ways for white to give a piece away in BUSY, neither of them a capture
@@ -572,10 +597,11 @@ def rating_checks(path):
           [k for k, _ in second if k == "advice"], [])
 
     asked = len(players.asked)
-    c.set_elo(1400)
+    counts = c.set_elo(1400)
     time.sleep(1.0)
     check("the slider let go where it already was asks nothing",
           (len(players.asked), c.out.qsize()), (asked, 0))
+    check("  and the coach says the rating still counts", counts, True)
 
     c.set_elo(9999)
     third = answers()
@@ -612,7 +638,92 @@ def rating_checks(path):
               warned[0]["likely"], None)
         check("  and is still a real mistake",
               warned[0]["drop"] >= CO.MIN_DROP, True)
+    counts = c.set_elo(1400)
+    time.sleep(1.0)
+    check("the slider let go there searches nothing again, since the rating"
+          " changes nothing", (counts, c.out.qsize(), c.elo), (False, 0, 1400))
     c.stop()
+
+    print("\n-- a Maia that goes away ----------------------------------")
+    made = []
+
+    def gone_once():
+        made.append(Gone() if not made else Players(lambda elo: HANGS_BISHOP))
+        return made[-1]
+    c = CO.Coach(path, think_seconds=0.30, elo=600, maia=gone_once)
+    c.start()
+    wait(c, "engine")
+    c.ask(BUSY)
+    got = answers()
+    check("one that has gone is started once more, and the new one is asked",
+          ([type(m).__name__ for m in made],
+           [(k, p["uci"], p["likely"]) if k == "mistake" else (k, p)
+            for k, p in got if k in ("mistake", "rating")]),
+          (["Gone", "Players"], [("mistake", HANGS_BISHOP, 0.9)]))
+    check("  with the old one closed, and the rating still counting",
+          (made[0].closed, c.rating_off), (True, None))
+    c.stop()
+    c.join(timeout=10)
+
+    made = []
+
+    def always_gone():
+        made.append(Gone())
+        return made[-1]
+    c = CO.Coach(path, think_seconds=0.30, elo=600, maia=always_gone)
+    c.start()
+    wait(c, "engine")
+    c.ask(BUSY)
+    got = answers()
+    check("one that goes again is given up on, and the app is told once,"
+          " before the warning chosen without it",
+          [(k, p if k == "rating" else p["likely"])
+           for k, p in got if k in ("rating", "mistake")],
+          [("rating", "the process ended"), ("mistake", None)])
+    check("  after two starts and no third", len(made), 2)
+    check("  and the coach keeps the reason", c.rating_off, "the process ended")
+    counts = c.set_elo(1400)
+    time.sleep(1.0)
+    check("from then on the slider searches nothing again when let go",
+          (counts, c.out.qsize(), c.elo), (False, 0, 1400))
+    c.ask(MATE)
+    later = answers(until_mistake=False, seconds=8)
+    check("  and a new position starts no Maia and says nothing more about it",
+          (len(made), [k for k, _ in later if k == "rating"],
+           [p["fen"] for k, p in later if k == "advice" and p.get("final")]),
+          (2, [], [MATE]))
+    c.stop()
+    c.join(timeout=10)
+
+    def refuses():
+        raise OSError("no python here")
+    c = CO.Coach(path, think_seconds=0.30, maia=refuses)
+    c.start()
+    check("the engine starts even when Maia cannot be made at all",
+          wait(c, "engine"), "ready")
+    c.ask(BUSY)
+    got = answers()
+    check("  and that is the same message, with the reason",
+          [(k, p) for k, p in got if k == "rating"],
+          [("rating", "would not start: no python here")])
+    c.stop()
+    c.join(timeout=10)
+
+    made = []
+
+    def puzzled():
+        made.append(Puzzled())
+        return made[-1]
+    c = CO.Coach(path, think_seconds=0.30, maia=puzzled)
+    c.start()
+    wait(c, "engine")
+    c.ask(BUSY)
+    got = answers()
+    check("one only stuck on a question is not started again or given up on",
+          (len(made), c.rating_off, [k for k, _ in got if k == "rating"]),
+          (1, None, []))
+    c.stop()
+    c.join(timeout=10)
 
     class Broken(Players):
         def ask(self, fen, elo, give_up=None):
@@ -843,6 +954,15 @@ def label_checks(path):
           app.coach.elo, 1400)
     check("  and the warning for the old rating comes down",
           app.lbl_mistake.cget("text"), "")
+
+    # Maia that will not run turns the slider off in the real widget, which
+    # is the only place a disabled Scale can be read back from.
+    app.coach.out.put(("rating", "the model did not load"))
+    app._drain_coach()
+    check("a Maia that will not run greys the slider out and says off",
+          (str(app.scale_elo.cget("state")), app.lbl_elo.cget("text"),
+           app.lbl_check.cget("text")),
+          ("disabled", "off", C.RATING_OFF))
 
     app.coach_on.set(False)
     app._toggle_coach()
