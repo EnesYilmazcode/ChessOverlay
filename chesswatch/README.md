@@ -203,8 +203,8 @@ move that got drawn, the median over the positions with an arrow:
 | no Maia, closest call | 54 of 60 | 46 | 2.6% at 500, 0.8% at 1000, 0.8% at 1500 |
 
 So the move drawn is one a player of that rating plays about three to eleven
-times as often as the closest call, at the median, and where in that range
-varies between runs. **The arrow at 500 and the arrow at 1500 are different
+times as often as the closest call, at the median: about 4.6 times at 500, 10
+to 11 at 1000 and 2.6 to 4.4 at 1500. **The arrow at 500 and the arrow at 1500 are different
 moves on 36 to 40 of the 60**, but not all of that is the rating.
 The searches are timed, so two runs at the same rating already differ on 8 of
 the 60 at 500 and on 18 at 1500. On a second sample of 60, from the same games

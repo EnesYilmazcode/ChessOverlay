@@ -256,7 +256,9 @@ def without_torch():
                  " imported", got is not None, True):
         print("        it said: %r" % (reply,))
         print("        stderr: %s" % raw.stderr())
-        print("        " + why_not(reply))
+        # Not why_not(): its pip advice is wrong here, torch is not a
+        # requirement and this check is what keeps it that way.
+        print("        engine.py should not need torch; find what imports it")
     raw.close()
     shutil.rmtree(folder, ignore_errors=True)
 
