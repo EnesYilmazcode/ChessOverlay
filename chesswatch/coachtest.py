@@ -779,6 +779,7 @@ def capture_checks():
     w._misses, w._last_hunt = 5, 0.0
     w.out = queue.Queue()
     found = (100, 100, 400, 400)
+    w.reviewer = None
     # Stop the tick once the hunt has been dealt with. Everything past this is
     # the reader, which has a screen of its own to be tested against.
     w._read_settled = lambda: (None, None, False)

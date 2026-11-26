@@ -493,6 +493,7 @@ class Game:
     def __init__(self, my_color=None, directory=GAMES_DIR, start_fen=None):
         self.started = datetime.datetime.now()
         self.moves = []
+        self.reviews = {}          # entire SAN prefix -> post-move rating
         self.my_color = my_color
         self.directory = directory
         self.start_fen = start_fen
@@ -512,6 +513,9 @@ class Game:
 
     def board_at_start(self):
         return chess.Board(self.start_fen) if self.start_fen else chess.Board()
+
+    def review_at(self, index):
+        return self.reviews.get(tuple(self.moves[:index + 1]))
 
     def rows(self):
         """[(move_number, white_san_or_None, black_san_or_None), ...]."""
@@ -571,9 +575,16 @@ class Game:
         if self.joined_late:
             g.headers["Annotator"] = "ChessWatch (joined this game in progress)"
         node = g
-        for san in self.moves:
+        for i, san in enumerate(self.moves):
             move = board.parse_san(san)
             node = node.add_variation(move)
+            rating = self.review_at(i)
+            if rating and rating["category"] != "unrated":
+                import review
+                nag = review.BADGES[rating["category"]][3]
+                if nag is not None:
+                    node.nags.add(nag)
+                node.comment = "ChessWatch: %s (Stockfish estimate)" % rating["label"]
             board.push(move)
         return str(g)
 
@@ -595,6 +606,7 @@ class Game:
                     "number": (self.start_ply + i) // 2 + 1,
                     "side": "white" if (self.start_ply + i) % 2 == 0 else "black",
                     "san": san,
+                    "review": self.review_at(i),
                     "by": ("me" if ((self.start_ply + i) % 2 == 0)
                            == (self.my_color == "white") else "opponent")
                           if self.my_color else "unknown",

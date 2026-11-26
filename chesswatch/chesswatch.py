@@ -34,6 +34,7 @@ import watcher as W
 import pieces
 import coach as CO
 import overlay as OV
+import review as RV
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
@@ -287,7 +288,7 @@ class Worker(threading.Thread):
 
     daemon = True
 
-    def __init__(self, region, out, directory=W.GAMES_DIR):
+    def __init__(self, region, out, directory=W.GAMES_DIR, review_moves=False):
         super().__init__()
         self.region = region
         self.out = out
@@ -306,6 +307,10 @@ class Worker(threading.Thread):
         self._searching = False    # whether the app has been told there is none
         self._board_px = None      # board width the templates were last fitted to
         self.settle_stats = [0, 0]  # readings taken, readings acted on
+        self.review_moves = review_moves
+        self.reviewer = None
+        self.review_requested = set()
+        self.review_error = None
 
     def run(self):
         try:
@@ -317,9 +322,51 @@ class Worker(threading.Thread):
                     self.out.put(("error", "%s: %s" % (type(exc).__name__, exc)))
                 time.sleep(max(0.05, POLL_SECONDS - (time.time() - started)))
         finally:
+            if self.reviewer is not None:
+                self.reviewer.stop()
+                self.reviewer.join(timeout=3)
+                self._collect_reviews()
             close_sct()
 
+    def _collect_reviews(self):
+        if self.reviewer is None:
+            return
+        while True:
+            try:
+                game, prefix, rating = self.reviewer.out.get_nowait()
+            except queue.Empty:
+                break
+            if game is None:
+                self.review_error = "Move ratings unavailable: " + rating
+            else:
+                game.reviews[prefix] = rating
+                # Finished games can receive their final rating after a rematch.
+                game.save()
+
+    def _review_moves(self):
+        self._collect_reviews()
+        game = self.tracker.game
+        if not self.review_moves or game is None or not game.moves or self.review_error:
+            return
+        if self.reviewer is None:
+            path = CO.find_engine()
+            if path is None:
+                self.review_error = "Move ratings unavailable: Stockfish not found"
+                return
+            self.reviewer = RV.Reviewer(path)
+            self.reviewer.start()
+        board = game.board_at_start()
+        for i, san in enumerate(game.moves):
+            move = board.parse_san(san)
+            prefix = tuple(game.moves[:i + 1])
+            key = (game, prefix)
+            if key not in self.review_requested:
+                self.review_requested.add(key)
+                self.reviewer.jobs.put((game, prefix, board.copy(), move))
+            board.push(move)
+
     def _tick(self):
+        self._collect_reviews()
         self._frames += 1
         if self._should_refind():
             self._last_hunt = time.time()
@@ -393,12 +440,16 @@ class Worker(threading.Thread):
                 self.tracker.game.save()
 
         game = self.tracker.game
+        self._review_moves()
         self.out.put(("frame", {
             "event": event,
             "region": self.region,
             "locked": self.tracker.locked_on,
             "rows": game.rows() if game else [],
             "count": len(game.moves) if game else 0,
+            "ratings": {game.start_ply + i: game.review_at(i)
+                        for i in range(len(game.moves))} if game else {},
+            "review_error": self.review_error,
             "color": game.my_color if game else None,
             "result": game.result if game else "*",
             "termination": game.termination if game else "",
@@ -806,6 +857,7 @@ class App:
                                      font=("Consolas", 10))
         self.moves_box.tag_configure("warn", foreground=WARN,
                                      font=("Consolas", 10))
+        self._configure_review_tags()
 
         self.board_box = tk.Text(self.root, bg="#1e1c1a", fg=MUTED, relief="flat",
                                  font=("Consolas", 10), height=8, padx=10, pady=6,
@@ -826,6 +878,11 @@ class App:
 
         self._pack = pack
         self._relayout()
+
+    def _configure_review_tags(self):
+        for category, (_, _, color, _) in RV.BADGES.items():
+            self.moves_box.tag_configure(category, foreground=color,
+                                         font=("Consolas", 12, "bold"))
 
     def _drawer_row(self, parent, name):
         """A word, then the controls it covers. Four of these make the drawer
@@ -924,7 +981,7 @@ class App:
         if snapped != self.board_region:
             self.board_region = snapped
             self._save_config()
-        self.worker = Worker(self.board_region, self.q)
+        self.worker = Worker(self.board_region, self.q, review_moves=True)
         self.worker.tracker.set_colour(self.colour_choice.get())
         # Every worker builds a fresh reader on the bundled sheet, so pieces
         # taught by hand have to be handed back on every start or they would
@@ -1294,6 +1351,24 @@ class App:
             box.insert("end", "playing as %s, no moves yet" % f["color"], "hint")
         else:
             mine_is_white = f["color"] == "white"
+            ratings = f.get("ratings", {})
+            my_plies = [ply for ply in ratings if (ply % 2 == 0) == mine_is_white]
+            if f.get("review_error"):
+                box.insert("end", f["review_error"] + "\n\n", "warn")
+            elif my_plies:
+                latest = ratings[max(my_plies)]
+                if latest:
+                    category = latest["category"]
+                    color = RV.BADGES.get(category, (None, None, MUTED, None))[2]
+                    self.lbl_status.configure(text="%s %s" %
+                                              (latest["symbol"], latest["label"]), fg=color)
+                    box.insert("end", "Your last move: %s %s\n" %
+                               (latest["symbol"], latest["label"]),
+                               latest["category"] if latest["category"] in RV.BADGES else "hint")
+                    box.insert("end", "Stockfish estimate\n\n", "hint")
+                else:
+                    self.lbl_status.configure(text="rating...", fg=MUTED)
+                    box.insert("end", "Rating your last move...\n\n", "hint")
             if f.get("joined"):
                 # Numbers cannot line up with chess.com here: nothing in the
                 # picture says how many moves were played before we looked.
@@ -1305,10 +1380,16 @@ class App:
                 label = ("+%d." % num) if f.get("joined") else ("%d." % num)
                 box.insert("end", "%5s " % label, "num")
                 # A game joined part way can begin on black's move.
-                box.insert("end", "%-9s" % (white or "..."),
+                white_rating = ratings.get((num - 1) * 2)
+                black_rating = ratings.get((num - 1) * 2 + 1)
+                box.insert("end", "%-6s" % (white or "..."),
                            "mine" if mine_is_white else "theirs")
+                box.insert("end", "%-3s" % (white_rating["symbol"] if white_rating else ""),
+                           white_rating["category"] if white_rating else "hint")
                 if black:
                     box.insert("end", black, "theirs" if mine_is_white else "mine")
+                    if black_rating:
+                        box.insert("end", " " + black_rating["symbol"], black_rating["category"])
                 box.insert("end", "\n")
         box.configure(state="disabled")
         box.see("end")

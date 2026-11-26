@@ -14,6 +14,48 @@ its own. There is nothing to set up.
 Recording starts from the opening position, so start a new game rather than
 joining one halfway through.
 
+## Live move ratings
+
+Recorded moves are rated automatically in the background, independently of the
+Coach switch. Turn Coach and Arrow off for feedback on played moves without
+next-move suggestions. Your latest move's rating stays beside the Stop button;
+colored symbols also appear beside moves in the recording:
+
+| Symbol | Rating |
+| --- | --- |
+| !! | Brilliant |
+| ! | Great |
+| * | Best |
+| + | Excellent |
+| · | Good |
+| ?! | Inaccuracy |
+| ? | Mistake |
+| ?? | Blunder |
+| = | Forced |
+
+These are **ChessWatch estimates**, not Chess.com's classifications. Stockfish
+compares the played move with its alternatives at depth 16, with a one-second
+cap per search. Ratings usually arrive within two seconds per move; fast play
+can build a queue. Incomplete searches show Unrated rather than a guessed score.
+The loss in an evaluation-based expected score determines inaccuracy (5%),
+mistake (10%), and blunder (20%), so harmless evaluation changes in positions
+that are already won or lost are treated less harshly. This score is a simple
+logistic estimate, not a prediction of your personal chances.
+
+Great means the engine's best move clearly preserves an outcome that the
+runner-up loses. Brilliant is a conservative heuristic: a best move that offers
+a newly exposed non-pawn piece for a material loss while keeping a nonnegative
+evaluation, without already being far ahead in material. It does not reproduce
+Chess.com's algorithm, and can miss sacrifices or disagree with other reviews.
+Only played moves are displayed; ratings do not disclose the better move.
+
+JSON saves include a `review` field per move (null while pending); PGN saves
+include rating comments and standard annotations such as `!!` and `??`. Takebacks
+and different continuations keep separate ratings. Stockfish is required.
+
+Run `python -m unittest reviewtest` to check ratings, recording, takebacks, and
+the live feedback labels, including an installed-engine integration test.
+
 ## What you get
 
 Every game lands in `games\` as a matched pair:
